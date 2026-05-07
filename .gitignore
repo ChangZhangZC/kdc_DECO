@@ -218,3 +218,6 @@ ana.py
 *.tar
 error.txt
 obs.png
+
+# Mac specific
+.DS_Store
