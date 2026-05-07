@@ -1,0 +1,2 @@
+# DECO Model Dependencies
+# This file contains the dependencies required specifically for the DECO model integration.
