@@ -221,3 +221,6 @@ obs.png
 
 # Mac specific
 .DS_Store
+
+# files for dev
+data_example/

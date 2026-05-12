@@ -9,20 +9,36 @@
 ## 阶段一：数据引擎阶段 (Data Engine Phase)
 **核心目标**：保持 `CvtRosbag2Lerobot.py`中的基本大逻辑，顺序和一些辅助函数，再此基础上进行修改，完成物理语义向数学张量的精确转换，将 rosbag 统一转存为 LeRobot Parquet 格式，将新的脚本保存在 `kuavo_data/` 文件夹下，命名为 `CvtRosbag2Lerobot_DECO.py`，并对代码进行详细的批注和备注。
 
-- [ ] **1.1 触觉频率与量纲降维**
+- [x] **1.0 技术决策记录与方案冻结**
+  - [x] 新建 `Content/DECO_Technical_Decisions.md`，作为 DECO 集成技术决策记录文件，后续阶段二、阶段三的具体技术选型也继续追加到该文件。
+  - [x] 记录阶段一已确认方案与备选方案：新建 `_deco.yaml` 数据配置、默认 `train_hz: 10`、`use_depth: false`、输出固定 28 维、头部 state 优先使用 Inspector 验证后的实测固定角度且 action 补零、转换阶段不 resize、暂不修改公共 reader、缺失 topic 策略与视觉源候选。
+  - [x] 将 Inspector 作为正式检查点：先通过只读脚本确认 rosbag schema、`/cam_h/color/image_raw/compressed` 是否为单目整图或双目拼接，再冻结最终视觉策略。
+- [ ] **1.1 Rosbag Schema Inspector**
+  - [ ] 新建只读脚本 `kuavo_data/inspect_deco_stage1_schema.py`，用于检查 `data_example/vr_record_2026-04-15-15-57-47.bag` 中关键 topic 的存在性、消息数量、时间范围、估算频率和字段结构。
+  - [ ] 对 `/cam_h/color/image_raw/compressed` 解码第一帧，打印 `height/width/aspect_ratio`，并导出 `cam_h_full.jpg`、`cam_h_left_half.jpg`、`cam_h_right_half.jpg` 三张图片供人工判断单目/双目。
+  - [ ] 检查 `/dexhand/touch_state`、`/dexhand/state`、`/sensors_data_raw`、`/kuavo_arm_traj`、`/joint_cmd`、`/control_robot_hand_position` 等 topic 的字段长度是否满足 DECO 28 维 state/action 与 30 维 tactile 的构造要求；同时统计 `/sensors_data_raw.joint_data.joint_q[26:28]` 的前几帧、最小值和最大值，用于判断头部锁定角是否稳定可用。
+- [ ] **1.2 Inspector 结果 Review 与视觉策略冻结**
+  - [ ] 根据 Inspector 输出和导出的三张图，确认最终视觉输入策略：`/cam_h` 单目复制、`/cam_h` 左右切分，或改用其他真实头部双目 topic。
+  - [ ] 将最终视觉策略补写进 `Content/DECO_Technical_Decisions.md`，并同步更新 `README_DECO.md` 的数据转换说明。
+- [ ] **1.3 完整 DECO 数据转换流程实现**
+  - [ ] 新建 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，默认 `train_hz: 10`、`use_depth: false`，并在注释中标明后续从 10Hz 调整到 30Hz 的位置和影响。
+  - [ ] 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，实现 DECO 专用 rosbag reader、最近邻时间对齐、固定 28 维 state/action 映射、30 维触觉提取和 LeRobot dataset 写入。
+  - [ ] 转换阶段不做图像 resize；图像尺寸从第一帧自动推断并注册到 LeRobot features，后续在 wrapper/训练预处理阶段统一转换到 DECO 所需的 256×256。
+  - [ ] 暂不修改 `kuavo_data/common/kuavo_dataset.py` 公共 reader，避免影响 ACT/DP 既有转换链路。
+- [ ] **1.4 触觉频率与量纲降维**
   - [ ] 提取 Kuavo 话题 `/dexhand/touch_state`。
-  - [ ] 将 Kuavo 原生约 100Hz 的触觉频率**下采样 (Downsampling)** 至 30Hz，对齐视觉与控制。依靠 `kuavo_dataset.py` 中现有的最近邻时间戳对齐 (`np.argmin`) 即可完美实现。
+  - [ ] 将 Kuavo 原生约 100Hz 的触觉频率**下采样 (Downsampling)** 至数据配置中的 `train_hz`。阶段一默认使用 10Hz；后续如硬件与数据稳定支持，可在 `_deco.yaml` 中调整为 30Hz。
   - [ ] 仅提取指尖/指腹的法向力 (`normal_force`)，舍弃切向力和接近觉。
   - [ ] 保留空间特征（5 指 × 3 点 = 单手 15 维，双手共 30 维），并直接除以 100 缩放至 0~25 牛顿物理量程，保留原始物理意义，后续的 Mean-Std 归一化留给 `config` 阶段。
-- [ ] **1.2 动作空间 (28 维) 索引重组**
+- [ ] **1.5 动作空间 (28 维) 索引重组**
   - [ ] 建立 `KuavoDecoMapper` 重映射逻辑。
   - [ ] 接收 Kuavo 原生 28 维排列：`臂(0-6, 7-13) -> 手(14-19, 20-25) -> 头(26-27)`。
   - [ ] 输出 DECO 强制 28 维排列：`左侧全集(左臂 0-6, 左手 7-12) -> 右侧全集(右臂 13-19, 右手 20-25) -> 头(26-27)`。
-  - [ ] 头部缺失强校验补齐：如果数据集未录制头部话题（实机视角通常强制锁定），则对对应索引 26-27 的维度全部强制补零。
-- [ ] **1.3 视觉流预处理剥离**
-  - [ ] 确认仅提取左右双目 RGB 视频流。
+  - [ ] 头部维度保留索引 26-27。`observation.state[26:28]` 优先使用 Inspector 验证为稳定的 `/sensors_data_raw.joint_data.joint_q[26:28]` 实测固定角度；若读不到或不稳定，则回退补零。`action[26:28]` 当前始终补零，表示 DECO 策略暂不控制头部。
+- [ ] **1.6 视觉流预处理剥离**
+  - [ ] 仅提取头部 RGB 视频流。若 Inspector 确认 `/cam_h/color/image_raw/compressed` 是单目整图，则数据集只保存单路 `head_cam_h`，后续 wrapper 将其复制为 DECO 的 `img1/img2`；若 Inspector 确认其为左右拼接双目，则在转换脚本中切分为 `head_cam_left/head_cam_right`。
   - [ ] 剥离并忽略深度流 (Depth) 记录，严格保持 DECO 原生假设。
-  - [ ] 确保图像频率严格抽帧至 30Hz。
+  - [ ] 图像频率与 `_deco.yaml` 中的 `train_hz` 对齐。阶段一默认 10Hz，后续可根据数据质量和硬件能力调整为 30Hz。
 
 ---
 
@@ -67,7 +83,7 @@
   - [ ] 继承自 `nn.Module`，对外伪装成标准的 LeRobot Policy 接口。
   - [ ] **解包与切片**：从 LeRobot 传入的字典 `batch` 中提取双目图像赋值给 `img1`, `img2`；将 `batch["observation.tactile"]` (30维) 切片拆分为 `tac1` (前15维左手) 和 `tac2` (后15维右手)。
   - [ ] **无损底层调用**：将解析好的数据传入动过手术的 `DECO(..., training=True)`。
-  - [ ] **原生 Loss 保护与外层欺骗**：原封不动保留 DECO 原生的 `F.mse_loss(act, noise)` 计算逻辑不魔改。将计算结果封装成严格的 `(loss, {"loss": loss.item()})` 格式返回，实现“绝对不修改官方 `train.py`”的终极目标。
+  - [ ] **原生 Loss 保护与外层欺骗**：原封不动保留 DECO 源码中的 Flow Matching 训练目标 `F.mse_loss(out, noise - action)`，其中 `out` 是网络预测的速度场/残差方向，`noise - action` 是从专家动作指向噪声样本的目标速度场。将计算结果封装成严格的 `(loss, {"loss": loss.item()})` 格式返回，实现“绝对不修改官方 `train.py`”的终极目标。
 - [ ] **4.3 开发 DECOPolicyWrapper.select_action (推理发射器)**
   - [ ] **组装实时观测**：接受真机或仿真环境发来的实时观测字典，转换为网络张量。
   - [ ] **原生去噪循环**：调用 `DECO(..., training=False)` 执行其原生的多步去噪推理，获得 Action Chunk 动作序列。
