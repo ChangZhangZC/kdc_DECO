@@ -1,6 +1,137 @@
 # AI Execution Logs
 
+## 2026-05-13
+
+### 补充 tactile LoRA 训练策略与分阶段验证检查点
+- **任务**: 根据用户确认，继续补充 `PLANS.md` 和 `Content/DECO_Technical_Decisions.md`，将 DECO 源码中的触觉低秩 adapter 机制、配置开关、数据转换验证点和仿真/实机分阶段检查流程纳入当前 Kuavo-DECO 总体方案。
+- **源码确认**:
+  - `DECO/models/deco/deco.py` 中的触觉 LoRA 实际实现名为 `PI_Adapter`，不是外部 PEFT LoRA；其结构为 `Linear(dim -> rank)` 与 `Linear(rank -> out_dim)` 的低秩 residual adapter。
+  - 当 `use_tactile=True` 且 `plugin=True` 时，`MMAttention` 会在 image/action 的 QKV、projection 和 MLP 分支中注入 `PI_Adapter`。
+  - 当指定 `pretrain_model_path`、开启 `use_tactile` 和 `plugin`、且未指定 `adapter_model_path` 时，DECO 会加载预训练主干并冻结 checkpoint 中已有参数，只训练新出现的 tactile/adapter 相关参数。
+  - `DECO/train.py` 中优化器只接收 `requires_grad=True` 的参数，因此该冻结策略会真实影响训练参数集合。
+- **修改内容**:
+  - 修改 `PLANS.md`：
+    - 将核心架构策略补充为包含 `Tactile Plugin/LoRA 低秩微调保留`。
+    - 在 `0.2 已确认技术决策` 中明确保留 DECO 原生 `plugin=True` / `PI_Adapter` 触觉 adapter 范式，并说明它是 DECO 自实现低秩 adapter，不是外部 PEFT LoRA。
+    - 在 `0.3 关键解释` 中新增 `use_tactile_lora` 与 `freeze_pretrained_main` 的含义。
+    - 新增 `1.7 单 rosbag 转换试跑与数据一致性检查`，要求转换脚本完成后在允许执行的环境中转换一个 rosbag，并规划新增 `kuavo_data/validate_deco_lerobot_dataset.py` 检查字段、shape、30Hz 时间轴、RGB-depth 对齐、28 维 action 映射和 30 维 tactile 量纲。
+    - 新增 `3.5 触觉 LoRA / Plugin Adapter 保留策略`，记录 `use_tactile_lora -> plugin`、`tactile_lora_rank -> plugin_rank` 的配置映射，默认 `tactile_lora_rank: 32`，并保留主干冻结、adapter 微调策略。
+    - 新增 `3.6 分阶段训练边界`，明确先关闭触觉验证 RGB-D + DECO 主干，再加载视觉/RGB-D checkpoint 冻结主干并微调 tactile adapter。
+    - 在 `4.1 DECOConfigWrapper` 与 `5.1 configs/policy/deco_config.yaml` 中新增 `use_tactile_lora`、`tactile_lora_rank`、`freeze_pretrained_main`、`pretrain_model_path`、`adapter_model_path`、`freeze_vision_backbone` 等配置项。
+    - 扩展 `6.3 闭环测试验证` 并新增 `6.4 实机上线分级检查`，要求先关闭触觉进仿真，满足动作平滑、左右映射正确、10Hz 队列稳定等标准后，再开启触觉 LoRA，最后按 dry-run、低速限幅、完整闭环顺序上实机。
+    - 更新 `Done When`，加入 tactile adapter 配置、数据集验证脚本、视觉-only 仿真和触觉 LoRA 验证要求。
+  - 修改 `Content/DECO_Technical_Decisions.md`：
+    - 在文档定位和当前架构中新增 tactile plugin / low-rank adapter 微调决策。
+    - 扩展触觉模型手术说明，明确 Kuavo 触觉 token 仍应进入 DECO tactile cross-attention。
+    - 新增 `4.6 Tactile Plugin / LoRA-style Adapter 机制`，记录 `PI_Adapter` 结构、注入位置、冻结逻辑和 Kuavo 配置命名。
+    - 新增 `4.7 分阶段训练与验证策略`，记录视觉-only 阶段、触觉 adapter 阶段和部署验证阶段的边界与好结果标准。
+    - 更新待实现清单，加入 tactile adapter 配置项和 `validate_deco_lerobot_dataset.py`。
+- **目的**:
+  - 保留导师要求的 DECO 触觉 adapter 微调方式，同时让 Kuavo 配置层具备清晰开关。
+  - 避免 RGB-D 前端替换和触觉 LoRA 同时引入时难以定位问题，因此将验证路线拆成视觉-only、触觉 adapter、实机分级上线三段。
+  - 在完整数据转换脚本完成后增加独立 validation checkpoint，防止字段、维度、频率、深度图、触觉量纲或 action 映射错误进入训练阶段。
+
+### 重构 Kuavo-DECO 总体计划为 RGB-D 视觉前端方案
+- **任务**: 根据用户与导师的新要求，重构 `PLANS.md` 中的 DECO 集成总体架构，重点将视觉策略从“DECO 原生双 RGB / 单目复制 / 左右切分”调整为“Kuavo/ACT 风格 RGB-D 视觉前端 + DECO Action-Token Flow Matching 主干”。
+- **修改内容**:
+  - 重写 `PLANS.md`：
+    - 将标题更新为 `Kuavo-DECO RGB-D 架构迁移与系统集成宏观计划书`。
+    - 将核心架构策略更新为 `Wrapper 融入模式 + Kuavo/ACT 风格 RGB-D 视觉前端移植 + DECO Action-Token Flow Matching 主干保留 + 30Hz 数据 / 10Hz 控制解耦`。
+    - 新增 `0. 当前冻结的总体架构`，明确整体链路为：Kuavo rosbag RGB/depth/state/action/tactile → 30Hz LeRobot RGB-D 数据集 → Kuavo RGB_Augmenter/Normalizer → RGB ResNet34 + Depth ResNet34 → ACT 风格 RGB-depth cross attention fusion → DECO action-token Flow Matching transformer → 28D action chunk → 10Hz 控制队列。
+    - 明确 `vision_backbone: resnet34` 和 `depth_backbone: resnet34` 作为默认配置，同时允许切换到 `resnet18` 以降低推理延迟和显存压力。
+    - 将阶段一重构为 `RGB-D 数据引擎阶段`：
+      - 默认 `train_hz: 30`、`use_depth: true`。
+      - 要求转换脚本基于真实时间戳生成 30Hz 目标时间轴，兼容原始采集流为 100Hz 或更高频率的情况。
+      - 明确不再依赖 `MAIN_TIMELINE_FPS // TRAIN_HZ` 的整数跳帧假设。
+      - 明确保存 `observation.images.head_cam_h` 与对齐的 depth feature。
+    - 将旧的视觉策略替换为新主路线：
+      - 放弃 `/cam_h` 单目复制成 DECO `img1/img2`。
+      - 放弃 `/cam_h` 左右裁切成伪双目。
+      - 新路线为 Kuavo RGB-D 前端替换 DECO 原生 `img_encoding(img1, img2)`。
+    - 将阶段三重构为 `模型适配阶段`：
+      - 新增 Kuavo RGB-D 视觉前端移植任务。
+      - 保留 DECO action token、MMAttention、Flow Matching loss、denoising loop。
+      - 保留并细化触觉 30 维手术任务。
+    - 将阶段四 wrapper 任务改为读取 RGB、depth、state、tactile 和 action，并在部署阶段用 `action_stride = dataset_hz // control_hz = 3` 将 30Hz 语义动作转换为 10Hz 控制输出。
+    - 将阶段五配置任务更新为 `configs/policy/deco_config.yaml` 中显式配置 `dataset_hz: 30`、`control_hz: 10`、`action_stride: 3`。
+    - 更新 `Done When`，要求 `PLANS.md`、`Content/DECO_Technical_Decisions.md`、`README_DECO.md` 对 RGB-D 新架构保持一致。
+  - 重写 `Content/DECO_Technical_Decisions.md`：
+    - 记录当前冻结总体技术路线：Kuavo RGB-D 数据 → 30Hz LeRobot → Kuavo RGB_Augmenter/Normalizer → RGB/Depth ResNet34 → ACT 风格 RGB-depth cross attention fusion → DECO action-token Flow Matching 主干 → 10Hz 控制队列。
+    - 明确被替代的旧方案：`use_depth: false`、只保存 `/cam_h` RGB、不保存 depth、单目复制为双目、左右裁切伪双目、默认 10Hz 数据转换、剥离 depth 以保持 DECO 原生假设。
+    - 记录 RGB 增强内容：Identity、ColorJitter、SharpnessJitter、RandomMask、RandomBorderCutout、GaussianNoise、GammaCorrection。
+    - 记录 depth 策略：只做同步 crop/resize 与 depth 归一化，不做颜色类增强。
+    - 记录 ResNet34 默认值的优缺点与 `resnet18` 备选策略。
+    - 记录 30Hz 数据与 10Hz 控制的解耦方式：洗数据阶段 `train_hz=30`，部署阶段 `control_hz=10`，默认 `action_stride=3`。
+- **目的**:
+  - 让计划文档与导师要求一致：保留 Kuavo 工具链中的 RGB-D 输入方式和视觉增强方案。
+  - 避免后续实现继续沿用旧的 DECO 双目 RGB 假设或单目复制 fallback。
+  - 明确 DECO 的可保留部分是 action-token Flow Matching 主干，而不是原生视觉入口。
+  - 将高频采集、30Hz 训练数据、10Hz 控制输出三个时间尺度分层处理，降低数据转换与部署语义混乱的风险。
+
+### 同步头部自由度结论到技术决策文档
+- **任务**: 根据用户要求，将 `PLANS.md` 中已经记录的头部自由度 Inspector 结论同步到 `Content/DECO_Technical_Decisions.md`，不修改视觉策略、不修改整体阶段一方案。
+- **修改内容**:
+  - 修改 `Content/DECO_Technical_Decisions.md` 的最后更新时间为 `2026-05-13`。
+  - 更新 `2.5 28 维 state/action 映射`：
+    - 明确当前 rosbag 的 `/sensors_data_raw.joint_data.joint_q` 长度为 28，头部索引使用 V4x/V49 方案 `joint_q[26:28]`。
+    - 记录当前样本头部固定姿态均值约为 `[-0.001657, 0.433904]` rad，即 `[-0.09494°, 24.86089°]`，并记录 `/robot_head_motion_data` 的 `[0.0, 25.0]` 作为 pitch 约 25° 的交叉验证。
+    - 将 `observation.state[26:28]` 的策略改为使用每个 episode 内 `joint_q[26:28]` 的实测固定均值并广播到所有帧，不逐帧写入微小传感器抖动。
+    - 保持 `action[26:28]` 固定补 `[0.0, 0.0]`，表示阶段一暂不控制头部。
+  - 更新 state 来源表和缺失 topic 策略：
+    - 头部 state 来源改为 `/sensors_data_raw.joint_data.joint_q[26:28]` 的 episode 均值。
+    - 明确 `observation.state[26:28]` 默认不补零；只有读不到字段、字段异常或该 episode 无法计算均值时，才进入 review/fallback，不在未 review 时直接写成 `[0.0, 0.0]`。
+  - 更新 `3.3 当前等待：1.2 Review 与视觉策略冻结`：
+    - 增加头部自由度 Inspector 已完成结论。
+    - 明确视觉策略仍待后续讨论与冻结，本文档当前不把 `1.2` 整体标记为完成。
+- **目的**: 让技术决策文档与 `PLANS.md` 保持一致，避免后续实现者误用旧的“头部 state 直接补零”策略，同时保留后续继续调整视觉策略和阶段一整体方案的空间。
+
+### 记录头部自由度 Inspector 结论
+- **任务**: 根据用户运行 `inspect_deco_stage1_schema.py` 后生成的 `kuavo_data/inspect_outputs/inspector_outputs.txt`，将头部两个自由度的最终处理约束同步写入 `PLANS.md`。
+- **Inspector 关键结果**:
+  - `/sensors_data_raw.joint_data.joint_q` 长度为 28，说明当前 rosbag 使用 V4x/V49 索引方案，头部自由度位于 `joint_q[26:28]`。
+  - `joint_q[26:28]` 在当前样本中的均值约为 `[-0.001657, 0.433904]` rad，即 `[-0.09494°, 24.86089°]`。
+  - `/robot_head_motion_data` 第一条消息为 `[0.0, 25.0]`，与 `joint_q[26:28]` 中 pitch 约 25° 的结论一致。
+  - Inspector 使用严格阈值 `0.001 rad` 时给出 `stable_under_threshold: False`，主要原因是 yaw 的 range 约 `0.00192 rad`。从工程角度判断，该变化约 `0.11°`，更接近传感器微小抖动，而不是头部真实运动。
+- **修改内容**:
+  - 修改 `PLANS.md` 的 `1.2 Inspector 结果 Review 与视觉策略冻结`：
+    - 增加头部自由度 Inspector 结论，明确当前样本头部索引、均值角度、以及 `/robot_head_motion_data` 的交叉验证。
+    - 增加 state/action 初步冻结策略：`observation.state[26:28]` 使用每个 episode 内 `joint_q[26:28]` 的实测固定均值并广播到所有帧；不逐帧写入微小传感器抖动；`action[26:28]` 仍固定补 `[0.0, 0.0]`。
+  - 修改 `PLANS.md` 的 `1.5 动作空间 (28 维) 索引重组`：
+    - 将原先“读不到或不稳定则回退补零”的笼统描述，细化为当前样本使用 episode 固定均值；若后续 rosbag 读不到该字段，或确认头部存在真实运动，则暂停该策略并重新 review。
+- **目的**: 避免把真实头部 pitch 约 25° 的固定姿态误写成零点，同时避免把传感器微抖动逐帧写入训练 state。该记录只冻结头部自由度处理方式；整体阶段一方案和视觉策略后续仍可继续讨论与调整。
+
 ## 2026-05-12
+
+### 执行阶段一 1.1：新增 Rosbag Schema Inspector
+- **任务**: 根据阶段一计划，新增只读 Inspector，用于确认 Kuavo rosbag 的关键 topic schema、头部相机是否为单目/双目、以及头部两个自由度是否存在稳定锁定角度。
+- **修改内容**:
+  - 新建 `kuavo_data/inspect_deco_stage1_schema.py`：
+    - 默认读取 `data_example/vr_record_2026-04-15-15-57-47.bag`，并以只读方式打开 rosbag；未索引时仅尝试 `allow_unindexed=True`，不执行 reindex 写入。
+    - 打印用户当前记录 topic 的存在性、消息类型、消息数量、频率、首尾时间，帮助确认 rosbag schema。
+    - 解码 `/cam_h/color/image_raw/compressed` 第一帧，并导出 `data_example/inspect_outputs/cam_h_full.jpg`、`cam_h_left_half.jpg`、`cam_h_right_half.jpg`，用于人工判断头部图像是单目整图还是左右拼接双目图。
+    - 打印 `/cam_h`、`/cam_l`、`/cam_r` 的 CameraInfo 宽高、内参矩阵和畸变参数，辅助判断相机流语义。
+    - 统计 `/sensors_data_raw.joint_data.joint_q[26:28]` 的前若干样本、均值、角度制均值、最小值、最大值、range 和 std，并额外打印 V52 兼容候选 `joint_q[27:29]` 供 review。
+    - 检查 `/dexhand/state`、`/dexhand/touch_state`、`/control_robot_hand_position`、`/kuavo_arm_traj`、`/joint_cmd` 等关键字段长度是否满足后续 28 维 state/action 与 30 维 tactile 构造要求。
+  - 更新 `PLANS.md`：
+    - 将 `1.1 Rosbag Schema Inspector` 及其三个子项标记为已完成。
+    - 保持 `1.2 Inspector 结果 Review 与视觉策略冻结` 为未完成，等待用户运行 Inspector 并反馈结果后再冻结。
+  - 更新 `Content/DECO_Technical_Decisions.md`：
+    - 将 1.1 Inspector 状态改为已创建。
+    - 补充建议运行命令与需要反馈的输出章节。
+- **目的**: 在进入完整 DECO 数据转换脚本之前，先用可复现的只读检查脚本拿到视觉源和头部关节锁定方式的证据，避免在 schema 未确认时直接硬编码视觉拆分策略或头部补零策略。
+
+### 更新头部自由度 state/action 决策
+- **任务**: 根据用户确认，将头部两个自由度的处理策略从“state/action 直接补零”细化为“state 优先读取稳定实测固定角，失败后回退补零；action 暂时补零”。
+- **修改内容**:
+  - 修改 `PLANS.md` 阶段一技术决策：
+    - 在 `1.0 技术决策记录与方案冻结` 中明确头部 state 优先使用 Inspector 验证后的实测固定角度，action 补零。
+    - 在 `1.1 Rosbag Schema Inspector` 中补充对 `/sensors_data_raw.joint_data.joint_q[26:28]` 的前几帧、最小值和最大值统计要求。
+    - 在 `1.5 动作空间 (28 维) 索引重组` 中明确 `observation.state[26:28]` 的优先级：先用稳定实测固定角，读不到或不稳定时回退补零；`action[26:28]` 当前始终补零。
+  - 修改 `Content/DECO_Technical_Decisions.md`：
+    - 更新 28 维 state/action 映射表，头部 state 改为 `/sensors_data_raw` 优先、fallback 补零，头部 action 保持补零。
+    - 更新缺失 topic 策略，区分 head state 的条件补零和 head action 的固定补零。
+    - 更新 Inspector 要求，要求打印头部关节角切片的前若干帧、最小值、最大值和稳定性判断。
+- **目的**: 避免把真实固定姿态误写成数学零点，同时保留在 rosbag 字段不可用或不稳定时的鲁棒回退路径，使阶段一数据转换既尊重真实机器人状态，又不破坏 DECO 固定 28 维接口。
 
 ### 执行阶段一 1.0：冻结技术决策与更新计划结构
 - **任务**: 根据用户确认，将 DECO 阶段一任务正式拆分为技术决策记录、Rosbag Schema Inspector、Inspector 结果 Review、完整转换流程实现几个检查点，并沉淀可持续维护的技术决策文档。
