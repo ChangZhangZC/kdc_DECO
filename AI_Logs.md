@@ -2,6 +2,54 @@
 
 ## 2026-05-13
 
+### 新增 DECO LeRobot 数据集验证脚本并推进 1.7
+- **任务**: 根据用户提供的已转换示例数据集 `data_example/lerobot`，推进 `PLANS.md` 阶段一 1.7 数据一致性检查。当前机器仍遵守 No-Runtime 约束，不运行 Python validator；用户将在可运行环境执行并反馈结果。
+- **静态查看结果**:
+  - `data_example/lerobot` 目录包含 LeRobot v3 数据结构：`meta/info.json`、`meta/stats.json`、`meta/tasks.parquet`、`data/chunk-000/file-000.parquet`、RGB/depth video 文件。
+  - `meta/info.json` 中 `codebase_version` 为 `v3.0`，`fps` 为 `30`，`total_episodes` 为 `1`，`total_frames` 为 `331`。
+  - metadata 中存在 `observation.images.head_cam_h`、`observation.depth_h`、`observation.state`、`observation.tactile`、`action`。
+  - metadata shape 符合当前方案：state `(28,)`、action `(28,)`、tactile `(30,)`、RGB/depth video `(3, 480, 640)`。
+- **新增文件**:
+  - 新建 `kuavo_data/validate_deco_lerobot_dataset.py`：
+    - 不依赖 ROS1、rospy、rosbag 或 kuavo_msgs，只验证已经转换好的 LeRobot 数据集。
+    - 基础检查读取 `meta/info.json`，验证 codebase、fps、episode/frame/task 数、必需 feature、shape 和 feature names。
+    - 文件结构检查验证 data parquet、episode metadata parquet、tasks parquet、stats json、RGB/depth mp4 是否存在。
+    - 若环境中存在 `numpy/pandas/pyarrow`，进一步读取 parquet 检查 timestamp 约 30Hz、state/action/tactile 维度与有限值、head action 是否全零、head state 是否近似固定、tactile 是否异常全零。
+    - 若环境中存在 `cv2`，进一步打开 RGB/depth video 首帧，检查首帧尺寸是否为 640×480。
+    - 输出 Markdown report，默认写入 `<root>/deco_validation_report.md`；存在 FAIL 时进程返回非零退出码。
+- **同步文档**:
+  - 修改 `README_DECO.md`：
+    - 增加 validator 运行命令：`python kuavo_data/validate_deco_lerobot_dataset.py --root data_example/lerobot --report data_example/lerobot/deco_validation_report.md`。
+    - 增加 `--metadata-only` 命令，用于缺少 parquet/video 依赖时先做基础结构检查。
+  - 修改 `PLANS.md`：
+    - 在 1.7 中记录用户已提供 `data_example/lerobot` 作为首个检查对象。
+    - 将“新建 validator 脚本”和“静态查看 metadata”标记为完成。
+    - 保持 1.7 整体未完成，等待用户运行 validator 并反馈结果后再确认。
+- **未执行项**:
+  - 未运行 `kuavo_data/validate_deco_lerobot_dataset.py`。
+  - 未读取 parquet 数值内容。
+  - 未打开 mp4 视频做帧级检查。
+
+### 修复 depth topic 名称与解码器不匹配问题（首次试跑报错修复）
+
+- **问题描述**: 首次在真实 rosbag 上运行 `CvtRosbag2Lerobot_DECO.py` 时报错 `rosbag 缺少 DECO 必需数据：['observation.depth_h']`。经用户提供 rosbag info 截图确认，实际 rosbag 中的 depth topic 为 `/cam_h/depth/image_raw/compressed`（消息类型 `sensor_msgs/CompressedImage`），而非配置中写的 `/cam_h/depth/image_raw/compressedDepth`（`sensor_msgs/CompressedDepth`）。
+- **根因分析**: 两种消息格式的二进制布局不同：
+  - `CompressedDepth`: `msg.data` 前面有若干字节的配置头（quantization info 等），需要先搜索 PNG magic header (`\x89PNG`) 跳过前缀才能解码。这是原 ACT/DP 脚本 `process_depth_image` 的做法。
+  - `CompressedImage`: `msg.data` 就是标准的 PNG/JPEG 缓冲区，直接 `cv2.imdecode` 即可。
+- **修改文件 1**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - `deco.depth_topic`: 从 `/cam_h/depth/image_raw/compressedDepth` 改为 `/cam_h/depth/image_raw/compressed`
+  - `deco.depth_encoding`: 从 `compressedDepth_png` 改为 `compressed_image`
+  - 增加中文注释说明两种格式的区别
+- **修改文件 2**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 在 `DecoRosbagReader` 类中新增方法 `process_compressed_depth_image(self, msg)`：
+    - 使用 `np.frombuffer(msg.data, np.uint8)` + `cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)` 直接解码
+    - 包含 `dtype != np.uint16` 的警告检查
+    - 使用 `cv2.INTER_NEAREST` resize 到 `(kuavo.RESIZE_W, kuavo.RESIZE_H)`
+  - 在 `build_topic_process_map` 方法的 `depth_encoding` 判断中新增 `compressed_image` 分支，指向新方法
+  - 错误提示文案更新为"当前支持 compressedDepth_png、compressed_image 或 raw_16uc1"
+- **未修改文件**: `kuavo_data/common/kuavo_dataset.py`（守住公共 reader 不动的约束）
+
+
 ### 完善 DECO 数据 YAML 的路径语义与验证约定
 - **任务**: 根据用户要求，对比原始 `configs/data/KuavoRosbag2Lerobot.yaml`、训练配置和部署配置后，完善 `configs/data/KuavoRosbag2Lerobot_deco.yaml`。用户明确要求不要额外显式展开 topic 字段，因此本次只补充路径语义和后续验证约定，不修改 topic map。
 - **修改内容**:

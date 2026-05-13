@@ -63,8 +63,11 @@ deco:
   rgb_key: head_cam_h
   rgb_topic: /cam_h/color/image_raw/compressed
   depth_key: depth_h
-  depth_topic: /cam_h/depth/image_raw/compressedDepth
-  depth_encoding: compressedDepth_png
+  # 实际 rosbag 中的 depth topic 为 /cam_h/depth/image_raw/compressed（sensor_msgs/CompressedImage），
+  # 而非 /cam_h/depth/image_raw/compressedDepth（sensor_msgs/CompressedDepth）。
+  # compressed_image 解码器直接使用 cv2.imdecode，无需跳过 compressedDepth 的配置头。
+  depth_topic: /cam_h/depth/image_raw/compressed
+  depth_encoding: compressed_image
 
   # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
   raw_depth_topic: /camera/depth/image_rect_raw

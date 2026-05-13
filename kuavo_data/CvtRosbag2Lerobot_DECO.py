@@ -432,13 +432,18 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         hand_action_topic = str(cfg_select(cfg, "deco.hand_action_topic", "/control_robot_hand_position"))
 
         if self.depth_encoding == "compressedDepth_png":
+            # compressedDepth 格式：msg.data 前面有配置头，需要跳过找到 PNG magic header。
             depth_process_fn = self._msg_processer.process_depth_image
+        elif self.depth_encoding == "compressed_image":
+            # CompressedImage 格式：msg.data 就是标准 PNG/JPEG 缓冲区，直接 cv2.imdecode。
+            # 实际 rosbag 中 /cam_h/depth/image_raw/compressed 使用的就是此格式。
+            depth_process_fn = self.process_compressed_depth_image
         elif self.depth_encoding == "raw_16uc1":
             depth_process_fn = self.process_raw_depth_image
         else:
             raise ValueError(
                 f"不支持的 depth_encoding={self.depth_encoding}；"
-                "当前仅支持 compressedDepth_png 或 raw_16uc1"
+                "当前支持 compressedDepth_png、compressed_image 或 raw_16uc1"
             )
 
         topic_map: dict[str, tuple[str, Any]] = {
@@ -455,6 +460,34 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         if self.allow_raw_depth_fallback and self.depth_encoding != "raw_16uc1":
             topic_map["observation.depth_h_raw"] = (raw_depth_topic, self.process_raw_depth_image)
         return topic_map
+
+    def process_compressed_depth_image(self, msg: Any) -> dict[str, Any]:
+        """
+        处理 sensor_msgs/CompressedImage 格式的 depth 图像。
+
+        与 process_depth_image (compressedDepth) 的区别：
+        - compressedDepth：msg.data 前面有若干字节的配置头（quantization info 等），
+          需要先搜索 PNG magic header (\x89PNG) 跳过前缀才能解码。
+        - CompressedImage：msg.data 就是完整的 PNG/JPEG 压缩缓冲区，直接 cv2.imdecode 即可。
+
+        实际 rosbag 中 /cam_h/depth/image_raw/compressed 使用的就是此 CompressedImage 格式，
+        消息类型为 sensor_msgs/CompressedImage，编码通常是 16-bit PNG。
+        """
+
+        np_arr = np.frombuffer(msg.data, np.uint8)
+        image = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)  # 直接解码，返回 uint16 深度图
+        if image is None:
+            self.logger.warning("compressed depth image 解码失败，跳过此帧")
+            return None
+
+        if image.dtype != np.uint16:
+            self.logger.warning(
+                "compressed depth image dtype=%s，期望 uint16；继续处理但精度可能下降",
+                image.dtype,
+            )
+
+        depth_image = cv2.resize(image, (kuavo.RESIZE_W, kuavo.RESIZE_H), interpolation=cv2.INTER_NEAREST)
+        return {"data": depth_image, "timestamp": msg.header.stamp.to_sec()}
 
     def process_raw_depth_image(self, msg: Any) -> dict[str, Any]:
         """raw 16UC1 depth fallback，默认不开启。"""

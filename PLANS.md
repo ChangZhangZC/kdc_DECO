@@ -98,8 +98,12 @@ Kuavo rosbag RGB + depth + state + action + tactile
   - [x] hand action 继承现有清洗逻辑：使用 `/control_robot_hand_position` 的左右手目标位置；DECO 配置中固定使用左右手各 6 DoF，不使用 ACT/DP 默认的 `dex_dof_needed: 1` 压缩策略。
   - [x] `observation.state[26:28]` 使用每个 episode 的 `joint_q[26:28]` 实测固定均值；`action[26:28]` 当前固定补 `[0.0, 0.0]`，表示阶段一暂不控制头部。
 - [ ] **1.7 单 rosbag 转换试跑与数据一致性检查**
-  - [ ] `CvtRosbag2Lerobot_DECO.py` 完成后，先选择一个短 rosbag 在允许执行的环境中转换为临时 LeRobot 数据集；当前 Codex 机器遵守 No-Runtime 约束，只负责提供脚本与静态检查，不直接运行转换。
-  - [ ] 新建 `kuavo_data/validate_deco_lerobot_dataset.py`，用于检查转换结果是否符合 Kuavo-DECO 方案。
+  - [x] 用户已提供已转换示例数据集 `data_example/lerobot`，可作为 1.7 validator 的首个检查对象。
+  - [x] 静态查看 `data_example/lerobot/meta/info.json`，确认 `fps=30`、`total_episodes=1`、`total_frames=331`，且 metadata 中包含 RGB、depth、state、tactile、action 字段。
+  - [x] 新建 `kuavo_data/validate_deco_lerobot_dataset.py`，用于检查转换结果是否符合 Kuavo-DECO 方案；该脚本不依赖 ROS1，也不读取 rosbag。
+  - [x] 用户已首次运行 validator 并反馈 `data_example/lerobot/deco_validation_report.md`；当前 metadata、schema 与文件结构检查通过，但 parquet 数值检查被运行环境缺少 `pyarrow/fastparquet` 阻塞，video probe 被 `cv2/protobuf` 环境问题跳过。
+  - [ ] **Debug Hook（后续数据状态复查）**：1.7 暂不关闭；训练前必须在具备 parquet engine 的环境中补跑完整 validator，确认 timestamp、state/action/tactile 数值语义与头部处理逻辑。
+  - [ ] 在允许执行的环境中补跑完整 validator，并把控制台输出与 `deco_validation_report.md` 反馈回来；当前 Codex 机器遵守 No-Runtime 约束，不直接运行 Python。
   - [ ] 检查数据集字段：`observation.images.head_cam_h`、depth feature、`observation.state`、`observation.tactile`、`action` 必须存在。
   - [ ] 检查维度：RGB `(3,H,W)`、depth `(1,H,W)` 或等价 depth shape、state `(28,)`、tactile `(30,)`、action `(28,)`。
   - [ ] 检查 depth 来源与编码：默认确认 `/cam_h/depth/image_raw/compressedDepth` 被正确解码为 `uint16` depth；若启用 raw `16UC1` fallback，则额外检查 `height/width/step/is_bigendian/data` 解析正确。

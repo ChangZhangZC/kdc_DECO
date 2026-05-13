@@ -67,8 +67,24 @@ python kuavo_data/CvtRosbag2Lerobot_DECO.py \
 - 头部 state 是否为每个 episode 的 `joint_q[26:28]` 均值广播，头部 action 是否补零。
 - arm action 是否按 `/kuavo_arm_traj_synced`、`/kuavo_arm_traj`、`/joint_cmd` 优先级选取。
 
+当前 validator 已提供基础 metadata 检查和可选 parquet/video 深度检查。它不依赖 ROS1，也不读取 `.bag`：
+
+```bash
+python kuavo_data/validate_deco_lerobot_dataset.py \
+  --root data_example/lerobot \
+  --report data_example/lerobot/deco_validation_report.md
+```
+
+如果当前环境缺少 `pandas/pyarrow/numpy/cv2`，可以先只做 metadata 和文件结构检查：
+
+```bash
+python kuavo_data/validate_deco_lerobot_dataset.py \
+  --root data_example/lerobot \
+  --metadata-only
+```
+
 ## 当前限制
 
 - 训练端 DECO wrapper 尚未完成；不要直接把该数据集喂给未适配 RGB-D/tactile schema 的旧 DECO 训练入口。
 - 部署端 10Hz 控制频率不在洗数据阶段处理，后续由 wrapper/deploy action queue 使用 `action_stride=3` 完成。
-- 当前新增脚本仅完成静态审查，尚未在本机执行 rosbag 转换。
+- 当前新增转换脚本与 validator 仅完成静态审查，尚未在本机执行 rosbag 转换或 validator。
