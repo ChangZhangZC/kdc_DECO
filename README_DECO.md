@@ -1,6 +1,6 @@
 # DECO Model Integration Guide
 
-本文档记录 Kuavo-DECO 集成的使用方式。当前已完成阶段一的静态实现：新增 DECO 专用数据配置与 rosbag -> LeRobot 转换脚本；训练 wrapper、模型手术和部署 wrapper 仍以后续阶段为准。
+本文档记录 Kuavo-DECO 集成的使用方式。当前已完成阶段一的数据转换静态实现，以及阶段二的 DECO 源码复制归档与依赖记录；训练 wrapper、模型手术和部署 wrapper 仍以后续阶段为准。
 
 ## 阶段一：RGB-D 数据转换
 
@@ -28,12 +28,14 @@ configs/data/KuavoRosbag2Lerobot_deco.yaml
 - `dataset.use_depth: true`
 - `dataset.dex_dof_needed: 6`
 - `deco.rgb_topic: /cam_h/color/image_raw/compressed`
-- `deco.depth_topic: /cam_h/depth/image_raw/compressedDepth`
-- `deco.depth_encoding: compressedDepth_png`
+- `deco.depth_topic: /cam_h/depth/image_raw/compressed`
+- `deco.depth_encoding: compressed_image`
 - `deco.raw_depth_topic: /camera/depth/image_rect_raw`
 - `deco.allow_raw_depth_fallback: false`
 
-`/camera/depth/image_rect_raw` 与 `raw_16uc1` 目前只是候选 fallback。未经 Inspector 或 validator 复核时，不应替代默认的 ACT/DP depth topic。
+当前实际 rosbag 中的头部 depth 使用 `/cam_h/depth/image_raw/compressed`，消息语义为 `sensor_msgs/CompressedImage`，因此默认使用 `compressed_image` decoder，直接通过 `cv2.imdecode(..., cv2.IMREAD_UNCHANGED)` 解码图像缓冲区。
+
+`/cam_h/depth/image_raw/compressedDepth`、`compressedDepth_png`、`/camera/depth/image_rect_raw` 与 `raw_16uc1` 目前只是候选 fallback。未经 Inspector 或 validator 复核时，不应替代当前默认 depth topic。
 
 ### 手动运行流程
 
@@ -63,7 +65,7 @@ python kuavo_data/CvtRosbag2Lerobot_DECO.py \
 - 字段是否齐全：RGB、depth、state、tactile、action。
 - 维度是否符合：state/action `(28,)`，tactile `(30,)`。
 - 目标时间轴是否约为 30Hz。
-- depth 是否来自默认 compressedDepth PNG 解码链路。
+- depth 是否来自默认 `/cam_h/depth/image_raw/compressed`，并通过 `compressed_image` decoder 正确解码。
 - 头部 state 是否为每个 episode 的 `joint_q[26:28]` 均值广播，头部 action 是否补零。
 - arm action 是否按 `/kuavo_arm_traj_synced`、`/kuavo_arm_traj`、`/joint_cmd` 优先级选取。
 
@@ -82,6 +84,61 @@ python kuavo_data/validate_deco_lerobot_dataset.py \
   --root data_example/lerobot \
   --metadata-only
 ```
+
+## 阶段二：源码复制与路径约定
+
+### 源码位置
+
+当前保留仓库根目录下的原始 `DECO/` 文件夹不变，并将其复制到：
+
+```bash
+third_party/deco
+```
+
+后续 Kuavo-DECO 集成应以 `third_party/deco/` 作为第三方源码副本；根目录 `DECO/` 仅作为原始参考副本保留，避免后续适配过程中混淆修改来源。
+
+### 与 LeRobot 的关系
+
+ACT 和 Diffusion Policy 当前来自 LeRobot submodule 内部：
+
+```bash
+third_party/lerobot/src/lerobot/policies/act
+third_party/lerobot/src/lerobot/policies/diffusion
+```
+
+Kuavo 对 ACT/DP 的适配不直接修改 `third_party/lerobot/`，而是在 `kuavo_train/wrapper/policy/act/` 与 `kuavo_train/wrapper/policy/diffusion/` 中继承并封装原始 policy。DECO 后续也沿用该模式：不注册到 LeRobot submodule，不修改 `third_party/lerobot/`，而是在后续 `kuavo_train/wrapper/policy/deco/` 中接入 `third_party/deco/`。
+
+### Python 路径约定
+
+DECO 原始源码内部使用了类似下面的绝对导入：
+
+```python
+from models.deco.deco import DECO
+from models.deco.img_encoder import ResNet34
+```
+
+后续 wrapper 接入时，应在 wrapper 顶部把 `third_party/deco` 注入 `sys.path`，使这些导入继续按原始 DECO 结构工作：
+
+```python
+import sys
+from pathlib import Path
+
+DECO_ROOT = Path(__file__).resolve().parents[4] / "third_party" / "deco"
+if str(DECO_ROOT) not in sys.path:
+    sys.path.insert(0, str(DECO_ROOT))
+```
+
+该路径约定只说明后续 wrapper 的接入方式；阶段二不实现 `DECOPolicyWrapper`，也不执行训练或 forward 验证。
+
+### 依赖记录
+
+DECO 原始依赖见：
+
+```bash
+third_party/deco/requirements.txt
+```
+
+根目录 `requirements_DECO.txt` 记录了 DECO 原始依赖与 Kuavo/LeRobot 环境的兼容说明。当前阶段不安装依赖；`torch`、`torchvision`、`diffusers`、`huggingface-hub` 等核心包应以后续实际 Kuavo/LeRobot 训练环境为准，不在本阶段强制切换版本。
 
 ## 当前限制
 

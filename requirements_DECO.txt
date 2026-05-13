@@ -1,2 +1,38 @@
 # DECO Model Dependencies
-# This file contains the dependencies required specifically for the DECO model integration.
+#
+# 说明：
+# - 本文件用于记录 Kuavo-DECO 集成所需的依赖来源和兼容边界。
+# - 当前阶段只做静态整理，不在本机执行 pip/conda 安装。
+# - 不建议直接用本文件覆盖现有 Kuavo/LeRobot 环境；尤其 torch、torchvision、
+#   diffusers、huggingface-hub 等核心库应以后续实际训练环境为准。
+#
+# DECO 原始依赖文件：
+# - third_party/deco/requirements.txt
+#
+# DECO 上游原始 pin，仅作版本参考：
+# - numpy==2.2.6
+# - pandas==2.3.3
+# - scipy==1.15.3
+# - torch==2.6.0
+# - torchvision==0.21.0
+# - transformers==4.57.3
+# - diffusers==0.36.0
+# - Pillow==12.0.0
+# - PyYAML==6.0.3
+# - einops==0.8.1
+# - tqdm==4.67.1
+# - huggingface-hub==0.36.0
+#
+# 当前 Kuavo/LeRobot 环境静态对照：
+# - requirements_total.txt 已包含 numpy、pandas、scipy、torch、torchvision、
+#   diffusers、Pillow/pillow、PyYAML、einops、tqdm、huggingface-hub。
+# - third_party/lerobot/requirements-ubuntu.txt 已包含 transformers。
+# - AGX Orin 环境中的 numpy/torch/torchvision 版本可能与桌面环境不同，
+#   因此这些核心数值/深度学习库不要在 DECO 集成阶段单独强制改版。
+#
+# 后续阶段三/四接入 wrapper 前需要人工确认：
+# - DECO 主干实际使用 torch、numpy、einops。
+# - DECO 原始 dataset/train/inference 路径还会使用 pandas、Pillow、torchvision、
+#   scipy、matplotlib、tqdm、PyYAML。
+# - DECO 原始 DP 分支使用 diffusers；Kuavo-DECO 主路线若只接入 models/deco，
+#   可暂不新增 DP 分支专属依赖。

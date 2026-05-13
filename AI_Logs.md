@@ -2,6 +2,33 @@
 
 ## 2026-05-13
 
+### 执行阶段二：复制 DECO 源码到 third_party/deco 并记录依赖边界
+- **任务**: 根据用户确认，执行 Kuavo-DECO 阶段二工具链整合。用户明确要求保留根目录 `DECO/` 不变，后续采用复制而不是移动；若 `.DS_Store` 跟随目录复制，则目标副本中不应保留该文件。
+- **复制结果**:
+  - 新增 `third_party/deco/`，作为 DECO 第三方源码副本，与现有 `third_party/lerobot/` 并列。
+  - 源码副本来自根目录 `DECO/`，包括 `models/`、`config/`、`deploy/`、`assets/`、`utils/`、`train.py`、`dataset.py`、`inference.py`、`README.MD`、`LICENSE`、`requirements.txt` 与 `ACTION_SPACE_ANATOMY.md` 等内容。
+  - 保留根目录 `DECO/` 原样不动，后续 Kuavo 集成默认以 `third_party/deco/` 作为接入源，根目录 `DECO/` 仅作为原始参考副本。
+  - 复制时排除 `.DS_Store`，并静态确认 `third_party/deco/` 下不存在 `.DS_Store`。
+- **文档修改**:
+  - 修改 `PLANS.md`：
+    - 将阶段二从“物理迁移/移动”改为“复制归档”。
+    - 将 `2.1` 标记为完成，记录保留 `DECO/`、复制到 `third_party/deco/`、不修改 `third_party/lerobot/`、不保留 `.DS_Store` 的约束。
+    - 将 `2.2` 标记为完成，记录后续 wrapper 通过将 `third_party/deco` 加入 `sys.path` 来兼容 DECO 原始 `from models.xxx` 导入方式；阶段二只做路径约定，不写 wrapper。
+  - 修改 `README_DECO.md`：
+    - 新增“阶段二：源码复制与路径约定”章节。
+    - 说明 `DECO/` 与 `third_party/deco/` 的职责边界。
+    - 说明 ACT/DP 当前来自 LeRobot submodule，而 Kuavo 的策略适配通过 `kuavo_train/wrapper/policy/...` 完成，DECO 后续也沿用 wrapper 接入模式。
+    - 记录后续 wrapper 推荐的 `sys.path` 注入方式。
+  - 修改 `requirements_DECO.txt`：
+    - 记录 `third_party/deco/requirements.txt` 中的 DECO 上游原始依赖 pin。
+    - 对照当前 Kuavo/LeRobot 依赖文件，说明多数核心依赖已由现有环境覆盖。
+    - 明确当前阶段不安装依赖，不强制切换 `torch`、`torchvision`、`diffusers`、`huggingface-hub` 等核心库版本。
+- **未执行项**:
+  - 未运行 Python 脚本、未执行训练、未执行 forward、未运行 validator。
+  - 未安装或升级任何依赖。
+  - 未修改 `third_party/lerobot/`。
+  - 未实现 `kuavo_train/wrapper/policy/deco/`，该部分保留到阶段三/四。
+
 ### 新增 DECO LeRobot 数据集验证脚本并推进 1.7
 - **任务**: 根据用户提供的已转换示例数据集 `data_example/lerobot`，推进 `PLANS.md` 阶段一 1.7 数据一致性检查。当前机器仍遵守 No-Runtime 约束，不运行 Python validator；用户将在可运行环境执行并反馈结果。
 - **静态查看结果**:
