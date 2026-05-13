@@ -2,6 +2,89 @@
 
 ## 2026-05-13
 
+### 完善 DECO 数据 YAML 的路径语义与验证约定
+- **任务**: 根据用户要求，对比原始 `configs/data/KuavoRosbag2Lerobot.yaml`、训练配置和部署配置后，完善 `configs/data/KuavoRosbag2Lerobot_deco.yaml`。用户明确要求不要额外显式展开 topic 字段，因此本次只补充路径语义和后续验证约定，不修改 topic map。
+- **修改内容**:
+  - 修改 `configs/data/KuavoRosbag2Lerobot_deco.yaml`：
+    - 为 `rosbag.rosbag_dir`、`rosbag.num_used`、`rosbag.lerobot_dir` 增加中文注释。
+    - 将 `rosbag.lerobot_dir` 示例从 `/your/path/to/your/lerobotdata_deco/` 调整为 `/your/path/to/your/lerobotdata_deco/lerobot`，使其直接对应后续训练配置中的 `root` 目录，减少训练时路径填错。
+    - 注释说明：如果使用绝对路径，应直接指向最终 LeRobot dataset root；如果使用相对路径，脚本会按 `<rosbag_dir>/../<lerobot_dir>/lerobot` 生成，以兼容原 ACT/DP 转换脚本目录习惯。
+    - 新增 `validation` 配置块，作为后续 `validate_deco_lerobot_dataset.py` 的检查约定，包含 `expected_train_hz: 30`、RGB/depth key、state/action/tactile 维度、是否要求触觉、是否要求 depth、是否要求头部 state 均值与头部 action 补零。
+  - 修改 `README_DECO.md`：
+    - 将手动运行命令中的 `rosbag.lerobot_dir` 示例同步为 `/path/to/output_lerobot_deco/lerobot`。
+    - 补充说明该路径应对应后续训练配置 `root` 读取的最终目录；相对路径仍按旧脚本习惯展开。
+- **未修改内容**:
+  - 未新增 `state_topic`、`hand_state_topic`、`arm_traj_topic` 等显式 topic 字段，遵守用户“topic 不要显示写”的要求。
+  - 未修改 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
+  - 未运行 Python、未执行 rosbag 转换、未执行训练或 validator。
+
+### 执行阶段一：新增 DECO 数据配置与 rosbag 转 LeRobot 转换脚本
+- **任务**: 根据用户确认，开始执行阶段一数据引擎任务，新增 DECO 专用 YAML 与 `_DECO` 洗数据脚本。遵守当前机器 No-Runtime 约束，只做静态代码修改与逻辑审查，不运行 Python、不转换 rosbag、不训练模型。
+- **新增文件**:
+  - 新建 `configs/data/KuavoRosbag2Lerobot_deco.yaml`：
+    - 默认 `dataset.train_hz: 30`、`dataset.use_depth: true`、`dataset.eef_type: qiangnao`、`dataset.which_arm: both`、`dataset.dex_dof_needed: 6`。
+    - 默认 RGB topic 为 `/cam_h/color/image_raw/compressed`。
+    - 默认 depth topic 为 `/cam_h/depth/image_raw/compressedDepth`，默认 `depth_encoding: compressedDepth_png`。
+    - 将 `/camera/depth/image_rect_raw` 与 `raw_16uc1` 仅保留为配置化 fallback，并设置 `allow_raw_depth_fallback: false`，防止未经复核时替代现有 ACT/DP depth 链路。
+    - 记录 DECO 固定 schema：`state_dim: 28`、`action_dim: 28`、`tactile_dim: 30`。
+    - 记录 arm action 优先级：`/kuavo_arm_traj_synced` -> `/kuavo_arm_traj` -> `/joint_cmd`。
+    - 记录触觉 topic `/dexhand/touch_state` 与 `tactile_force_scale: 100.0`。
+    - 记录头部策略：state 使用 `joint_q[26:28]` episode 均值，action 固定 `[0.0, 0.0]`。
+  - 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`：
+    - 新增 DECO 专用 `DecoRosbagReader`，继承 `KuavoRosbagReader` 的 bag 列表与未索引 bag 打开保护逻辑，但不修改公共 `kuavo_data/common/kuavo_dataset.py`。
+    - 保留原脚本关键保护：使用 bag time 覆盖 header stamp、跳过无法解码的 depth 帧后统一做必需字段检查、arm action gap 检测、action range clamp、失败 bag 写入 `error_DECO.txt`。
+    - 使用真实时间戳生成 30Hz 目标时间轴，不依赖 `MAIN_TIMELINE_FPS // TRAIN_HZ` 整数跳帧假设，以兼容 100Hz 或更高频采集流。
+    - 对 RGB、depth、state、hand state、arm action、hand action、tactile 使用 nearest-neighbor 对齐，并截取所有必需模态共同覆盖的时间段。
+    - 构造 `observation.state` 28 维：左臂 `joint_q[12:19]`、左手 `/dexhand/state[:6]`、右臂 `joint_q[19:26]`、右手 `/dexhand/state[6:12]`、头部 episode 均值 `joint_q[26:28]`。
+    - 构造 `action` 28 维：左/右臂优先使用 `/kuavo_arm_traj_synced` 或 `/kuavo_arm_traj`，断流或缺失时 fallback 到 `/joint_cmd`；左右手使用 `/control_robot_hand_position`；头部补零。
+    - 构造 `observation.tactile` 30 维：左右手各 5 指、每指 `normal_force1/2/3`，除以 100 转为牛顿；触觉字段缺失时显式报错，不静默补零。
+    - depth 默认复用 Kuavo compressedDepth PNG decoder；同时实现 `raw_16uc1` decoder 作为配置化候选。
+    - 当前 LeRobot 磁盘 schema 中将 depth 保存为 3-channel depth image，以兼容 image/video writer；后续 wrapper 需按 depth 语义还原到 1-channel depth backbone。
+- **同步文档**:
+  - 修改 `PLANS.md`：
+    - 将阶段一 `1.3`、`1.4`、`1.5`、`1.6` 与阶段五 `5.2` 标记为已完成。
+    - 将 Done When 中 DECO data yaml 与 converter 静态审查项标记为已完成。
+    - 修正动作空间描述，明确 raw `joint_q` 中机械臂来源为 `joint_q[12:19]` 和 `joint_q[19:26]`，手部来自 dexhand topic，而不是把手部误写成 `joint_q` 内部字段。
+  - 修改 `Content/DECO_Technical_Decisions.md`：
+    - 新增 `3.10 阶段一实现状态`，记录本次新增 YAML、转换脚本、depth 3-channel 兼容策略、raw depth fallback 状态和 No-Runtime 约束。
+    - 将待实现清单中的数据 YAML 与 converter 项标记为已完成。
+  - 修改 `README_DECO.md`：
+    - 新增阶段一 RGB-D 数据转换说明、目标字段、关键配置、手动运行命令、运行后检查项和当前限制。
+- **静态复核结论**:
+  - 已静态确认当前 LeRobot 本地源码路径为 `lerobot.datasets.*`，脚本同时保留旧版 `lerobot.common.datasets.*` fallback。
+  - 已静态确认本地 `KuavoRosbagReader` 的 bag 打开函数为 `load_raw_rosbag()`，bag 列表函数为 `list_bag_files()`，并在 DECO 脚本中对齐。
+  - 已静态确认本地 LeRobot `validate_frame(frame, features)` 是工具函数，DECO 脚本使用该函数做 frame schema 检查。
+- **未执行项**:
+  - 未运行 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
+  - 未转换任何 rosbag。
+  - 未运行训练、forward、部署或 validator。
+
+### 修正 depth 决策为优先复用现有 Kuavo 清洗链路
+- **任务**: 根据用户反馈，修正此前关于 depth topic 的计划表述，避免把用户补充但可能不准确的 `/camera/depth/image_rect_raw` 直接冻结为默认方案；将 depth 相关策略调整为优先复用现有 ACT/DP 清洗脚本逻辑。
+- **静态确认**:
+  - 现有 `kuavo_data/common/kuavo_dataset.py` 中，头部 RGB 默认来自 `/cam_h/color/image_raw/compressed`。
+  - 现有 depth 默认来自 `/cam_h/depth/image_raw/compressedDepth`，处理函数为 `process_depth_image`，其逻辑是在 compressedDepth 数据中定位 PNG header，再用 `cv2.imdecode(..., cv2.IMREAD_UNCHANGED)` 解码为 `uint16` depth。
+  - 现有 `CvtRosbag2Lerobot.py` 中，state 来自 `/sensors_data_raw`，arm action 先读 `/joint_cmd`，随后被 `/kuavo_arm_traj` 或 `/kuavo_arm_traj_synced` 覆盖，hand action 来自 `/control_robot_hand_position`。
+- **修改内容**:
+  - 修改 `PLANS.md`：
+    - 在 `0.2 已确认技术决策` 中明确 depth topic 与 decoder 默认继承 Kuavo 现有 ACT/DP 清洗链路：`/cam_h/depth/image_raw/compressedDepth` 与 compressedDepth PNG 解码逻辑。
+    - 将 `/camera/depth/image_rect_raw`、`encoding=16UC1` 降级为待 Inspector/validator 复核的 raw depth fallback，不作为当前冻结默认值。
+    - 在阶段一 `1.3` 和 `1.4` 中补充：DECO converter 优先复用现有 `KuavoRosbagReader` 的 topic map、message processor 和 nearest-neighbor 对齐思路；仅在 30Hz 目标时间轴、DECO 固定 schema、30 维触觉、28 维 state/action、depth 单通道语义处做专用适配。
+    - 在 `1.4` 中新增两类 depth decoder 计划：默认 `compressedDepth_png`，候选 `raw_16uc1`。
+    - 在 `1.6` 中记录 arm action 继承现有清洗逻辑：优先 `/kuavo_arm_traj_synced`，否则 `/kuavo_arm_traj`，`/joint_cmd` 只作为 fallback 或一致性检查；hand action 使用 `/control_robot_hand_position`；DECO 固定使用左右手各 6 DoF，不沿用 `dex_dof_needed: 1` 压缩策略。
+    - 在 `1.7` validation checkpoint 中新增 depth 来源、编码和 decoder 检查。
+    - 在 `5.2` 数据配置任务中新增默认 `rgb_topic`、`depth_topic`、`depth_encoding`，并说明 raw `16UC1` topic 只是候选。
+  - 修改 `Content/DECO_Technical_Decisions.md`：
+    - 在总体原则中新增“数据清洗实现向 Kuavo 现有链路靠齐”。
+    - 在数据配置与 RGB-D 视觉源策略中明确默认 depth topic 为 `/cam_h/depth/image_raw/compressedDepth`，默认 decoder 为 compressedDepth PNG 解码。
+    - 将 `/camera/depth/image_rect_raw` / `raw_16uc1` 记录为未冻结候选，必须由 Inspector/validator 复核后启用。
+    - 在 depth 增强策略中说明旧脚本存在将 depth 归一化为 `uint8` 并 repeat 成 3 通道的兼容做法；Kuavo-DECO 主路线仍保留 1-channel depth backbone 语义，除非 wrapper/config 明确声明兼容模式。
+    - 在 action 来源表中同步现有脚本逻辑：`/kuavo_arm_traj_synced` 优先，其次 `/kuavo_arm_traj`，`/joint_cmd` fallback；hand action 使用 `/control_robot_hand_position`。
+- **目的**:
+  - 避免在 depth topic 仍不确定时引入新的 raw depth 路线，降低阶段一数据转换风险。
+  - 最大限度复用已经服务 ACT/DP 的 Kuavo 清洗链路，只在 DECO 不同的 schema、频率、触觉和模型输入语义上做必要改造。
+  - 保留 raw `16UC1` 支持的扩展口，但通过配置和 validation 明确它不是当前默认路径。
+
 ### 补充 tactile LoRA 训练策略与分阶段验证检查点
 - **任务**: 根据用户确认，继续补充 `PLANS.md` 和 `Content/DECO_Technical_Decisions.md`，将 DECO 源码中的触觉低秩 adapter 机制、配置开关、数据转换验证点和仿真/实机分阶段检查流程纳入当前 Kuavo-DECO 总体方案。
 - **源码确认**:

@@ -1,0 +1,117 @@
+hydra:
+  run:
+    dir: ./outputs/data_cvt_hydra_save/deco_singlerun/${now:%Y%m%d_%H%M%S}
+  sweep:
+    dir: ./outputs/data_cvt_hydra_save/deco_multirun/${now:%Y%m%d_%H%M%S}
+    subdir: ${hydra:job.override_dirname}
+
+
+# Kuavo rosbag -> LeRobot 数据转换配置，DECO 专用版本。
+# 设计原则：
+# 1. 尽量复用现有 ACT/DP 清洗链路中的 topic 和 decoder。
+# 2. 仅在 DECO 固定 schema、30Hz 时间轴、30 维触觉、28 维 state/action 处做专用适配。
+# 3. 当前机器只做代码修改和静态审查，不在 Codex 中直接运行转换。
+
+rosbag:
+  # rosbag 文件目录，目录下应包含一个或多个 .bag 文件。
+  rosbag_dir: /path/to/your/rosbag
+  # 使用的 rosbag 数量；null 表示使用目录下全部 bag。
+  num_used: null
+  # LeRobot 数据集输出 root。推荐使用绝对路径并直接指向训练配置 root 会读取的最终目录。
+  # 推荐形态：/your/path/to/your/lerobotdata_deco/lerobot
+  # 若填写相对路径，脚本会按 <rosbag_dir>/../<lerobot_dir>/lerobot 生成，以兼容原 ACT/DP 转换脚本的目录习惯。
+  lerobot_dir: /your/path/to/your/lerobotdata_deco/lerobot
+
+dataset:
+  # DECO 当前只训练上半身操作，不使用下肢 action。
+  only_arm: true
+
+  # DECO 需要 Kuavo 灵巧手 6 DoF，而不是夹爪或 rq2f85。
+  eef_type: qiangnao
+  which_arm: both
+
+  # RGB-D 路线默认开启 depth。
+  use_depth: true
+  depth_range: [0, 1500]
+
+  task_description: "Pick and Place"
+
+  # DECO 训练数据统一下采样为 30Hz；部署 10Hz 在 policy/deploy wrapper 阶段处理。
+  train_hz: 30
+  main_timeline: head_cam_h
+  main_timeline_fps: 30
+  sample_drop: 10
+
+  # DECO 固定左右手各 6 DoF，禁止沿用 ACT/DP 默认 dex_dof_needed=1 的压缩手指策略。
+  dex_dof_needed: 6
+
+  is_binary: false
+  delta_action: false
+  relative_start: false
+
+  resize:
+    width: 640
+    height: 480
+
+deco:
+  # 输出 schema 固定值，供转换脚本做 assert 和 metadata 记录。
+  state_dim: 28
+  action_dim: 28
+  tactile_dim: 30
+
+  # 默认复用现有 Kuavo/ACT-DP 清洗链路。
+  rgb_key: head_cam_h
+  rgb_topic: /cam_h/color/image_raw/compressed
+  depth_key: depth_h
+  depth_topic: /cam_h/depth/image_raw/compressedDepth
+  depth_encoding: compressedDepth_png
+
+  # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
+  raw_depth_topic: /camera/depth/image_rect_raw
+  raw_depth_encoding: raw_16uc1
+  allow_raw_depth_fallback: false
+
+  # 为兼容现有 LeRobot image/video writer，第一版 depth 在磁盘中保存为 3-channel depth image。
+  # wrapper 阶段再从该 depth image 取单通道并送入 1-channel depth backbone。
+  depth_storage: image_3channel
+
+  # 原清洗链路的 action 来源优先级。
+  arm_action_priority:
+    - /kuavo_arm_traj_synced
+    - /kuavo_arm_traj
+    - /joint_cmd
+  hand_action_topic: /control_robot_hand_position
+
+  # 触觉 topic 与量纲换算。原始 normal_force 经过实验验证为 100 * N。
+  tactile_topic: /dexhand/touch_state
+  tactile_force_scale: 100.0
+
+  # 头部 state 使用 episode 内 joint_q[26:28] 均值；头部 action 当前补零。
+  head_state_source: joint_q_26_28_episode_mean
+  head_action_fill: [0.0, 0.0]
+
+  # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
+  overwrite: false
+
+  # 继承原脚本保护性检查：检测 arm trajectory timestamp gap。
+  # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
+  arm_traj_gap_threshold_s: null
+
+  # 当前阶段不在 Codex 中运行转换；这些字段用于人工运行前确认。
+  expected_num_bags: 100
+  validation_after_conversion: true
+
+validation:
+  # 该段仅作为后续 validate_deco_lerobot_dataset.py 的检查约定；当前转换脚本不会消费这些字段。
+  run_after_conversion: true
+  expected_num_bags: 100
+  expected_train_hz: 30
+  expected_rgb_key: observation.images.head_cam_h
+  expected_depth_key: observation.depth_h
+  expected_state_dim: 28
+  expected_action_dim: 28
+  expected_tactile_dim: 30
+  require_tactile: true
+  require_depth: true
+  require_head_state_mean: true
+  require_head_action_zero: true
