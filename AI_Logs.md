@@ -1,5 +1,118 @@
 # AI Execution Logs
 
+## 2026-05-15
+
+### 更新阶段三图像增强、视觉 token、state/tactile 接入与 depth 默认策略决策
+- **任务**: 根据用户确认，将阶段三前置讨论中达成的新方案同步到 `PLANS.md` 与 `Content/DECO_Technical_Decisions.md`。本条合并记录两轮讨论内容：上一轮关于 Resize/Letterbox、GaussianBlur、obs/state 归一化、depth 默认策略的结论；本轮关于 RGB/depth visual token 结构、DECO 256x256 letterbox、DECO-style tactile normalization 与原生 Flow Matching loss 的结论。用户已明确接受该方案并要求更新文档。
+- **修改文件 1**: `PLANS.md`
+  - 在 `0.2 已确认技术决策` 中新增视觉预处理分层决策：
+    - `Resize/Letterbox` 作为 RGB 与 depth 共享的确定性空间预处理，不进入随机增强池。
+    - 默认采用 DECO 原生 `256x256 letterbox`；RGB padding 使用灰色 `fill=128`，depth padding 单独配置，默认使用 `0` 或 invalid depth。
+    - `RGB_Augmenter` 作为训练期随机增强池。
+    - RGB resize 使用双线性插值，depth resize 使用 nearest 插值。
+  - 在 `0.2 已确认技术决策` 中新增 RGB-D visual token 结构决策：
+    - RGB 与 depth 使用独立 ResNet backbone，不共享同一个 ResNet。
+    - depth backbone 为 1-channel ResNet，第一层权重参考 Kuavo ACT 用 RGB conv1 权重通道均值初始化。
+    - 阶段三第一版保留 DECO 原生“两路视觉 token”结构，但把原生 `img1/img2` 语义替换为 `fused_rgb/fused_depth`。
+    - 暂不采用单路 `visual_tokens: [B, L, D]` 重构方案；该方案作为后续 RGB-D 主链路稳定后的 ablation 或二期重构候选。
+  - 在 `0.2 已确认技术决策` 中扩展 RGB 增强池：
+    - 在 Kuavo ACT 既有 Identity/Notransform、ColorJitter、SharpnessJitter、RandomMask、RandomBorderCutout、GaussianNoise、GammaCorrection 基础上，新增 GaussianBlur/RandomGaussianBlur 候选。
+    - 记录默认采样权重参考 Kuavo ACT：Identity/Notransform `3.0`，其他增强 `1.0`，默认每次采样一个增强，保证一部分样本保持原图。
+    - 记录若需要贴近 DECO 原生 GaussianBlur 行为，应新增 `RandomGaussianBlur`，被采样后随机选择 `kernel_size in [3,5,7]` 与 `sigma in [0.1,2.0]`。
+  - 在 `0.2 已确认技术决策` 中新增 `observation.state` 决策：
+    - state 归一化采用 Kuavo/LeRobot preprocessor 与 dataset stats。
+    - DECO wrapper 内不再沿用 DECO 原生 `dataset.py` / `inference.py` 的手动二次归一化。
+    - 归一化后的 28 维 state 仍通过 DECO `obs_encoder` 后加到 time embedding，用于调制 MMAttention，不改成 ACT state token / VAE encoder 路线。
+    - `observation.tactile` 独立进入 tactile encoder / cross-attention / PI_Adapter，不与 state 混拼。
+  - 在 `0.2 已确认技术决策` 与阶段三/四任务中新增 tactile 处理边界：
+    - 洗数据脚本中的 `normal_force / 100` 只表示单位换算，把 Kuavo 原始 normal force 转成牛顿。
+    - 进入 DECO 模型前，触觉按 DECO-style 左/右手 tactile max 归一化，再进入 Kuavo 30 维 tactile encoder。
+    - `observation.tactile` 不应被 LeRobot 当作普通 STATE 走 `MEAN_STD`；后续实现需通过 patch、preprocessor 或 wrapper 适配隔离 tactile 归一化路径。
+  - 在 `3.1 Kuavo RGB-D 视觉前端移植` 中补充：
+    - RGB/depth 独立 backbone。
+    - cross attention 后保留 `fused_rgb_tokens` 与 `fused_depth_tokens` 两路 visual tokens。
+    - DECO `MMAttention` 中 `total_img_len / 2` 的分流逻辑可保留，但必须注释说明当前两半分别表示 RGB stream 与 depth stream。
+  - 在 `3.2 触觉编码器手术` 中补充：
+    - `tactile_encoder` 从 `30D -> 34D`。
+    - tactile fusion 维度为 `15 + 15 + 34 = 64`，原生 `gated=Linear(68,68)` 需改为 `Linear(64,64)`。
+    - `tactile_left_max` / `tactile_right_max` 应基于已转换成牛顿的 Kuavo tactile 数据，不能直接复用 DECO Inspire Hand 原始单位下的 `3486/4050`。
+  - 在 `3.3 DECO 主干保留策略`、阶段四 wrapper 与阶段五配置任务中明确：
+    - Flow Matching loss 第一版严格保持 `F.mse_loss(out, noise - action)`。
+    - 不额外使用 `action_is_pad` mask，以对齐 DECO 原生训练代码中“mask 返回但 diffusion loss 不消费 mask”的行为。
+  - 在阶段三新增 `3.7 预处理与 state 接入边界`，细化后续实现 checklist。
+  - 在阶段四 `DECOConfigWrapper` 与 `DECOPolicyWrapper.forward` 中补充确定性空间预处理、RGB 增强池、state 单次归一化和 tactile 独立读取要求。
+  - 在阶段五 `configs/policy/deco_config.yaml` 任务中补充 `Resize/Letterbox` 配置、GaussianBlur/RandomGaussianBlur、增强权重和 state 接入说明。
+  - 在 Done When 中新增针对视觉预处理边界和 state 接入方式的验收项。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 将最后更新时间更新为 `2026-05-15`。
+  - 在总体原则中新增视觉预处理分层、RGB blur 增强、state 接入方式三项冻结原则。
+  - 重写 `3.4 RGB 与 depth 的增强策略`：
+    - 明确 `Resize/Letterbox` 是确定性空间预处理。
+    - 明确默认采用 DECO 原生 `256x256 letterbox`，RGB 使用灰色 padding `128`，depth 使用独立 padding。
+    - 明确 RGB 随机增强池新增 GaussianBlur/RandomGaussianBlur。
+    - 明确 Kuavo-DECO 不直接复刻 DECO `p=0.5` blur 触发概率，而是将 blur 纳入 Kuavo 增强池；如果需要保留 DECO 内部参数分布，则新增 `RandomGaussianBlur`。
+    - 明确 depth 不做 ColorJitter、Gamma、GaussianBlur、GaussianNoise、RandomMask、RandomBorderCutout 等 RGB photometric 或遮挡增强。
+  - 更新 `4.1 视觉前端替换策略`：
+    - 冻结阶段三第一版使用 `dual_stream_rgb_depth` visual token 路线。
+    - RGB/depth 独立 ResNet，cross attention 后仍输出 `fused_rgb/fused_depth` 两路 visual tokens。
+    - 新增两路 visual tokens 与单路 visual token 的 Pros/Contra 对比；单路方案暂不作为第一版。
+  - 更新 `4.3 DECO 主干保留策略`：
+    - 新增 loss 决策：保持 `F.mse_loss(out, noise - action)`，不额外使用 `action_is_pad` mask。
+  - 新增 `4.5 obs/state 归一化与模型接入策略`：
+    - 对比 DECO 原生手动归一化与 Kuavo/LeRobot preprocessor 归一化。
+    - 对比 DECO `obs_encoder + time embedding` 条件注入与 ACT state token / VAE encoder 路线。
+    - 冻结 Kuavo-DECO 方案：数值归一化跟 Kuavo/LeRobot，模型接入方式跟 DECO。
+    - 补充 tactile 不走 state 路线：tactile 在牛顿单位基础上按 DECO-style 左/右手 tactile max 归一化后进入 tactile encoder / PI_Adapter。
+  - 更新 `4.6 触觉模型手术`：
+    - 明确 `/100` 是单位换算，不是 DECO tactile normalization。
+    - 明确 Kuavo 30 维 tactile 可视为已经抽取好的触觉区域值。
+    - 明确 tactile max 参数应来自已换算为牛顿的 Kuavo tactile 数据统计或配置。
+  - 同步修正旧 depth 默认表述：
+    - 默认 depth topic 更新为 `/cam_h/depth/image_raw/compressed`。
+    - 默认 depth decoder 更新为 `compressed_image`。
+    - `compressedDepth_png` 与 raw `16UC1` 保留为待 Inspector/validator 复核的候选路径。
+  - 在待实现清单中新增 `configs/policy/deco_config.yaml` 对确定性预处理、RGB 增强池、state 接入策略的记录要求。
+- **未执行项**:
+  - 未运行 Python、训练、forward、validator、部署脚本或任何环境变更命令。
+  - 未修改模型代码、wrapper 代码、第三方 DECO 源码或 `third_party/lerobot/`。
+  - 本次仅做文档级方案同步与静态一致性检查。
+
+## 2026-05-14
+
+### 拆分 DECO 与 Kuavo ACT 流程说明文档
+- **任务**: 根据用户要求，将 `DECO_ACT_Flow_Explanation.md` 拆分为三个独立文件，分别讲解 DECO 原生流程、Kuavo ACT 流程、两者对比及第三阶段流程，保持内容结构不变。
+- **新增文件**:
+  - `Content/DECO_Flow_Explanation.md`：包含文件开头说明、静态阅读范围及 DECO 原生整体流程部分。
+  - `Content/Kuavo_ACT_Flow_Explanation.md`：包含文件开头说明及 Kuavo ACT RGB-D Wrapper 整体流程部分。
+  - `Content/DECO_ACT_Comparison_Stage3_Flow.md`：包含文件开头说明、DECO 与 ACT 的关键差异、第三阶段目标流程及面向实现的结论部分。
+- **未执行项**:
+  - 根据系统约束要求，禁止使用命令删除原始文件，因此保留了原始的 `Content/DECO_ACT_Flow_Explanation.md`，请用户如需删除自行手动执行 `rm` 命令。
+
+### 整理 DECO 与 Kuavo ACT 流程说明文档及流程图
+- **任务**: 根据用户在进入阶段三前的学习需求，将此前对 DECO 原生源码流程和 Kuavo ACT RGB-D wrapper 流程的静态分析整理为可持续参考的 Markdown 文档，并配套生成流程图图片，帮助后续确认第三阶段模型适配边界。
+- **新增文件**:
+  - 新增 `Content/DECO_ACT_Flow_Explanation.md`：
+    - 记录本次静态阅读范围，包括 `third_party/deco/dataset.py`、`third_party/deco/train.py`、`third_party/deco/models/deco/deco.py`、`third_party/deco/models/deco/img_encoder.py`、`third_party/deco/models/deco/train_one_epoch.py`、`third_party/deco/inference.py`、`kuavo_train/train_policy.py`、`kuavo_train/wrapper/policy/act/ACTPolicyWrapper.py`、`kuavo_train/wrapper/policy/act/ACTModelWrapper.py`、`kuavo_train/utils/transforms.py` 和 `configs/policy/act_config.yaml`。
+    - 梳理 DECO 原生数据流：自定义 episode 数据结构、双 RGB 输入、触觉 `.npy`、`data.pkl` 中 state/action chunk、图像增强、状态/action/触觉归一化。
+    - 说明 DECO 原生视觉前端实际为两个 RGB 输入共享一个 ResNet34，而不是两个独立 ResNet；`img_encoding` 将两个图像在 batch 维拼接，经过共享 ResNet34 后再拆分、展平为空间 token，并加入 camera id embedding 与 RoPE。
+    - 说明 DECO 主干保留 action token、MMAttention、Flow Matching 加噪、`F.mse_loss(out, noise - action)` 训练目标，以及推理阶段从随机 action noise 多步去噪得到 action chunk 的逻辑。
+    - 梳理 Kuavo ACT RGB-D wrapper 流程：LeRobot batch、preprocessor、RGB_Augmenter、Normalizer、OBS_IMAGES/OBS_DEPTH 组装、RGB ResNet、1-channel depth ResNet、RGB-depth cross attention fusion、ACT transformer encoder/decoder、L1+KL loss 与 `save_pretrained` 保存体系。
+    - 对比 DECO 与 ACT 在数据格式、视觉输入、ResNet 数量、depth 支持、增强策略、视觉 token、动作建模、loss、触觉和保存方式上的差异。
+    - 总结第三阶段实现边界：替换 DECO 原生 `img_encoding(img1, img2)`，借鉴 ACT RGB-D 前端和 cross-modal fusion，保留 DECO action-token Flow Matching 主干与 tactile PI_Adapter 思路。
+  - 新增 `Content/assets/deco_act_flow/deco_original_flow.svg`：
+    - 以静态 SVG 图展示 DECO 原生训练与推理数据流。
+  - 新增 `Content/assets/deco_act_flow/kuavo_act_rgbd_flow.svg`：
+    - 以静态 SVG 图展示 Kuavo ACT RGB-D wrapper 的数据流和融合路径。
+  - 新增 `Content/assets/deco_act_flow/stage3_deco_rgbd_target_flow.svg`：
+    - 以静态 SVG 图展示阶段三 Kuavo RGB-D 前端接入 DECO 主干的目标结构。
+- **实现说明**:
+  - 文档中同时保留 Mermaid 源码和 SVG 图片引用；Mermaid 便于后续修改逻辑，SVG 便于普通 Markdown 预览器直接显示。
+  - SVG 图片为手写静态矢量图，不依赖外部渲染工具或运行脚本。
+- **未执行项**:
+  - 未运行 Python、训练、forward、validator 或部署脚本。
+  - 未安装或更新任何依赖。
+  - 未修改 `third_party/lerobot/`、`third_party/deco/`、训练 wrapper 或模型代码。
+
 ## 2026-05-13
 
 ### 执行阶段二：复制 DECO 源码到 third_party/deco 并记录依赖边界

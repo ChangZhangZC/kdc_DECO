@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+  <defs>
+    <style>
+      .title { font-family: Arial, sans-serif; font-size: 30px; font-weight: 700; fill: #17202a; }
+      .sub { font-family: Arial, sans-serif; font-size: 16px; fill: #425466; }
+      .box { fill: #ffffff; stroke: #344e6c; stroke-width: 2; rx: 10; }
+      .rgb { fill: #eef6ff; stroke: #1f5f99; stroke-width: 2; rx: 10; }
+      .depth { fill: #f1fbf5; stroke: #2f7d4f; stroke-width: 2; rx: 10; }
+      .deco { fill: #fff7ea; stroke: #ad6d00; stroke-width: 2; rx: 10; }
+      .keep { fill: #f7f3ff; stroke: #6c4aa2; stroke-width: 2; rx: 10; }
+      .txt { font-family: Arial, sans-serif; font-size: 17px; fill: #17202a; }
+      .small { font-family: Arial, sans-serif; font-size: 14px; fill: #425466; }
+      .arrow { stroke: #243b53; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #7d8ca3; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#243b53"/>
+    </marker>
+  </defs>
+
+  <text x="48" y="52" class="title">阶段三目标：Kuavo RGB-D 前端接入 DECO 主干</text>
+  <text x="48" y="82" class="sub">核心边界：替换 DECO 原生 img_encoding，保留 action-token Flow Matching 主干和可选 tactile adapter。</text>
+
+  <rect x="48" y="120" width="275" height="118" class="box"/>
+  <text x="70" y="154" class="txt">Kuavo-DECO LeRobot batch</text>
+  <text x="70" y="183" class="small">head RGB + aligned depth</text>
+  <text x="70" y="207" class="small">state 28D, tactile 30D, action 28D</text>
+
+  <rect x="385" y="120" width="275" height="118" class="deco"/>
+  <text x="407" y="154" class="txt">Kuavo preprocessor</text>
+  <text x="407" y="183" class="small">RGB augmenter + normalizer</text>
+  <text x="407" y="207" class="small">depth 只做同步空间变换</text>
+
+  <rect x="120" y="325" width="280" height="120" class="rgb"/>
+  <text x="142" y="359" class="txt">RGB ResNet34</text>
+  <text x="142" y="388" class="small">ImageNet init 可选</text>
+  <text x="142" y="412" class="small">layer4 -> projection -> dim</text>
+
+  <rect x="485" y="325" width="300" height="120" class="depth"/>
+  <text x="507" y="359" class="txt">Depth ResNet34</text>
+  <text x="507" y="388" class="small">1-channel conv1</text>
+  <text x="507" y="412" class="small">RGB conv1 mean init</text>
+
+  <rect x="875" y="325" width="300" height="120" class="keep"/>
+  <text x="897" y="359" class="txt">ACT 风格 RGB-D fusion</text>
+  <text x="897" y="388" class="small">cross attention 保留空间 token</text>
+  <text x="897" y="412" class="small">输出 DECO image token 接口</text>
+
+  <rect x="120" y="535" width="280" height="122" class="deco"/>
+  <text x="142" y="569" class="txt">DECO 条件 token</text>
+  <text x="142" y="598" class="small">obs_encoder: 28D -> dim</text>
+  <text x="142" y="622" class="small">time embedding + task optional</text>
+
+  <rect x="485" y="535" width="300" height="122" class="deco"/>
+  <text x="507" y="569" class="txt">DECO action token</text>
+  <text x="507" y="598" class="small">训练时 action 加噪</text>
+  <text x="507" y="622" class="small">action_encoder + learned pos</text>
+
+  <rect x="875" y="535" width="300" height="122" class="deco"/>
+  <text x="897" y="569" class="txt">Kuavo tactile adapter</text>
+  <text x="897" y="598" class="small">30D = 左15 + 右15</text>
+  <text x="897" y="622" class="small">映射到 DECO tactile cross attention</text>
+
+  <rect x="290" y="735" width="390" height="118" class="keep"/>
+  <text x="312" y="769" class="txt">保留 DECO MMAttention 主干</text>
+  <text x="312" y="798" class="small">fused image token + action token joint attention</text>
+  <text x="312" y="822" class="small">loss: MSE(out, noise-action)</text>
+
+  <rect x="790" y="735" width="340" height="118" class="keep"/>
+  <text x="812" y="769" class="txt">Kuavo wrapper 输出</text>
+  <text x="812" y="798" class="small">训练：LeRobot loss dict / save_pretrained</text>
+  <text x="812" y="822" class="small">部署：30Hz chunk -> 10Hz queue</text>
+
+  <path class="arrow" d="M323 179 L385 179"/>
+  <path class="arrow" d="M522 238 L260 325"/>
+  <path class="arrow" d="M545 238 L635 325"/>
+  <path class="arrow" d="M400 385 L485 385"/>
+  <path class="arrow" d="M785 385 L875 385"/>
+  <path class="arrow" d="M1025 445 L600 735"/>
+  <path class="arrow" d="M260 657 L405 735"/>
+  <path class="arrow" d="M635 657 L535 735"/>
+  <path class="dash" d="M1025 657 L680 735"/>
+  <path class="arrow" d="M680 794 L790 794"/>
+</svg>

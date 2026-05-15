@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+  <defs>
+    <style>
+      .title { font-family: Arial, sans-serif; font-size: 30px; font-weight: 700; fill: #17202a; }
+      .sub { font-family: Arial, sans-serif; font-size: 16px; fill: #425466; }
+      .box { fill: #ffffff; stroke: #38598b; stroke-width: 2; rx: 10; }
+      .rgb { fill: #eef6ff; stroke: #1f5f99; stroke-width: 2; rx: 10; }
+      .depth { fill: #f1fbf5; stroke: #2f7d4f; stroke-width: 2; rx: 10; }
+      .act { fill: #fff8e8; stroke: #b27800; stroke-width: 2; rx: 10; }
+      .out { fill: #f7f3ff; stroke: #6b4aa0; stroke-width: 2; rx: 10; }
+      .txt { font-family: Arial, sans-serif; font-size: 17px; fill: #17202a; }
+      .small { font-family: Arial, sans-serif; font-size: 14px; fill: #425466; }
+      .arrow { stroke: #243b53; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #7d8ca3; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#243b53"/>
+    </marker>
+  </defs>
+
+  <text x="48" y="52" class="title">Kuavo ACT RGB-D Wrapper 数据流</text>
+  <text x="48" y="82" class="sub">核心特征：LeRobot batch，RGB 只做颜色/遮挡类增强，depth 单独进 1-channel ResNet，再用 cross attention 融合。</text>
+
+  <rect x="48" y="122" width="260" height="110" class="box"/>
+  <text x="70" y="155" class="txt">LeRobot batch</text>
+  <text x="70" y="184" class="small">RGB / depth / state / action</text>
+  <text x="70" y="208" class="small">action_is_pad for chunk loss</text>
+
+  <rect x="370" y="122" width="265" height="110" class="act"/>
+  <text x="392" y="155" class="txt">preprocessor pipeline</text>
+  <text x="392" y="184" class="small">RGB_Augmenter before Normalizer</text>
+  <text x="392" y="208" class="small">stats normalization</text>
+
+  <rect x="700" y="122" width="255" height="110" class="act"/>
+  <text x="722" y="155" class="txt">ACTPolicyWrapper</text>
+  <text x="722" y="184" class="small">OBS_IMAGES list</text>
+  <text x="722" y="208" class="small">OBS_DEPTH list, mean channel</text>
+
+  <rect x="110" y="310" width="270" height="118" class="rgb"/>
+  <text x="132" y="344" class="txt">RGB path</text>
+  <text x="132" y="373" class="small">shared RGB ResNet</text>
+  <text x="132" y="397" class="small">layer4 -> Conv2d -> dim</text>
+
+  <rect x="480" y="310" width="290" height="118" class="depth"/>
+  <text x="502" y="344" class="txt">Depth path</text>
+  <text x="502" y="373" class="small">shared depth ResNet</text>
+  <text x="502" y="397" class="small">conv1: 3ch -> 1ch, mean init</text>
+
+  <rect x="865" y="310" width="290" height="118" class="out"/>
+  <text x="887" y="344" class="txt">RGB-depth cross attention</text>
+  <text x="887" y="373" class="small">RGB attends depth</text>
+  <text x="887" y="397" class="small">Depth attends RGB</text>
+
+  <rect x="110" y="515" width="270" height="115" class="act"/>
+  <text x="132" y="548" class="txt">VAE encoder 训练分支</text>
+  <text x="132" y="577" class="small">CLS + state + action chunk</text>
+  <text x="132" y="601" class="small">输出 latent mu/logvar</text>
+
+  <rect x="480" y="515" width="290" height="115" class="act"/>
+  <text x="502" y="548" class="txt">Transformer encoder</text>
+  <text x="502" y="577" class="small">latent + state + fused visual tokens</text>
+  <text x="502" y="601" class="small">self attention over conditions</text>
+
+  <rect x="865" y="515" width="290" height="115" class="act"/>
+  <text x="887" y="548" class="txt">Transformer decoder</text>
+  <text x="887" y="577" class="small">chunk_size action queries</text>
+  <text x="887" y="601" class="small">cross attention to encoder tokens</text>
+
+  <rect x="480" y="710" width="290" height="118" class="out"/>
+  <text x="502" y="744" class="txt">训练与保存</text>
+  <text x="502" y="773" class="small">loss = L1 + kl_weight * KL</text>
+  <text x="502" y="797" class="small">save_pretrained assets</text>
+
+  <rect x="865" y="710" width="290" height="118" class="out"/>
+  <text x="887" y="744" class="txt">推理执行</text>
+  <text x="887" y="773" class="small">temporal ensemble 或 action queue</text>
+  <text x="887" y="797" class="small">select_action 返回单步 action</text>
+
+  <path class="arrow" d="M308 177 L370 177"/>
+  <path class="arrow" d="M635 177 L700 177"/>
+  <path class="arrow" d="M805 232 L245 310"/>
+  <path class="arrow" d="M845 232 L625 310"/>
+  <path class="arrow" d="M380 369 L480 369"/>
+  <path class="arrow" d="M770 369 L865 369"/>
+  <path class="arrow" d="M1010 428 L625 515"/>
+  <path class="dash" d="M245 428 L245 515"/>
+  <path class="arrow" d="M380 572 L480 572"/>
+  <path class="arrow" d="M770 572 L865 572"/>
+  <path class="arrow" d="M1010 630 L1010 710"/>
+  <path class="arrow" d="M625 630 L625 710"/>
+</svg>

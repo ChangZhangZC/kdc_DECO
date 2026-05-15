@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860">
+  <defs>
+    <style>
+      .title { font-family: Arial, sans-serif; font-size: 30px; font-weight: 700; fill: #17202a; }
+      .sub { font-family: Arial, sans-serif; font-size: 16px; fill: #425466; }
+      .box { fill: #ffffff; stroke: #2f5f8f; stroke-width: 2; rx: 10; }
+      .box2 { fill: #f3f8ff; stroke: #2f5f8f; stroke-width: 2; rx: 10; }
+      .box3 { fill: #fff7e8; stroke: #a86b00; stroke-width: 2; rx: 10; }
+      .box4 { fill: #eefaf2; stroke: #2d7a45; stroke-width: 2; rx: 10; }
+      .txt { font-family: Arial, sans-serif; font-size: 17px; fill: #17202a; }
+      .small { font-family: Arial, sans-serif; font-size: 14px; fill: #425466; }
+      .arrow { stroke: #243b53; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #7d8ca3; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#243b53"/>
+    </marker>
+  </defs>
+
+  <text x="48" y="52" class="title">DECO 原生训练与推理数据流</text>
+  <text x="48" y="82" class="sub">核心特征：双 RGB 输入，共用 1 个 ResNet34，图像 token 与 action token 做联合注意力，训练目标是 Flow Matching 向量场。</text>
+
+  <rect x="48" y="125" width="250" height="112" class="box"/>
+  <text x="70" y="158" class="txt">DECO episode 数据</text>
+  <text x="70" y="187" class="small">colors: *_color_0/1.jpg</text>
+  <text x="70" y="211" class="small">tactiles: left/right .npy</text>
+
+  <rect x="370" y="125" width="260" height="112" class="box2"/>
+  <text x="392" y="158" class="txt">dataset.py 取样</text>
+  <text x="392" y="187" class="small">img1, img2, tac1, tac2</text>
+  <text x="392" y="211" class="small">obs 28D, action chunk</text>
+
+  <rect x="710" y="125" width="260" height="112" class="box3"/>
+  <text x="732" y="158" class="txt">图像增强与归一化</text>
+  <text x="732" y="187" class="small">Resize 或 Letterbox</text>
+  <text x="732" y="211" class="small">ColorJitter + GaussianBlur</text>
+
+  <rect x="370" y="305" width="260" height="120" class="box2"/>
+  <text x="392" y="338" class="txt">双 RGB 拼接</text>
+  <text x="392" y="367" class="small">cat(img1, img2) on batch</text>
+  <text x="392" y="391" class="small">注意：不是两个 ResNet</text>
+
+  <rect x="710" y="305" width="260" height="120" class="box4"/>
+  <text x="732" y="338" class="txt">共享 ResNet34</text>
+  <text x="732" y="367" class="small">layer4 feature map</text>
+  <text x="732" y="391" class="small">img_head: 512 -> dim</text>
+
+  <rect x="1015" y="305" width="215" height="120" class="box4"/>
+  <text x="1037" y="338" class="txt">图像 token</text>
+  <text x="1037" y="367" class="small">split img1/img2</text>
+  <text x="1037" y="391" class="small">flatten + img id + RoPE</text>
+
+  <rect x="48" y="500" width="250" height="110" class="box3"/>
+  <text x="70" y="533" class="txt">动作加噪</text>
+  <text x="70" y="562" class="small">x_t = (1-t)a + t noise</text>
+  <text x="70" y="586" class="small">action_encoder + pos</text>
+
+  <rect x="370" y="500" width="260" height="110" class="box3"/>
+  <text x="392" y="533" class="txt">状态与时间条件</text>
+  <text x="392" y="562" class="small">obs_encoder: 28D -> dim</text>
+  <text x="392" y="586" class="small">time embedding + obs</text>
+
+  <rect x="710" y="500" width="260" height="110" class="box3"/>
+  <text x="732" y="533" class="txt">可选触觉分支</text>
+  <text x="732" y="562" class="small">1062 + 1062 输入</text>
+  <text x="732" y="586" class="small">区域均值 + encoder + gate</text>
+
+  <rect x="405" y="685" width="430" height="112" class="box2"/>
+  <text x="430" y="718" class="txt">MMAttention 主干 x N</text>
+  <text x="430" y="747" class="small">image token 与 action token joint attention</text>
+  <text x="430" y="771" class="small">可选 tactile cross attention / PI_Adapter</text>
+
+  <rect x="910" y="685" width="280" height="112" class="box4"/>
+  <text x="932" y="718" class="txt">输出与后处理</text>
+  <text x="932" y="747" class="small">训练：MSE(out, noise-action)</text>
+  <text x="932" y="771" class="small">推理：多步去噪后反归一化</text>
+
+  <path class="arrow" d="M298 181 L370 181"/>
+  <path class="arrow" d="M630 181 L710 181"/>
+  <path class="arrow" d="M840 237 L565 305"/>
+  <path class="arrow" d="M630 365 L710 365"/>
+  <path class="arrow" d="M970 365 L1015 365"/>
+  <path class="arrow" d="M1122 425 L790 685"/>
+  <path class="arrow" d="M173 610 L500 685"/>
+  <path class="arrow" d="M500 610 L590 685"/>
+  <path class="dash" d="M840 610 L720 685"/>
+  <path class="arrow" d="M835 741 L910 741"/>
+</svg>
