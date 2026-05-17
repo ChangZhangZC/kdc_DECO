@@ -1,5 +1,38 @@
 # AI Execution Logs
 
+## 2026-05-18
+
+### 同步阶段四/五 Wrapper 与两阶段训练设计决策
+- **任务**: 根据用户关于 DECO wrapper、tactile 独立分支、DECO 专用 preprocessor、两阶段训练和权重格式语义的确认，更新 `PLANS.md` 与 `Content/DECO_Technical_Decisions.md`。本次只做文档级方案同步，未运行 Python、训练、forward、validator、部署脚本或任何环境变更命令。
+- **修改文件 1**: `PLANS.md`
+  - 将重构日期更新为 `2026-05-18`。
+  - 更新总体架构图，将 Kuavo-DECO 输入明确拆成三条平行主枝：
+    - `state branch`：28 维 `observation.state` 由 LeRobot stats 归一化后进入 DECO `obs_encoder`，再调制 time embedding。
+    - `RGB-D visual branch`：RGB/depth 经 DECO 专用 preprocessor，同步 `256x256 letterbox` 后进入 RGB-D 双流 ResNet 与 cross attention。
+    - `tactile branch`：30 维 `observation.tactile` 作为独立 `TACTILE` feature，不走 STATE `MEAN_STD`，由 wrapper 按左右手 tactile max 归一化并默认 clamp 到 `[0, 1]` 后进入 tactile encoder / PI_Adapter。
+  - 在已确认技术决策中新增 `FeatureType.TACTILE`、`TACTILE: IDENTITY`、`clip_tactile_to_unit: true`、DECO 专用 preprocessor 放置位置、`.safetensors` 与 `.pth` 权重语义分层，以及 `train_policy.py` 只做最小策略注册、不改核心训练循环的边界。
+  - 更新阶段三 `3.6` 分阶段训练边界，明确 `visual_main` 与 `tactile_adapter` 是两次独立训练启动，而不是同一个 epoch loop 内自动交替或自动切换。
+  - 更新阶段三 `3.7` 预处理边界，明确 RGB/depth deterministic `Resize/Letterbox` 在 LeRobot normalizer 之前执行，RGB 随机增强在 letterbox 之后、normalizer 之前执行。
+  - 新增阶段四 `4.0 LeRobot feature 与 DECO preprocessor 接入边界`，记录 `lerobot_patches/custom_patches.py` 只负责全局 feature/type 兼容，DECO 专用视觉预处理应放在 `kuavo_train/wrapper/policy/deco/`。
+  - 更新阶段四 `DECOConfigWrapper`、`DECOPolicyWrapper.forward` 与 `select_action` 任务，补充 `training_stage`、`base_policy_path`、`deco_init_pth_path`、`clip_tactile_to_unit`、两类部署资产以及 tactile 开关行为。
+  - 更新阶段五 `configs/policy/deco_config.yaml` 任务，默认面向第一阶段主干训练：`use_tactile: false`、`use_tactile_lora: false`、tactile max 允许 `null`；第二阶段通过 override 开启 tactile adapter 并加载第一阶段 `.safetensors` policy 目录。
+  - 更新 Done When，新增 `FeatureType.TACTILE`、DECO 专用 preprocessor、两阶段训练 `.safetensors` policy 目录和 tactile clamp 行为的静态审查要求。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 将最后更新时间更新为 `2026-05-18`。
+  - 更新总体技术路线，明确三条平行主枝：state、RGB-D visual、tactile。
+  - 在核心原则中新增：`observation.tactile` 独立识别为 `TACTILE` 并保持 `IDENTITY`，DECO wrapper 再执行 tactile max normalization；DECO 专用 preprocessor 不放在 `lerobot_patches/`；两阶段训练是两次独立启动；正式训练和部署资产为 LeRobot `.safetensors` policy 目录。
+  - 更新 `4.5 obs/state 归一化与模型接入策略`，说明 tactile 不拼入 state，也不跟随 `STATE: MEAN_STD`。
+  - 更新 `4.6 触觉模型手术`，记录默认 `clip_tactile_to_unit: true`，与 DECO 原生 inference 的 `clamp(0, 1.0)` 保持一致。
+  - 更新 `4.7 Tactile Plugin / LoRA-style Adapter 机制`，将默认配置改为第一阶段关闭 tactile/LoRA，第二阶段通过 override 开启。
+  - 重写 `4.8 分阶段训练与验证策略`，明确第一阶段完整训练 RGB-D + state 主干，第二阶段加载第一阶段 `.safetensors` policy 并冻结主干训练 tactile/PI_Adapter；若用户不使用触觉，则第一阶段产物即可部署。
+  - 新增 `4.9 DECO 专用 preprocessor 放置边界`，说明 preprocessor 负责 raw RGB-D 上的 letterbox 和 RGB-only augmentation 顺序，`policy.forward()` 不做 raw-pixel padding。
+  - 新增 `4.10 权重格式与路径语义`，区分 `base_policy_path`、`adapter_model_path` 和 `deco_init_pth_path`。
+  - 更新待实现清单，加入 `FeatureType.TACTILE`、`DECOProcessor.py`、两阶段训练配置与 tactile clamp 的实现要求。
+- **未执行项**:
+  - 未修改 wrapper 代码、训练入口、配置 YAML 或 LeRobot patch 代码。
+  - 未运行 Python、未做 import 编译检查、未训练、未验证数据集、未部署。
+  - 未修改 `third_party/lerobot/`。
+
 ## 2026-05-17
 
 ### 移除 DECO 模型主体中的 dual_rgb 旧兼容入口
