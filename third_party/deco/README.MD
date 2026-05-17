@@ -134,7 +134,7 @@ model:
   heads: 8                    # Number of attention heads
   dim: 512                    # Model hidden dimension
   rope_axes_dim: [256, 256]   # Rotary positional embedding dimensions for [height, width]
-  visual_input_mode: dual_rgb # dual_rgb or dual_stream_rgb_depth (Kuavo RGB-D)
+  visual_input_mode: dual_stream_rgb_depth # Kuavo RGB-D only: rgb + aligned depth
   vision_backbone: resnet34   # resnet34 by default, resnet18 for lower latency
   depth_backbone: resnet34    # used when visual_input_mode is dual_stream_rgb_depth
   img_pretrain: /root/.cache/torch/hub/checkpoints/resnet34-b627a593.pth  # ImageNet-pretrained backbone path
@@ -143,29 +143,20 @@ model:
   adapter_model_path: False   # Path to plugin tactile adapter (for deployment)
 
 data:
-  chunk_size: 32              # Temporal chunk size
-  tactile_left_max: null      # Kuavo left-hand Newton max; required when use_tactile=True
-  tactile_right_max: null     # Kuavo right-hand Newton max; required when use_tactile=True
-  tac_left_max: 3486.0        # Legacy DECO field kept for original dataset.py compatibility
-  tac_right_max: 4050.0       # Legacy DECO field kept for original dataset.py compatibility
-  norm_type: 'mean_std'       # Normalization type: mean_std or min_max
-  observation_mean: [...]     # Observation mean (computed via utils/cal_mean_std.py)
-  observation_std: [...]      # Observation standard deviation
-  observation_min: [...]      # Observation minimum (for min-max normalization)
-  observation_max: [...]      # Observation maximum (for min-max normalization)
-  action_mean: [...]          # Action mean
-  action_std: [...]           # Action standard deviation
-  action_min: [...]           # Action minimum
-  action_max: [...]           # Action maximum
+  # chunk_size 只保留在 model.chunk_size，避免同一含义重复配置。
+  tactile_left_max: null      # Kuavo left-hand Newton max; required positive value when use_tactile=True
+  tactile_right_max: null     # Kuavo right-hand Newton max; required positive value when use_tactile=True
 
 img:
   img_size: [256, 256]        # [height, width]. Resize input images to this resolution
-  img_mean: [0.485, 0.456, 0.406]  # ImageNet mean
-  img_std: [0.229, 0.224, 0.225]   # ImageNet standard deviation
 ```
 </details>
 
+> Kuavo note: this copied `third_party/deco` configuration is now trimmed for the Kuavo RGB-D wrapper path. The old DECO-50 native dataset statistics, duplicate `data.chunk_size`, and legacy `tac_left_max/tac_right_max` aliases are intentionally not kept in `config/deco.yaml`.
+
 ## 4. Training
+> Kuavo note: the commands below describe the upstream standalone DECO training path and are kept only as a reference. The Kuavo RGB-D route should enter training through the future LeRobot wrapper, not by mixing this trimmed `config/deco.yaml` with the original `train.py` / `dataset.py` path.
+
 We train our models on 8 NVIDIA A100 GPUs (40GB each), with 200 epochs per task.
 
 - **Multi-GPU training**

@@ -1,5 +1,59 @@
 # AI Execution Logs
 
+## 2026-05-17
+
+### 移除 DECO 模型主体中的 dual_rgb 旧兼容入口
+- **任务**: 根据用户明确要求，删除旧模型中对当前 Kuavo-DECO RGB-D 路线无用且容易造成混淆的 `img1/img2`、`dual_rgb_img_encoding`、`dual_rgb` 兼容命名和分支，使 `third_party/deco` 下的 DECO 主体仅服务 RGB-D 输入。全过程遵守 No-Runtime 约束，未运行 Python、训练、forward、validator 或环境变更命令。
+- **修改文件 1**: `third_party/deco/models/deco/deco.py`
+  - 将 `DECO.__init__` 和 `modeling` 的 `visual_input_mode` 默认值改为 `dual_stream_rgb_depth`。
+  - 将配置校验收窄为仅允许 `dual_stream_rgb_depth`，传入其他值会显式报错。
+  - 删除 `dual_rgb_img_encoding` 旧双 RGB 编码函数，`img_encoding` 现在直接进入 RGB-D 编码路径。
+  - 将 `forward(img1, img2, ...)` 改为 `forward(rgb, depth, ...)`，并同步更新 docstring、推理采样 device/dtype 来源和示例注释。
+  - 删除 `uses_rgbd` 兼容标志，depth backbone、depth head 与 RGB-depth fusion 现在始终存在。
+  - 更新 `MMAttention` 注释，将视觉 token 前后两半明确写为 RGB stream 与 depth stream。
+- **修改文件 2**: `third_party/deco/inference.py`
+  - 将 `preprocess(img1, img2, ...)` 改为 `preprocess(rgb, depth, ...)`。
+  - 删除根据 `visual_input_mode` 分流的旧双 RGB 推理预处理逻辑，推理入口始终按 RGB-D 处理第二路输入。
+  - 将 `predict_action` 参数与内部调用同步改为 `rgb/depth` 命名。
+- **修改文件 3**: `third_party/deco/config/deco.yaml`
+  - 删除 `dual_rgb` 配置说明，明确 `visual_input_mode` 仅保留 Kuavo RGB-D 路线。
+- **修改文件 4**: `README_DECO.md`
+  - 更新阶段三视觉前端说明，明确旧 DECO `dual_rgb` 双 RGB 兼容入口已从 Kuavo 定制副本的模型主体中移除。
+- **修改文件 5**: `third_party/deco/README.MD`
+  - 更新 YAML 示例，将 `visual_input_mode` 注释改为 Kuavo RGB-D only。
+- **修改文件 6**: `PLANS.md`
+  - 在阶段三视觉前端 checklist 中记录已移除旧 `dual_rgb` 双 RGB 兼容分支，并将模型主体接口收窄为 `forward(rgb, depth, ...)`。
+- **静态检查**:
+  - 使用 `rg` 检查 `third_party/deco/models/deco/deco.py`、`third_party/deco/inference.py`、`third_party/deco/config/deco.yaml`、`README_DECO.md`、`third_party/deco/README.MD`，确认模型主体和推理入口中不再残留 `dual_rgb_img_encoding`、`uses_rgbd` 或 `img1/img2` 旧接口命名。
+- **未执行项**:
+  - 未运行 Python、未进行 import 编译检查、未进行 forward shape test、未训练、未验证数据集、未部署。
+
+### 清理 third_party/deco 配置中的旧 DECO 兼容字段
+- **任务**: 根据用户要求复查 `deck.yml/deco.yaml` 中是否存在重复的 `chunk_size` 与新旧 tactile max 参数，并删除与当前 Kuavo-DECO RGB-D 模型路线无关的旧字段，避免后续阶段四 wrapper 接入时产生配置歧义。静态检查确认仓库内没有 `deck.yml`，本次实际清理对象为 `third_party/deco/config/deco.yaml`。
+- **修改文件 1**: `third_party/deco/config/deco.yaml`
+  - 将 `visual_input_mode` 默认值从 `dual_rgb` 调整为 `dual_stream_rgb_depth`，使第三方副本默认服务 Kuavo RGB-D 路线；`dual_rgb` 仍作为源码层面的兼容模式保留。
+  - 删除重复的 `data.chunk_size`，明确 `model.chunk_size` 是 DECO action chunk 长度的唯一权威配置。
+  - 删除旧 DECO 别名 `tac_left_max/tac_right_max`，只保留 Kuavo 标准字段 `tactile_left_max/tactile_right_max`。
+  - 删除 DECO 原生 dataset/inference 路线使用的 `norm_type`、`observation_mean/std/min/max`、`action_mean/std/min/max`，避免与 Kuavo/LeRobot preprocessor 的归一化职责混淆。
+  - 删除旧 RGB `img_mean/img_std` 配置，仅保留 `img_size: [256, 256]`；图像标准化由后续 Kuavo wrapper/preprocessor 统一负责。
+- **修改文件 2**: `third_party/deco/inference.py`
+  - 新增兼容式 `normalize_obs_if_configured`：只有旧统计字段显式存在时才执行 DECO 原生 obs 归一化，否则默认认为 state 已由 Kuavo wrapper/preprocessor 处理。
+  - 新增 `build_rgb_transform`：只有旧 `img_mean/img_std` 显式存在时才追加 RGB Normalize，否则只做 resize、tensor 化与缩放。
+  - 修改 `postprocess`：只有旧 action 统计字段显式存在时才做反归一化，否则直接返回模型输出，避免依赖已从配置中删除的旧字段。
+  - 修改 `get_tactile_max`：不再回退读取 `tac_left_max/tac_right_max`，`use_tactile=True` 时必须使用 Kuavo 标准字段 `tactile_left_max/tactile_right_max`。
+- **修改文件 3**: `README_DECO.md`
+  - 更新阶段三说明：当前 `third_party/deco/config/deco.yaml` 默认 `dual_stream_rgb_depth`，`dual_rgb` 只作为兼容/对照开关。
+  - 删除“保留旧 `tac_left_max/tac_right_max`”的说明，改为说明旧别名已移除。
+  - 记录配置中只保留一处 `chunk_size`，并说明 obs/action/image 标准化由 Kuavo wrapper/preprocessor 负责。
+- **修改文件 4**: `third_party/deco/README.MD`
+  - 更新 YAML 示例，移除 `data.chunk_size`、`tac_left_max/tac_right_max`、obs/action 旧统计字段和 `img_mean/img_std`。
+  - 添加 Kuavo note，说明当前 `config/deco.yaml` 已为 Kuavo RGB-D wrapper 路线瘦身，不再保留 DECO-50 原生训练配置字段。
+- **修改文件 5**: `PLANS.md`
+  - 在阶段三 checklist 中记录 `third_party/deco/config/deco.yaml` 已完成旧 tactile 别名清理、重复 `chunk_size` 清理，以及原生 obs/action 手动统计字段清理。
+- **未执行项**:
+  - 未运行 Python、未执行训练、forward、validator、部署或任何环境变更命令。
+  - 未删除文件，未修改 `third_party/lerobot/`，未修改根目录 `DECO/` 原始参考副本。
+
 ## 2026-05-16
 
 ### 阶段三 third_party/deco 模型手术静态实现

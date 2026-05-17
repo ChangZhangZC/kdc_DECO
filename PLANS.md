@@ -155,6 +155,7 @@ Kuavo rosbag RGB + depth + state + action + tactile
   - [x] RGB 与 depth 使用独立 backbone，不共享同一个 ResNet；二者只在 ResNet 后的 token 层做 cross-modal fusion。
   - [x] 复用 ACT 风格 RGB-depth cross attention fusion，并保留两路视觉 token：`fused_rgb_tokens` 与 `fused_depth_tokens`。
   - [x] 将 DECO 原生 `img1/img2` 的两路 token 语义改写为 `fused_rgb/fused_depth`；`MMAttention` 中基于 `total_img_len / 2` 的视觉分流逻辑仍可保留，但必须用中文注释说明新语义。
+  - [x] 清理 `third_party/deco/models/deco/deco.py`：移除旧 `dual_rgb` 双 RGB 兼容分支、`dual_rgb_img_encoding` 和 `img1/img2` 模型主体命名，forward 接口改为 `forward(rgb, depth, ...)`，使模型主体仅保留 Kuavo RGB-D 路线。
   - [x] 保留空间 token 形式，而不是过早压成单个全局向量，以匹配 DECO 原本 image tokens 与 action tokens 联合 attention 的结构。
   - [x] 第一版暂不采用单路 `visual_tokens: [B, L, D]` 方案；该方案作为后续 ablation 或二期重构候选。
 - [ ] **3.2 触觉编码器手术 (Tactile Encoder Surgery)**
@@ -164,6 +165,8 @@ Kuavo rosbag RGB + depth + state + action + tactile
   - [x] 新增或配置 `tactile_left_max`、`tactile_right_max`，其数值应基于已经转换成牛顿的 Kuavo 触觉数据，而不是直接复用 DECO Inspire Hand 原始单位下的 `3486/4050`。
   - [x] 在配置注释中写明 `tactile_left_max` 与 `tactile_right_max` 的含义：分别表示左手 15 维、右手 15 维触觉牛顿值的归一化上限，用于执行 DECO-style `tac / tactile_max`。
   - [x] `tactile_left_max` 与 `tactile_right_max` 允许先填写 `null` 作为待统计占位；但当 `use_tactile: true` 进入正式触觉训练时必须填写正数，可来自训练集统计最大值、分位数上限或人工审定安全上限。
+  - [x] 清理 `third_party/deco/config/deco.yaml`：移除旧 DECO `tac_left_max/tac_right_max` 别名，只保留 Kuavo 标准字段 `tactile_left_max/tactile_right_max`。
+  - [x] 清理 `third_party/deco/config/deco.yaml`：移除重复的 `data.chunk_size`，以 `model.chunk_size` 作为 DECO action chunk 长度的唯一权威配置。
   - [ ] 若 `use_tactile: true` 且这两个 tactile max 仍为 `null` 或非正数，DECO wrapper/config 应显式报错，避免静默用错误尺度训练触觉分支。
   - [ ] 避免 `observation.tactile` 被 LeRobot 识别为普通 STATE 后走 `MEAN_STD`；若当前 feature type 无法区分 tactile，则通过 `lerobot_patches/custom_patches.py` 或 wrapper/preprocessor 适配把 tactile 从 STATE 归一化路径中隔离出来。
   - [x] 将 `self.tactile_encoder` 输入维度从 `1062*2` 改为 `15*2`。
@@ -196,6 +199,7 @@ Kuavo rosbag RGB + depth + state + action + tactile
   - [ ] 将 `GaussianBlur` 纳入 Kuavo `RGB_Augmenter` 随机增强池；若需要复刻 DECO 的随机 kernel 逻辑，则新增 `RandomGaussianBlur`，采样 `kernel_size=[3,5,7]`、`sigma=[0.1,2.0]`。
   - [ ] RGB 增强权重默认参考 Kuavo ACT：Identity/Notransform 权重 `3.0`，其他增强权重 `1.0`，默认 `max_num_transforms: 1`，保证一部分样本保持原图。
   - [ ] `observation.state` 只由 LeRobot preprocessor 基于 dataset stats 做一次归一化；DECO wrapper 内不得再按 `config/deco.yaml` 手动归一化。
+  - [x] 清理 `third_party/deco/config/deco.yaml` 中 DECO 原生 obs/action 手动归一化统计字段；`third_party/deco/inference.py` 仅在旧统计字段显式存在时才执行兼容归一化。
   - [ ] 归一化后的 28 维 state 仍走 DECO 路线：`obs_encoder -> time embedding condition -> MMAttention`，不改成 ACT 的 state token 或 VAE encoder 输入。
   - [ ] `observation.tactile` 从 batch 中单独取出并切分为左右手，不混入 `observation.state`，且按 DECO-style tactile max 归一化进入 tactile encoder。
 

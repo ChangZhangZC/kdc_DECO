@@ -63,7 +63,7 @@ class DECO(nn.Module):
         dim=512,
         rope_axes_dim=[256, 256],
         freeze_backbone=True,
-        visual_input_mode="dual_rgb",
+        visual_input_mode="dual_stream_rgb_depth",
         vision_backbone="resnet34",
         depth_backbone="resnet34",
     ):
@@ -76,23 +76,21 @@ class DECO(nn.Module):
         self.use_tactile = use_tactile
         self.use_task_condition = use_task_condition
         self.inference_step = inf_step
-        if visual_input_mode not in {"dual_rgb", "dual_stream_rgb_depth"}:
+        if visual_input_mode != "dual_stream_rgb_depth":
             raise ValueError(
-                "visual_input_mode must be 'dual_rgb' or 'dual_stream_rgb_depth', "
+                "Kuavo-DECO only supports visual_input_mode='dual_stream_rgb_depth', "
                 f"got {visual_input_mode}"
             )
         self.visual_input_mode = visual_input_mode
-        self.uses_rgbd = visual_input_mode == "dual_stream_rgb_depth"
         self.rope = RotaryPosEmbed(head_dim, rope_axes_dim)  # initial mrope embedding
         self.img_encoder = build_resnet_backbone(vision_backbone, in_channels=3)  # RGB encoder
         self.img_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
-        if self.uses_rgbd:
-            self.depth_encoder = build_resnet_backbone(depth_backbone, in_channels=1)
-            self.depth_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
-            self.rgb_depth_fusion = RGBDepthCrossAttentionFusion(dim=dim, heads=heads)
-            self.sync_depth_conv1_from_rgb()
+        self.depth_encoder = build_resnet_backbone(depth_backbone, in_channels=1)
+        self.depth_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
+        self.rgb_depth_fusion = RGBDepthCrossAttentionFusion(dim=dim, heads=heads)
+        self.sync_depth_conv1_from_rgb()
         
-        self.pos_idx_embedd = nn.Embedding(2, dim) # stream 0: img1/RGB, stream 1: img2/depth
+        self.pos_idx_embedd = nn.Embedding(2, dim) # stream 0: RGB, stream 1: depth
         if self.obs_state:
             self.obs_encoder = nn.Sequential(
                 nn.Linear(act_dim, dim),
@@ -148,11 +146,11 @@ class DECO(nn.Module):
             if freeze_backbone:
                 self.freeze()
 
-    def forward(self, img1, img2, obs=None, act=None, task_idx=None, tac1=None, tac2=None, action_mask=None, training=True):
+    def forward(self, rgb, depth, obs=None, act=None, task_idx=None, tac1=None, tac2=None, action_mask=None, training=True):
         """
         Args:
-            img1: [B, C, H, W]
-            img2: [B, C, H, W], dual_stream_rgb_depth 模式下表示 depth
+            rgb: [B, 3, H, W], Kuavo 头部 RGB 图像
+            depth: [B, 1, H, W] 或 [B, 3, H, W], Kuavo depth 图像；3 通道兼容存储会取第一通道
             obs: [B, 28]
             act: [B, chunk, 28]
             task_idx: [B, ]
@@ -160,8 +158,8 @@ class DECO(nn.Module):
             tac2: [B, 15], Kuavo 右手 DECO-style normalized tactile
             training: bool
         """
-        # image encoding 
-        feat, image_rotary_emb = self.img_encoding(img1, img2) # feat:[B, 2*img_seq_len, dim]
+        # RGB-D encoding：输出仍保持两路视觉 token，前半为 RGB stream，后半为 depth stream。
+        feat, image_rotary_emb = self.img_encoding(rgb, depth) # feat:[B, 2*img_seq_len, dim]
         if self.use_tactile:
             tactile = self.encode_kuavo_tactile(tac1, tac2)
         else:
@@ -184,10 +182,10 @@ class DECO(nn.Module):
             return act, noise
 
         else:
-            sample = torch.randn(img1.shape[0], self.chunk_size, self.act_dim).to(img1.device)  # initial noisy action
+            sample = torch.randn(rgb.shape[0], self.chunk_size, self.act_dim).to(rgb.device)  # initial noisy action
             t = get_schedule(self.inference_step, self.chunk_size)  # get denoising schedule
             for t_curr, t_prev in zip(t[:-1], t[1:]):  # denoising loop
-                t_vec = torch.full((img1.shape[0],), t_curr, dtype=img1.dtype, device=img1.device)
+                t_vec = torch.full((rgb.shape[0],), t_curr, dtype=rgb.dtype, device=rgb.device)
                 t_vec = self.time_embedd(t_vec)  # time embedding
                 if self.obs_state:
                     t_vec = t_vec + obs
@@ -201,18 +199,8 @@ class DECO(nn.Module):
 
             return sample
 
-    def img_encoding(self, img1, img2):
-        if self.uses_rgbd:
-            return self.rgbd_img_encoding(img1, img2)
-        return self.dual_rgb_img_encoding(img1, img2)
-
-    def dual_rgb_img_encoding(self, img1, img2):
-        assert img1.shape == img2.shape, "img1 and img2 must have the same shape"
-        img = torch.cat([img1, img2], dim=0)  # concat img1 and img2 in batch dim
-        feat = self.img_encoder(img)
-        feat = self.img_head(feat)
-        feat1, feat2 = feat.chunk(2, dim=0)
-        return self.pack_visual_tokens(feat1, feat2, img2.device)
+    def img_encoding(self, rgb, depth):
+        return self.rgbd_img_encoding(rgb, depth)
 
     def rgbd_img_encoding(self, rgb, depth):
         if rgb.ndim != 4 or depth.ndim != 4:
@@ -257,20 +245,9 @@ class DECO(nn.Module):
             return depth[:, :1]
         raise ValueError(f"Depth stream expects 1 or 3 channels, got {depth.shape[1]}")
 
-    def pack_visual_tokens(self, feat1, feat2, device):
-        if feat1.shape != feat2.shape:
-            raise ValueError(
-                "Two visual feature maps must match before token packing, "
-                f"got stream0={tuple(feat1.shape)}, stream1={tuple(feat2.shape)}"
-            )
-        feat_h, feat_w = feat1.shape[-2:]
-        feat1 = einops.rearrange(feat1, 'b c h w -> b (h w) c')
-        feat2 = einops.rearrange(feat2, 'b c h w -> b (h w) c')
-        return self.pack_visual_token_sequences(feat1, feat2, feat_h, feat_w, device)
-
     def pack_visual_token_sequences(self, feat1, feat2, feat_h, feat_w, device):
         image_rotary_emb = self.rope(feat_h, feat_w)
-        # stream_id=0 表示 DECO 原生 img1 或 Kuavo RGB；stream_id=1 表示 DECO 原生 img2 或 Kuavo depth。
+        # stream_id=0 表示 Kuavo RGB；stream_id=1 表示 Kuavo depth。
         stream_id = torch.tensor([0] * feat1.shape[1] + [1] * feat2.shape[1]).to(device)
         stream_emb = self.pos_idx_embedd(stream_id).repeat(feat1.shape[0], 1, 1)
         feat = torch.cat([feat1, feat2], dim=1)  # (b, 2*seq_len, dim)
@@ -327,9 +304,8 @@ class DECO(nn.Module):
             model_dict = model_dict["state_dict"]
 
         self.load_encoder_pretrain(self.img_encoder, model_dict)
-        if self.uses_rgbd:
-            self.load_encoder_pretrain(self.depth_encoder, model_dict, allow_rgb_to_depth=True)
-            self.sync_depth_conv1_from_rgb()
+        self.load_encoder_pretrain(self.depth_encoder, model_dict, allow_rgb_to_depth=True)
+        self.sync_depth_conv1_from_rgb()
 
     def load_encoder_pretrain(self, encoder, model_dict, allow_rgb_to_depth=False):
         target_state = encoder.state_dict()
@@ -362,8 +338,6 @@ class DECO(nn.Module):
         encoder.load_state_dict(pretrain_dict, strict=False)
 
     def sync_depth_conv1_from_rgb(self):
-        if not self.uses_rgbd:
-            return
         rgb_conv = self.img_encoder.conv1
         depth_conv = self.depth_encoder.conv1
         if rgb_conv.weight.shape[1] != 3 or depth_conv.weight.shape[1] != 1:
@@ -377,9 +351,8 @@ class DECO(nn.Module):
     def freeze(self):
         for param in self.img_encoder.parameters():
             param.requires_grad = False
-        if self.uses_rgbd:
-            for param in self.depth_encoder.parameters():
-                param.requires_grad = False
+        for param in self.depth_encoder.parameters():
+            param.requires_grad = False
     
 
     def initialize_weights(self):
@@ -468,7 +441,7 @@ class MMAttention(nn.Module):
     def forward(self, img, act, t, image_rotary_emb, tactile=None):
         """
         Args:
-            img: [B, 2*img_len, dim], 前半为 img1/RGB stream，后半为 img2/depth stream
+            img: [B, 2*img_len, dim], 前半为 RGB stream，后半为 depth stream
             act: [B, chunk, dim]
             t: [B, dim]
             image_rotary_emb: tuple[Tensor, Tensor]
@@ -609,7 +582,7 @@ def modeling(
     freeze_backbone=True,
     pretrain_model_path=False,
     adapter_model_path=False,
-    visual_input_mode="dual_rgb",
+    visual_input_mode="dual_stream_rgb_depth",
     vision_backbone="resnet34",
     depth_backbone="resnet34",
 ):
@@ -672,12 +645,9 @@ def modeling(
             # load vision model for inference
             print("loading vision pretrained weights from {} for inference".format(pretrain_model_path))
             model_dict = torch.load(pretrain_model_path)
-            if visual_input_mode == "dual_stream_rgb_depth":
-                model_state = DeCO.state_dict()
-                pretrain_dict = {k: v for k, v in model_dict.items() if k in model_state.keys() and v.shape == model_state[k].shape}
-                DeCO.load_state_dict(pretrain_dict, strict=False)
-            else:
-                DeCO.load_state_dict(model_dict, strict=True)
+            model_state = DeCO.state_dict()
+            pretrain_dict = {k: v for k, v in model_dict.items() if k in model_state.keys() and v.shape == model_state[k].shape}
+            DeCO.load_state_dict(pretrain_dict, strict=False)
 
         # save_dict = get_trainable_state_dict(DeCO)
         # torch.save(save_dict, './test.pth')
@@ -703,16 +673,16 @@ if __name__ == '__main__':
 
     # from torchinfo import summary
     # # mmdit = DECO(act_dim=28, chunk_size=16, num_attn_blocks=3, inf_step=1, use_task_condition=True)
-    # img1 = torch.randn(1, 3, 224, 224)
-    # img2 = torch.randn(1, 3, 224, 224)
+    # rgb = torch.randn(1, 3, 224, 224)
+    # depth = torch.randn(1, 1, 224, 224)
     # obs = torch.randn(1, 28)
     # act = torch.randn(1, 32, 28)
     # task_idx = torch.randint(0, 8, (1,))
     # tac1 = torch.randn(1, 15)
     # tac2 = torch.randn(1, 15)
 
-    # act_train, _ = mmdit(img1, img2, obs=obs, act=act, task_idx=task_idx, training=True)
-    # act_pred = mmdit(img1, img2, obs=obs, task_idx=task_idx, training=False)
+    # act_train, _ = mmdit(rgb, depth, obs=obs, act=act, task_idx=task_idx, training=True)
+    # act_pred = mmdit(rgb, depth, obs=obs, task_idx=task_idx, training=False)
     # print(act_train.shape, act_pred.shape)
     
-    # summary(model, input_data=(img1, img2, obs, act, task_idx, tac1, tac2), device='cpu')
+    # summary(model, input_data=(rgb, depth, obs, act, task_idx, tac1, tac2), device='cpu')

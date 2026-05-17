@@ -148,15 +148,12 @@ third_party/deco/requirements.txt
 
 ```yaml
 model:
-  visual_input_mode: dual_rgb
+  visual_input_mode: dual_stream_rgb_depth
   vision_backbone: resnet34
   depth_backbone: resnet34
 ```
 
-`visual_input_mode` 可填写：
-
-- `dual_rgb`：兼容 DECO 原生 `img1/img2` 双 RGB 输入。
-- `dual_stream_rgb_depth`：Kuavo RGB-D 模式，`img1` 表示 RGB，`img2` 表示 depth。
+`visual_input_mode` 当前仅保留 `dual_stream_rgb_depth`，表示 Kuavo RGB-D 模式：`rgb` 为头部 RGB，`depth` 为对齐深度图。旧 DECO `dual_rgb` 双 RGB 兼容入口已从 Kuavo 定制副本的模型主体中移除，避免与当前 RGB-D 规划混淆。
 
 RGB-D 模式下：
 
@@ -166,7 +163,7 @@ RGB-D 模式下：
 - RGB/depth 在 ResNet layer4 后做双向 cross attention。
 - 输出仍保留两路 visual tokens：`fused_rgb_tokens` 与 `fused_depth_tokens`，继续接入 DECO `MMAttention`。
 
-当前 `third_party/deco/config/deco.yaml` 保持 `dual_rgb` 作为兼容默认值。后续 Kuavo LeRobot wrapper 应在自己的 policy 配置中显式切到 `dual_stream_rgb_depth`。
+当前 `third_party/deco/config/deco.yaml` 默认使用 `dual_stream_rgb_depth`，表示该副本服务 Kuavo RGB-D 路线。
 
 ### 触觉输入
 
@@ -179,7 +176,9 @@ RGB-D 模式下：
 
 模型 forward 期望收到的 `tac1/tac2` 已经完成 DECO-style tactile max 归一化。数据转换阶段的 `/100` 只表示把 Kuavo normal force 转成牛顿；正式触觉训练前仍需要在 wrapper/config 中填写正数 `tactile_left_max` 与 `tactile_right_max`。
 
-`third_party/deco/config/deco.yaml` 中保留了原 DECO 的 `tac_left_max/tac_right_max` 旧字段，同时新增 Kuavo 语义的 `tactile_left_max/tactile_right_max`。当 `use_tactile: true` 时，Kuavo 路线必须填写后者为正数。
+`third_party/deco/config/deco.yaml` 只保留 Kuavo 语义的 `tactile_left_max/tactile_right_max`。旧 DECO 别名 `tac_left_max/tac_right_max` 已移除，避免与 Kuavo 标准化 wrapper 字段混淆。当 `use_tactile: true` 时，这两个字段必须填写为正数。
+
+配置文件中也只保留一处 `chunk_size`：`model.chunk_size`。DECO 原生 `data.chunk_size`、obs/action 手动归一化统计量和旧 RGB `img_mean/img_std` 不再作为 Kuavo RGB-D 路线的权威配置；state/action/image 的标准化由后续 Kuavo LeRobot wrapper/preprocessor 负责。
 
 ### 保留项
 
