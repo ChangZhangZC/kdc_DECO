@@ -31,9 +31,11 @@
 
 当 `use_tactile: True` 时，模型额外处理双手的触觉信息：
 
-- **原始输入**: 左右手各 1062 维触觉像素点。
-- **空间重组**: 模型在 `init_tac_regions` 函数中将 1062 维数据聚合为 **17 个解剖区域**（Tip, Top, Palm 等）。
-- **总区域数**: 34 个区域特征进入跨模态注意力机制。
+- **DECO 原生输入**: 左右手各 1062 维 Inspire Hand 触觉像素点。
+- **Kuavo-DECO 当前输入**: 左右手各 15 维 normal force，合计 30 维。
+- **归一化边界**: 数据转换阶段的 `/100` 只负责把 Kuavo 原始 normal force 转成牛顿；进入模型前仍需由 wrapper / dataset 按 `tactile_left_max` 与 `tactile_right_max` 做 DECO-style `tac / tactile_max` 归一化。
+- **模型手术结果**: `init_tac_regions` 的 1062 维区域均值逻辑已从 `third_party/deco` Kuavo 定制副本中移除；模型直接使用 `tac1=[B,15]` 与 `tac2=[B,15]`。
+- **触觉 token 维度**: `tactile_encoder` 执行 `30D -> 34D`，再与左右手 15D 归一化触觉拼接，形成 `15 + 15 + 34 = 64` 个触觉条件位置进入跨模态注意力机制。
 
 ---
 
@@ -64,5 +66,6 @@
 
 > **如果需要适配新机器人（如 Kuavo）**：
 > 1. 修改 `config/deco.yaml` 中的 `action_dim`。
-> 2. 更新 `dataset.py` 中的数据切片索引。
-> 3. 更新 `deploy_h1.py` 中的控制分发逻辑。
+> 2. 确认 `observation.state` / `action` 保持 `L_arm, L_hand, R_arm, R_hand, head` 的 28 维顺序。
+> 3. 确认触觉进入模型前已经拆成左手 15D 与右手 15D，并完成 DECO-style tactile max 归一化。
+> 4. 更新部署侧控制分发逻辑，避免把 30Hz action chunk 直接当作 10Hz 控制频率使用。

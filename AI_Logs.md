@@ -1,5 +1,61 @@
 # AI Execution Logs
 
+## 2026-05-16
+
+### 阶段三 third_party/deco 模型手术静态实现
+- **任务**: 根据用户明确 `proceed` 指令，正式进入阶段三代码任务，并按用户要求直接修改 `third_party/deco` 下的 DECO 副本。目标是保留 DECO action-token Flow Matching 主干，同时新增 Kuavo RGB-D 视觉前端和 Kuavo 30 维触觉适配。全过程遵守 No-Runtime 约束，未执行 Python、训练、forward、validator 或环境变更命令。
+- **修改文件 1**: `third_party/deco/models/deco/img_encoder.py`
+  - 将原先固定 3-channel 的 `ResNet34` 拆成可配置 `ResNetBackbone`。
+  - 新增 `ResNet18` 与保留 `ResNet34`，并提供 `build_resnet_backbone(backbone_name, in_channels)`。
+  - 支持 `in_channels=1`，用于 Kuavo RGB-D 模式下的 depth backbone。
+- **修改文件 2**: `third_party/deco/models/deco/deco.py`
+  - 新增 `RGBDepthCrossAttentionFusion`，实现 ACT 风格 RGB-depth 双向 cross attention。
+  - 新增 `visual_input_mode`，支持 `dual_rgb` 与 `dual_stream_rgb_depth` 两种模式：
+    - `dual_rgb` 保留 DECO 原生双 RGB 兼容路径。
+    - `dual_stream_rgb_depth` 将 `img1` 解释为 RGB、`img2` 解释为 depth。
+  - 在 RGB-D 模式下新增独立 `depth_encoder`、`depth_head` 与 `rgb_depth_fusion`。
+  - RGB 使用 3-channel backbone，depth 使用 1-channel backbone；depth conv1 由 RGB conv1 权重按通道均值初始化。
+  - 改造 `img_encoding`：RGB-D 模式下分别编码 RGB/depth，投影后做 cross attention，并输出 `fused_rgb_tokens` 与 `fused_depth_tokens`，再拼接为 `[B, 2L, dim]` 进入 DECO `MMAttention`。
+  - 保留 `pos_idx_embedd` 两路视觉流区分语义；中文注释说明当前两半 token 在 Kuavo RGB-D 模式下表示 RGB stream 与 depth stream。
+  - 删除原 `init_tac_regions` 的 1062 维 Inspire Hand 区域均值逻辑。
+  - 将 tactile 输入改为 `tac1=[B,15]` 与 `tac2=[B,15]`，即 Kuavo 左右手各 15 维 normalized tactile。
+  - 将 `tactile_encoder` 改为 `30D -> 34D`，将 tactile gating/fusion 从 `68` 改为 `64`。
+  - 新增 `encode_kuavo_tactile` 静态 shape 检查，开启 tactile 时若未传入左右手 15D 张量会显式报错。
+  - 保留 DECO 主干的 `action_encoder`、`action_embedd`、`MMAttention`、`linear`、`add_noise`、Flow Matching denoising loop 与训练目标语义。
+  - 修正 adapter finetune 冻结策略：只冻结 shape 匹配且实际加载成功的 checkpoint 参数，避免 Kuavo 30D tactile 新参数被错误冻结。
+- **修改文件 3**: `third_party/deco/inference.py`
+  - `letterbox` 新增 interpolation 参数。
+  - 在 `dual_stream_rgb_depth` 模式下，推理预处理将 `img2` 按 depth 单通道处理，不再套 RGB ImageNet mean/std。
+  - 对 3-channel repeat depth 取第一通道，恢复 1-channel depth 语义。
+  - 新增 `get_tactile_max`，优先读取 Kuavo 语义的 `tactile_left_max` / `tactile_right_max`，并在 `use_tactile=True` 时要求二者为正数。
+  - 关闭 tactile 时提供左右手 15D 零占位，避免非 tactile 推理路径被无关 tactile 参数阻塞。
+- **修改文件 4**: `third_party/deco/config/deco.yaml`
+  - 新增 `visual_input_mode`、`vision_backbone`、`depth_backbone` 配置项。
+  - 添加中文注释说明 `dual_rgb` 与 `dual_stream_rgb_depth` 的含义。
+  - 新增 Kuavo 语义的 `tactile_left_max` / `tactile_right_max`，默认 `null`，并保留原 DECO 旧字段 `tac_left_max` / `tac_right_max` 作为原生 dataset 兼容项。
+  - 添加 tactile max 中文说明，强调 Kuavo 正式触觉训练应使用已转换成牛顿后的训练集统计正数，不应直接复用 Inspire Hand 原始量纲数值。
+- **修改文件 5**: `third_party/deco/models/deco/train_one_epoch.py`
+  - 仅修正旧注释中的 action 维度，将 `(chunksize, 26)` 改为 `(chunksize, 28)`；未改变训练 loss 或训练逻辑。
+- **修改文件 6**: `third_party/deco/ACTION_SPACE_ANATOMY.md`
+  - 更新 tactile 章节，说明 Kuavo-DECO 当前输入为左右手各 15 维、合计 30 维。
+  - 记录 `init_tac_regions` 已从 Kuavo 定制副本中移除，当前 tactile 条件位置为 `15 + 15 + 34 = 64`。
+- **修改文件 7**: `third_party/deco/README.MD`
+  - 在 YAML 示例中补充 `visual_input_mode`、`vision_backbone`、`depth_backbone`。
+  - 标注原 `tac_left_max/tac_right_max` 是 DECO 原始数值，Kuavo 训练应覆盖为牛顿量纲下的左右手 tactile max。
+- **修改文件 8**: `README_DECO.md`
+  - 新增阶段三模型手术说明，记录 RGB-D 模式、backbone 策略、触觉 30D 路径和保留的 DECO 主干行为。
+  - 更新当前限制，说明训练 wrapper 与部署 wrapper 仍属后续阶段。
+- **修改文件 9**: `PLANS.md`
+  - 勾选阶段三中已实际完成的 `3.1` 视觉前端移植、`3.3` 主干保留策略、`3.4` 模型静态验证，以及 `3.2/3.5` 中已由 `third_party/deco` 代码完成的子项。
+  - 保留 wrapper/config guard、LeRobot tactile feature 隔离、`use_tactile_lora` 到 `plugin` 映射等阶段四任务为未完成。
+- **静态检查**:
+  - 执行 `git diff --check`，结果通过，无 trailing whitespace。
+  - 使用 `rg` 检查 `third_party/deco/models/deco` 与推理入口，确认核心代码中不再残留 `1062*2`、`[B, 68]`、`tactile_data_index`、`def init_tac_regions`、`chunksize, 26` 等旧实现痕迹。
+- **未执行项**:
+  - 未运行 Python、未进行 import 编译检查、未进行 forward shape test、未训练、未验证数据集、未部署。
+  - 未修改根目录 `DECO/` 原始参考副本。
+  - 未修改 `third_party/lerobot/`。
+
 ## 2026-05-15
 
 ### 更新阶段三图像增强、视觉 token、state/tactile 接入与 depth 默认策略决策

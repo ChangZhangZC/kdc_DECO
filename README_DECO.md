@@ -1,6 +1,6 @@
 # DECO Model Integration Guide
 
-本文档记录 Kuavo-DECO 集成的使用方式。当前已完成阶段一的数据转换静态实现，以及阶段二的 DECO 源码复制归档与依赖记录；训练 wrapper、模型手术和部署 wrapper 仍以后续阶段为准。
+本文档记录 Kuavo-DECO 集成的使用方式。当前已完成阶段一的数据转换静态实现、阶段二的 DECO 源码复制归档与依赖记录，以及阶段三的 `third_party/deco` 模型手术静态实现；训练 wrapper 和部署 wrapper 仍以后续阶段为准。
 
 ## 阶段一：RGB-D 数据转换
 
@@ -140,8 +140,61 @@ third_party/deco/requirements.txt
 
 根目录 `requirements_DECO.txt` 记录了 DECO 原始依赖与 Kuavo/LeRobot 环境的兼容说明。当前阶段不安装依赖；`torch`、`torchvision`、`diffusers`、`huggingface-hub` 等核心包应以后续实际 Kuavo/LeRobot 训练环境为准，不在本阶段强制切换版本。
 
+## 阶段三：third_party/deco 模型手术
+
+### 视觉输入模式
+
+阶段三已在 `third_party/deco/models/deco/` 中加入 Kuavo RGB-D 视觉前端适配。核心配置项位于：
+
+```yaml
+model:
+  visual_input_mode: dual_rgb
+  vision_backbone: resnet34
+  depth_backbone: resnet34
+```
+
+`visual_input_mode` 可填写：
+
+- `dual_rgb`：兼容 DECO 原生 `img1/img2` 双 RGB 输入。
+- `dual_stream_rgb_depth`：Kuavo RGB-D 模式，`img1` 表示 RGB，`img2` 表示 depth。
+
+RGB-D 模式下：
+
+- RGB 使用 3-channel ResNet backbone。
+- depth 使用 1-channel ResNet backbone。
+- depth conv1 由 RGB conv1 权重按通道均值初始化。
+- RGB/depth 在 ResNet layer4 后做双向 cross attention。
+- 输出仍保留两路 visual tokens：`fused_rgb_tokens` 与 `fused_depth_tokens`，继续接入 DECO `MMAttention`。
+
+当前 `third_party/deco/config/deco.yaml` 保持 `dual_rgb` 作为兼容默认值。后续 Kuavo LeRobot wrapper 应在自己的 policy 配置中显式切到 `dual_stream_rgb_depth`。
+
+### 触觉输入
+
+阶段三已将 DECO tactile 分支从 Inspire Hand 1062D 区域均值逻辑改为 Kuavo 30D 输入：
+
+- `tac1`: 左手 15D。
+- `tac2`: 右手 15D。
+- `tactile_encoder`: `30D -> 34D`。
+- tactile fusion: `15 + 15 + 34 = 64`。
+
+模型 forward 期望收到的 `tac1/tac2` 已经完成 DECO-style tactile max 归一化。数据转换阶段的 `/100` 只表示把 Kuavo normal force 转成牛顿；正式触觉训练前仍需要在 wrapper/config 中填写正数 `tactile_left_max` 与 `tactile_right_max`。
+
+`third_party/deco/config/deco.yaml` 中保留了原 DECO 的 `tac_left_max/tac_right_max` 旧字段，同时新增 Kuavo 语义的 `tactile_left_max/tactile_right_max`。当 `use_tactile: true` 时，Kuavo 路线必须填写后者为正数。
+
+### 保留项
+
+阶段三没有改变 DECO 主干的以下行为：
+
+- `action_encoder`
+- action token chunk 建模
+- `MMAttention`
+- Flow Matching `add_noise`
+- 训练目标 `F.mse_loss(out, noise - action)`
+- 推理阶段 denoising loop
+
 ## 当前限制
 
-- 训练端 DECO wrapper 尚未完成；不要直接把该数据集喂给未适配 RGB-D/tactile schema 的旧 DECO 训练入口。
+- 训练端 DECO wrapper 尚未完成；不要直接把 LeRobot 数据集喂给尚未完成的 Kuavo DECO wrapper。
 - 部署端 10Hz 控制频率不在洗数据阶段处理，后续由 wrapper/deploy action queue 使用 `action_stride=3` 完成。
 - 当前新增转换脚本与 validator 仅完成静态审查，尚未在本机执行 rosbag 转换或 validator。
+- 阶段三模型修改仅做静态代码审查，尚未在本机执行 forward、训练或部署验证。

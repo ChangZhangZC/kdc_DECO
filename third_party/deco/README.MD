@@ -134,6 +134,9 @@ model:
   heads: 8                    # Number of attention heads
   dim: 512                    # Model hidden dimension
   rope_axes_dim: [256, 256]   # Rotary positional embedding dimensions for [height, width]
+  visual_input_mode: dual_rgb # dual_rgb or dual_stream_rgb_depth (Kuavo RGB-D)
+  vision_backbone: resnet34   # resnet34 by default, resnet18 for lower latency
+  depth_backbone: resnet34    # used when visual_input_mode is dual_stream_rgb_depth
   img_pretrain: /root/.cache/torch/hub/checkpoints/resnet34-b627a593.pth  # ImageNet-pretrained backbone path
   freeze_backbone: False      # Whether to freeze the image encoder
   pretrain_model_path: False  # Path to vision-based pretrained policy
@@ -141,8 +144,10 @@ model:
 
 data:
   chunk_size: 32              # Temporal chunk size
-  tac_left_max: 3486.0        # Maximum value of left tactile sensor
-  tac_right_max: 4050.0       # Maximum value of right tactile sensor
+  tactile_left_max: null      # Kuavo left-hand Newton max; required when use_tactile=True
+  tactile_right_max: null     # Kuavo right-hand Newton max; required when use_tactile=True
+  tac_left_max: 3486.0        # Legacy DECO field kept for original dataset.py compatibility
+  tac_right_max: 4050.0       # Legacy DECO field kept for original dataset.py compatibility
   norm_type: 'mean_std'       # Normalization type: mean_std or min_max
   observation_mean: [...]     # Observation mean (computed via utils/cal_mean_std.py)
   observation_std: [...]      # Observation standard deviation

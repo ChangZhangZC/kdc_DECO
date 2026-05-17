@@ -1,13 +1,16 @@
 import torch
 import importlib
+import numpy as np
 from PIL import Image
+from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2 as transforms
 
 
 class letterbox():
-    def __init__(self, size=256, fill=128):
+    def __init__(self, size=256, fill=128, interpolation=Image.BILINEAR):
         self.size = size
         self.fill = fill  # padding color, 0 for black
+        self.interpolation = interpolation
 
     def __call__(self, img: Image.Image):
         w, h = img.size
@@ -17,7 +20,7 @@ class letterbox():
         new_w, new_h = int(w * scale), int(h * scale)
 
         # 缩放图像
-        img = img.resize((new_w, new_h), Image.BILINEAR)
+        img = img.resize((new_w, new_h), self.interpolation)
 
         # 计算padding
         pad_w = self.size - new_w
@@ -46,10 +49,16 @@ def preprocess(img1, img2, obs, tac1, tac2, yaml_config, letterbox_flag=False):
     obs = obs.unsqueeze(0) # (b, 28)
 
     # norm tactile
-    tac_max_l = yaml_config['data']['tac_left_max']
-    tac_max_r = yaml_config['data']['tac_right_max']
-    tac1 = torch.from_numpy(tac1 / tac_max_l).float().clamp(0, 1.0)
-    tac2 = torch.from_numpy(tac2 / tac_max_r).float().clamp(0, 1.0)
+    if yaml_config['model'].get('use_tactile', False):
+        if tac1 is None or tac2 is None:
+            raise ValueError("use_tactile=True requires left/right Kuavo tactile arrays")
+        tac_max_l, tac_max_r = get_tactile_max(yaml_config)
+        tac1 = torch.from_numpy(tac1 / tac_max_l).float().clamp(0, 1.0)
+        tac2 = torch.from_numpy(tac2 / tac_max_r).float().clamp(0, 1.0)
+    else:
+        # Kuavo-DECO 触觉模型期望左右手各 15 维；关闭触觉时传入占位值，forward 不消费。
+        tac1 = torch.zeros(15, dtype=torch.float32)
+        tac2 = torch.zeros(15, dtype=torch.float32)
     tac1, tac2 = tac1.unsqueeze(0), tac2.unsqueeze(0)
 
     # preprocess image
@@ -65,13 +74,42 @@ def preprocess(img1, img2, obs, tac1, tac2, yaml_config, letterbox_flag=False):
         transforms.Normalize(
             mean=img_config['img_mean'],
             std=img_config['img_std'])
-    ]) 
+    ])
     img1 = Image.fromarray(img1)
     img1 = test_transform(img1).unsqueeze(0) # pil2tensor and unsqueeze (b, 3, h, w)
-    img2 = Image.fromarray(img2)
-    img2 = test_transform(img2).unsqueeze(0) # pil2tensor and
+    if yaml_config['model'].get('visual_input_mode', 'dual_rgb') == 'dual_stream_rgb_depth':
+        depth_array = np.asarray(img2)
+        if depth_array.ndim == 3:
+            # 第一版 Kuavo depth 在磁盘中可能是 3-channel repeat，推理时恢复单通道语义。
+            depth_array = depth_array[..., 0]
+        depth_img = Image.fromarray(depth_array)
+        if letterbox_flag:
+            depth_resize = letterbox(img_config['img_size'][0], fill=0, interpolation=Image.NEAREST)
+        else:
+            depth_resize = transforms.Resize(img_config['img_size'], interpolation=InterpolationMode.NEAREST)
+        depth_transform = transforms.Compose([
+            depth_resize,
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
+        ])
+        img2 = depth_transform(depth_img).unsqueeze(0)
+    else:
+        img2 = Image.fromarray(img2)
+        img2 = test_transform(img2).unsqueeze(0) # pil2tensor and
 
     return img1, img2, obs, tac1, tac2
+
+
+def get_tactile_max(yaml_config):
+    data_config = yaml_config['data']
+    tac_max_l = data_config.get('tactile_left_max', data_config.get('tac_left_max'))
+    tac_max_r = data_config.get('tactile_right_max', data_config.get('tac_right_max'))
+    if tac_max_l is None or tac_max_r is None or tac_max_l <= 0 or tac_max_r <= 0:
+        raise ValueError(
+            "use_tactile=True requires positive tactile_left_max and tactile_right_max "
+            "based on Kuavo tactile values after normal_force / 100."
+        )
+    return tac_max_l, tac_max_r
 
 
 def postprocess(action, yaml_config):

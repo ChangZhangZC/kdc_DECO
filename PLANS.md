@@ -147,43 +147,43 @@ Kuavo rosbag RGB + depth + state + action + tactile
 > **预训练权重兼容性断言**：  
 > 触觉分支与视觉前端都会改变部分参数形状或语义。DECO 官方基于 Inspire Hand 触觉或双 RGB 视觉假设训练出的完整权重不能直接严格加载。可优先复用 ImageNet ResNet backbone 权重；DECO 主干权重是否能部分加载，需要后续按参数名和 shape 做静态筛选。
 
-- [ ] **3.1 Kuavo RGB-D 视觉前端移植**
-  - [ ] 新建或改造 DECO 视觉编码模块，替换原生 `img_encoding(img1, img2)`。
-  - [ ] 默认使用 `vision_backbone: resnet34`，并允许配置切换 `resnet18`。
-  - [ ] RGB backbone 输出 layer4 feature map，并投影到 DECO hidden dim。
-  - [ ] depth backbone 使用 1-channel ResNet；第一层卷积权重使用 RGB backbone conv1 权重按通道平均初始化。
-  - [ ] RGB 与 depth 使用独立 backbone，不共享同一个 ResNet；二者只在 ResNet 后的 token 层做 cross-modal fusion。
-  - [ ] 复用 ACT 风格 RGB-depth cross attention fusion，并保留两路视觉 token：`fused_rgb_tokens` 与 `fused_depth_tokens`。
-  - [ ] 将 DECO 原生 `img1/img2` 的两路 token 语义改写为 `fused_rgb/fused_depth`；`MMAttention` 中基于 `total_img_len / 2` 的视觉分流逻辑仍可保留，但必须用中文注释说明新语义。
-  - [ ] 保留空间 token 形式，而不是过早压成单个全局向量，以匹配 DECO 原本 image tokens 与 action tokens 联合 attention 的结构。
-  - [ ] 第一版暂不采用单路 `visual_tokens: [B, L, D]` 方案；该方案作为后续 ablation 或二期重构候选。
+- [x] **3.1 Kuavo RGB-D 视觉前端移植**
+  - [x] 新建或改造 DECO 视觉编码模块，替换原生 `img_encoding(img1, img2)`。
+  - [x] 默认使用 `vision_backbone: resnet34`，并允许配置切换 `resnet18`。
+  - [x] RGB backbone 输出 layer4 feature map，并投影到 DECO hidden dim。
+  - [x] depth backbone 使用 1-channel ResNet；第一层卷积权重使用 RGB backbone conv1 权重按通道平均初始化。
+  - [x] RGB 与 depth 使用独立 backbone，不共享同一个 ResNet；二者只在 ResNet 后的 token 层做 cross-modal fusion。
+  - [x] 复用 ACT 风格 RGB-depth cross attention fusion，并保留两路视觉 token：`fused_rgb_tokens` 与 `fused_depth_tokens`。
+  - [x] 将 DECO 原生 `img1/img2` 的两路 token 语义改写为 `fused_rgb/fused_depth`；`MMAttention` 中基于 `total_img_len / 2` 的视觉分流逻辑仍可保留，但必须用中文注释说明新语义。
+  - [x] 保留空间 token 形式，而不是过早压成单个全局向量，以匹配 DECO 原本 image tokens 与 action tokens 联合 attention 的结构。
+  - [x] 第一版暂不采用单路 `visual_tokens: [B, L, D]` 方案；该方案作为后续 ablation 或二期重构候选。
 - [ ] **3.2 触觉编码器手术 (Tactile Encoder Surgery)**
-  - [ ] 删除或绕过原版 `init_tac_regions` 的 1062 维 Inspire Hand 区域均值逻辑。
-  - [ ] 将触觉输入改为 Kuavo 双手 30 维：左手 15 + 右手 15。
-  - [ ] 洗数据脚本中 `normal_force / 100` 只作为单位换算，表示把 Kuavo 原始触觉量转换为牛顿；模型入口仍需执行 DECO-style 触觉归一化。
-  - [ ] 新增或配置 `tactile_left_max`、`tactile_right_max`，其数值应基于已经转换成牛顿的 Kuavo 触觉数据，而不是直接复用 DECO Inspire Hand 原始单位下的 `3486/4050`。
-  - [ ] 在配置注释中写明 `tactile_left_max` 与 `tactile_right_max` 的含义：分别表示左手 15 维、右手 15 维触觉牛顿值的归一化上限，用于执行 DECO-style `tac / tactile_max`。
-  - [ ] `tactile_left_max` 与 `tactile_right_max` 允许先填写 `null` 作为待统计占位；但当 `use_tactile: true` 进入正式触觉训练时必须填写正数，可来自训练集统计最大值、分位数上限或人工审定安全上限。
+  - [x] 删除或绕过原版 `init_tac_regions` 的 1062 维 Inspire Hand 区域均值逻辑。
+  - [x] 将触觉输入改为 Kuavo 双手 30 维：左手 15 + 右手 15。
+  - [x] 洗数据脚本中 `normal_force / 100` 只作为单位换算，表示把 Kuavo 原始触觉量转换为牛顿；模型入口仍需执行 DECO-style 触觉归一化。
+  - [x] 新增或配置 `tactile_left_max`、`tactile_right_max`，其数值应基于已经转换成牛顿的 Kuavo 触觉数据，而不是直接复用 DECO Inspire Hand 原始单位下的 `3486/4050`。
+  - [x] 在配置注释中写明 `tactile_left_max` 与 `tactile_right_max` 的含义：分别表示左手 15 维、右手 15 维触觉牛顿值的归一化上限，用于执行 DECO-style `tac / tactile_max`。
+  - [x] `tactile_left_max` 与 `tactile_right_max` 允许先填写 `null` 作为待统计占位；但当 `use_tactile: true` 进入正式触觉训练时必须填写正数，可来自训练集统计最大值、分位数上限或人工审定安全上限。
   - [ ] 若 `use_tactile: true` 且这两个 tactile max 仍为 `null` 或非正数，DECO wrapper/config 应显式报错，避免静默用错误尺度训练触觉分支。
   - [ ] 避免 `observation.tactile` 被 LeRobot 识别为普通 STATE 后走 `MEAN_STD`；若当前 feature type 无法区分 tactile，则通过 `lerobot_patches/custom_patches.py` 或 wrapper/preprocessor 适配把 tactile 从 STATE 归一化路径中隔离出来。
-  - [ ] 将 `self.tactile_encoder` 输入维度从 `1062*2` 改为 `15*2`。
-  - [ ] 将 tactile gating/fusion 维度从 `68` 调整为 `64`：15 + 15 + 34。
-  - [ ] 前向传播中直接使用 `tac1` 与 `tac2`，不再做 Inspire Hand 区域切片均值。
-- [ ] **3.3 DECO 主干保留策略**
-  - [ ] 保留 `action_encoder`、`action_embedd`、`MMAttention`、`linear` 动作头和 `add_noise` 逻辑。
-  - [ ] 保留训练目标 `F.mse_loss(out, noise - action)`。
-  - [ ] 第一版 loss 不使用 `action_is_pad` mask，保持 DECO 原生“mask 返回但 diffusion loss 不消费 mask”的行为。
-  - [ ] 保留推理阶段 Flow Matching 去噪循环；`inf_step` 仍只表示去噪步数，不表示 10Hz 控制频率。
-- [ ] **3.4 模型静态验证**
-  - [ ] 做静态 shape 审查：RGB `(B, 3, H, W)`、depth `(B, 1, H, W)`、state `(B, 28)`、tactile `(B, 30)`、action `(B, chunk_size, 28)`。
-  - [ ] 做 visual token 审查：`fused_rgb_tokens` 与 `fused_depth_tokens` 应具有相同空间长度，拼接后为 `[B, 2L, dim]`，以兼容 DECO 原生两路视觉 token 假设。
-  - [ ] 明确不在当前机器执行 forward 验证；仅通过代码审查、shape 推导和注释记录完成逻辑验证。
+  - [x] 将 `self.tactile_encoder` 输入维度从 `1062*2` 改为 `15*2`。
+  - [x] 将 tactile gating/fusion 维度从 `68` 调整为 `64`：15 + 15 + 34。
+  - [x] 前向传播中直接使用 `tac1` 与 `tac2`，不再做 Inspire Hand 区域切片均值。
+- [x] **3.3 DECO 主干保留策略**
+  - [x] 保留 `action_encoder`、`action_embedd`、`MMAttention`、`linear` 动作头和 `add_noise` 逻辑。
+  - [x] 保留训练目标 `F.mse_loss(out, noise - action)`。
+  - [x] 第一版 loss 不使用 `action_is_pad` mask，保持 DECO 原生“mask 返回但 diffusion loss 不消费 mask”的行为。
+  - [x] 保留推理阶段 Flow Matching 去噪循环；`inf_step` 仍只表示去噪步数，不表示 10Hz 控制频率。
+- [x] **3.4 模型静态验证**
+  - [x] 做静态 shape 审查：RGB `(B, 3, H, W)`、depth `(B, 1, H, W)`、state `(B, 28)`、tactile `(B, 30)`、action `(B, chunk_size, 28)`。
+  - [x] 做 visual token 审查：`fused_rgb_tokens` 与 `fused_depth_tokens` 应具有相同空间长度，拼接后为 `[B, 2L, dim]`，以兼容 DECO 原生两路视觉 token 假设。
+  - [x] 明确不在当前机器执行 forward 验证；仅通过代码审查、shape 推导和注释记录完成逻辑验证。
 - [ ] **3.5 触觉 LoRA / Plugin Adapter 保留策略**
-  - [ ] 保留 DECO 源码中的 `PI_Adapter` 低秩 adapter 思路：`down: dim -> rank`，`up: rank -> out_dim`，并以 residual delta 形式注入 image/action attention 与 MLP 分支。
+  - [x] 保留 DECO 源码中的 `PI_Adapter` 低秩 adapter 思路：`down: dim -> rank`，`up: rank -> out_dim`，并以 residual delta 形式注入 image/action attention 与 MLP 分支。
   - [ ] Kuavo 配置层使用 `use_tactile_lora` 命名，wrapper 内部映射到 DECO 原生 `plugin`；使用 `tactile_lora_rank` 映射到 `plugin_rank`。
-  - [ ] 默认 `tactile_lora_rank: 32`，与 DECO 源码默认 `plugin_rank=32` 对齐。
-  - [ ] 默认 `freeze_pretrained_main: true`：加载 `pretrain_model_path` 后，冻结 checkpoint 中已有且 shape 匹配的主干参数。
-  - [ ] 保持新出现的 Kuavo 触觉编码器、tactile cross-attention、PI_Adapter 和必要的 RGB-D bridge 参数可训练。
+  - [x] 默认 `tactile_lora_rank: 32`，与 DECO 源码默认 `plugin_rank=32` 对齐。
+  - [x] 默认 `freeze_pretrained_main: true`：加载 `pretrain_model_path` 后，冻结 checkpoint 中已有且 shape 匹配的主干参数。
+  - [x] 保持新出现的 Kuavo 触觉编码器、tactile cross-attention、PI_Adapter 和必要的 RGB-D bridge 参数可训练。
   - [ ] 若指定 `adapter_model_path`，表示加载已经合并保存的 base + adapter 权重，用于部署或继续 adapter finetune。
 - [ ] **3.6 分阶段训练边界**
   - [ ] 严格遵循 DECO 两步式训练法，不在第一版训练中同时解决视觉改造与触觉 adapter。

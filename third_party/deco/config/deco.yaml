@@ -12,6 +12,13 @@ model:
   heads: 8
   dim: 512
   rope_axes_dim: [256, 256]
+  # 视觉输入模式：
+  # - dual_rgb：兼容 DECO 原生 img1/img2 双 RGB。
+  # - dual_stream_rgb_depth：Kuavo RGB-D 模式，img1=RGB，img2=depth。
+  visual_input_mode: dual_rgb
+  # Kuavo-DECO 默认建议 resnet34；resnet18 可作为低显存/低延迟备选。
+  vision_backbone: resnet34
+  depth_backbone: resnet34
   img_pretrain: /root/.cache/torch/hub/checkpoints/resnet34-b627a593.pth
   freeze_backbone: False
   pretrain_model_path: False
@@ -19,6 +26,12 @@ model:
   
 data:
   chunk_size: 32
+  # Kuavo tactile max 用于 DECO-style tac / tactile_max 归一化。
+  # null 只允许作为 use_tactile=False 的占位；正式 use_tactile=True 时必须改为
+  # 基于 Kuavo 训练集统计的正数，单位为 normal force / 100 后的牛顿。
+  tactile_left_max: null
+  tactile_right_max: null
+  # 兼容 DECO 原生 dataset.py 的旧字段；Kuavo wrapper 应优先使用 tactile_left/right_max。
   tac_left_max: 3486.0
   tac_right_max: 4050.0
   norm_type: 'mean_std'

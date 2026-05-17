@@ -1,16 +1,72 @@
 import math
 import torch
 import einops
-import numpy as np
 from torch import Tensor, nn
 from torch.nn import functional as F
-from models.deco.img_encoder import ResNet34
+from models.deco.img_encoder import build_resnet_backbone
 from models.deco.denoise_schedular import get_schedule
 from models.deco.rope import apply_rotary_emb, RotaryPosEmbed
 
 
+class RGBDepthCrossAttentionFusion(nn.Module):
+    """ACT 风格 RGB-depth 双向 cross attention。
+
+    输入和输出均为 token 序列 [B, L, dim]。阶段三第一版不把 RGB-D 压成
+    单路 visual token，而是保留 fused_rgb / fused_depth 两路语义，继续适配
+    DECO 原生两路视觉 token 假设。
+    """
+
+    def __init__(self, dim, heads):
+        super().__init__()
+        self.rgb_to_depth_attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.depth_to_rgb_attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.rgb_norm = nn.LayerNorm(dim)
+        self.depth_norm = nn.LayerNorm(dim)
+
+    def forward(self, rgb_tokens, depth_tokens):
+        if rgb_tokens.shape != depth_tokens.shape:
+            raise ValueError(
+                "RGB/depth token shapes must match before fusion, "
+                f"got rgb={tuple(rgb_tokens.shape)}, depth={tuple(depth_tokens.shape)}"
+            )
+
+        fused_rgb, _ = self.rgb_to_depth_attn(
+            query=rgb_tokens,
+            key=depth_tokens,
+            value=depth_tokens,
+        )
+        fused_depth, _ = self.depth_to_rgb_attn(
+            query=depth_tokens,
+            key=rgb_tokens,
+            value=rgb_tokens,
+        )
+        fused_rgb = self.rgb_norm(rgb_tokens + fused_rgb)
+        fused_depth = self.depth_norm(depth_tokens + fused_depth)
+        return fused_rgb, fused_depth
+
+
 class DECO(nn.Module):
-    def __init__(self, act_dim, chunk_size, obs_state=True, use_tactile=False, plugin=False, plugin_rank=32, use_task_condition=False, num_tasks=10, inf_step=10, img_pretrain=False, num_attn_blocks=6, heads=8, dim=512, rope_axes_dim=[256, 256], freeze_backbone=True):
+    def __init__(
+        self,
+        act_dim,
+        chunk_size,
+        obs_state=True,
+        use_tactile=False,
+        plugin=False,
+        plugin_rank=32,
+        use_task_condition=False,
+        num_tasks=10,
+        inf_step=10,
+        img_pretrain=False,
+        num_attn_blocks=6,
+        heads=8,
+        dim=512,
+        rope_axes_dim=[256, 256],
+        freeze_backbone=True,
+        visual_input_mode="dual_rgb",
+        vision_backbone="resnet34",
+        depth_backbone="resnet34",
+    ):
         super().__init__()
         head_dim = dim // heads
         self.head_dim = head_dim
@@ -20,11 +76,23 @@ class DECO(nn.Module):
         self.use_tactile = use_tactile
         self.use_task_condition = use_task_condition
         self.inference_step = inf_step
+        if visual_input_mode not in {"dual_rgb", "dual_stream_rgb_depth"}:
+            raise ValueError(
+                "visual_input_mode must be 'dual_rgb' or 'dual_stream_rgb_depth', "
+                f"got {visual_input_mode}"
+            )
+        self.visual_input_mode = visual_input_mode
+        self.uses_rgbd = visual_input_mode == "dual_stream_rgb_depth"
         self.rope = RotaryPosEmbed(head_dim, rope_axes_dim)  # initial mrope embedding
-        self.img_encoder = ResNet34()  # img encoder: resnet from ImageNet pretrained model
+        self.img_encoder = build_resnet_backbone(vision_backbone, in_channels=3)  # RGB encoder
         self.img_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
+        if self.uses_rgbd:
+            self.depth_encoder = build_resnet_backbone(depth_backbone, in_channels=1)
+            self.depth_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
+            self.rgb_depth_fusion = RGBDepthCrossAttentionFusion(dim=dim, heads=heads)
+            self.sync_depth_conv1_from_rgb()
         
-        self.pos_idx_embedd = nn.Embedding(2, dim) # img embedding to distinguish img1 and img2
+        self.pos_idx_embedd = nn.Embedding(2, dim) # stream 0: img1/RGB, stream 1: img2/depth
         if self.obs_state:
             self.obs_encoder = nn.Sequential(
                 nn.Linear(act_dim, dim),
@@ -32,12 +100,11 @@ class DECO(nn.Module):
                 nn.Linear(dim, dim)
             )
         if self.use_tactile:
-            # calculate the mean tactile data of each regions(17 regions in inspire hand) in forward pass
-            # left: (batch, 1062) --> (batch, 17), right: (batch, 1062) --> (batch, 17)
-            self.init_tac_regions()
-
-            # gated tactile
-            self.gated = nn.Linear(68, 68, bias=False)
+            # Kuavo 触觉已经在数据转换阶段提取为左右手各 15 维法向力。
+            # wrapper / dataset 应先完成 DECO-style tactile max 归一化，再传入这里。
+            self.tactile_dim_per_hand = 15
+            self.tactile_condition_dim = 15 + 15 + 34
+            self.gated = nn.Linear(self.tactile_condition_dim, self.tactile_condition_dim, bias=False)
 
             # positional embedding for tactile regions
             self.pos_tac_embedd = nn.Sequential(
@@ -47,10 +114,9 @@ class DECO(nn.Module):
                             nn.Linear(dim * 4, dim)
                         )
 
-            # learnable of each regions in forward pass
-            # (b, 1062 + 1062) --> (b, 17 + 17)
+            # Kuavo tactile: (b, 15 + 15) --> (b, 34)
             self.tactile_encoder = nn.Sequential(
-                nn.Linear(1062*2, 512),
+                nn.Linear(self.tactile_dim_per_hand * 2, 512),
                 nn.Mish(),
                 nn.Linear(512, 34),
             )
@@ -77,10 +143,8 @@ class DECO(nn.Module):
         if not plugin:
             self.initialize_weights()
 
-        if img_pretrain:  # load weights after initialization 
-            model_dict = torch.load(img_pretrain, map_location='cpu')
-            pretrain_dict = {k: v for k, v in model_dict.items() if k in self.img_encoder.state_dict().keys() and np.shape(model_dict[k]) == np.shape(v)}
-            self.img_encoder.load_state_dict(pretrain_dict, strict=True)
+        if img_pretrain:  # load weights after initialization
+            self.load_visual_pretrain(img_pretrain)
             if freeze_backbone:
                 self.freeze()
 
@@ -88,28 +152,18 @@ class DECO(nn.Module):
         """
         Args:
             img1: [B, C, H, W]
-            img2: [B, C, H, W]
+            img2: [B, C, H, W], dual_stream_rgb_depth 模式下表示 depth
             obs: [B, 28]
             act: [B, chunk, 28]
             task_idx: [B, ]
-            tac1: [B, 1062]
-            tac2: [B, 1062]
+            tac1: [B, 15], Kuavo 左手 DECO-style normalized tactile
+            tac2: [B, 15], Kuavo 右手 DECO-style normalized tactile
             training: bool
         """
         # image encoding 
         feat, image_rotary_emb = self.img_encoding(img1, img2) # feat:[B, 2*img_seq_len, dim]
         if self.use_tactile:
-            # calculate the mean tactile data of each regions(17 regions in inspire hand) in forward pass
-            tac1_avg = torch.stack([tac1[:, s:e].mean(dim=1) for s, e in self.tactile_data_index.values()], dim=1)  # (batch, 17)
-            tac2_avg = torch.stack([tac2[:, s:e].mean(dim=1) for s, e in self.tactile_data_index.values()], dim=1)  # (batch, 17)
-            
-            # learnable tactile encoder
-            tactile_emb = self.tactile_encoder(torch.cat([tac1, tac2], dim=-1))  # (b, 1062 + 1062) --> (b, 17+17)
-            # gated tactile
-            tactile = torch.cat([tac1_avg, tac2_avg, tactile_emb], dim=-1)
-            tactile = tactile * torch.sigmoid(self.gated(tactile))  # (b, 68)
-            # positional embedding for tactile regions
-            tactile = self.pos_tac_embedd(tactile)  # (b, 68) --> (b, 68, dim)
+            tactile = self.encode_kuavo_tactile(tac1, tac2)
         else:
             tactile = None
 
@@ -148,25 +202,101 @@ class DECO(nn.Module):
             return sample
 
     def img_encoding(self, img1, img2):
+        if self.uses_rgbd:
+            return self.rgbd_img_encoding(img1, img2)
+        return self.dual_rgb_img_encoding(img1, img2)
+
+    def dual_rgb_img_encoding(self, img1, img2):
         assert img1.shape == img2.shape, "img1 and img2 must have the same shape"
         img = torch.cat([img1, img2], dim=0)  # concat img1 and img2 in batch dim
         feat = self.img_encoder(img)
         feat = self.img_head(feat)
         feat1, feat2 = feat.chunk(2, dim=0)
+        return self.pack_visual_tokens(feat1, feat2, img2.device)
 
-        # get rope freqs
+    def rgbd_img_encoding(self, rgb, depth):
+        if rgb.ndim != 4 or depth.ndim != 4:
+            raise ValueError(
+                "RGB-D visual inputs must be 4D tensors [B, C, H, W], "
+                f"got rgb={tuple(rgb.shape)}, depth={tuple(depth.shape)}"
+            )
+        if rgb.shape[0] != depth.shape[0] or rgb.shape[-2:] != depth.shape[-2:]:
+            raise ValueError(
+                "RGB and depth must share batch/spatial shape, "
+                f"got rgb={tuple(rgb.shape)}, depth={tuple(depth.shape)}"
+            )
+        if rgb.shape[1] != 3:
+            raise ValueError(f"RGB stream expects 3 channels, got {rgb.shape[1]}")
+
+        depth = self.prepare_depth_input(depth)
+        rgb_feat = self.img_head(self.img_encoder(rgb))
+        depth_feat = self.depth_head(self.depth_encoder(depth))
+        if rgb_feat.shape[-2:] != depth_feat.shape[-2:]:
+            raise ValueError(
+                "RGB/depth feature maps must share spatial shape before fusion, "
+                f"got rgb={tuple(rgb_feat.shape)}, depth={tuple(depth_feat.shape)}"
+            )
+
+        rgb_tokens = einops.rearrange(rgb_feat, 'b c h w -> b (h w) c')
+        depth_tokens = einops.rearrange(depth_feat, 'b c h w -> b (h w) c')
+        fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
+        return self.pack_visual_token_sequences(
+            fused_rgb_tokens,
+            fused_depth_tokens,
+            rgb_feat.shape[-2],
+            rgb_feat.shape[-1],
+            rgb.device,
+        )
+
+    def prepare_depth_input(self, depth):
+        if depth.shape[1] == 1:
+            return depth
+        if depth.shape[1] == 3:
+            # 当前 Kuavo-DECO 第一版 depth 为 3-channel uint8 兼容存储；
+            # 三个通道由同一深度图 repeat 得到，因此模型侧取第一通道恢复 1-channel depth 语义。
+            return depth[:, :1]
+        raise ValueError(f"Depth stream expects 1 or 3 channels, got {depth.shape[1]}")
+
+    def pack_visual_tokens(self, feat1, feat2, device):
+        if feat1.shape != feat2.shape:
+            raise ValueError(
+                "Two visual feature maps must match before token packing, "
+                f"got stream0={tuple(feat1.shape)}, stream1={tuple(feat2.shape)}"
+            )
         feat_h, feat_w = feat1.shape[-2:]
-        image_rotary_emb = self.rope(feat_h, feat_w)
-
-        # add img_id embedding
         feat1 = einops.rearrange(feat1, 'b c h w -> b (h w) c')
         feat2 = einops.rearrange(feat2, 'b c h w -> b (h w) c')
-        img_id = torch.tensor([0]*feat1.shape[1] + [1]*feat2.shape[1]).to(img2.device)   # diff img_id for img1 and img2
-        img_id = self.pos_idx_embedd(img_id).repeat(img1.shape[0], 1, 1)
+        return self.pack_visual_token_sequences(feat1, feat2, feat_h, feat_w, device)
+
+    def pack_visual_token_sequences(self, feat1, feat2, feat_h, feat_w, device):
+        image_rotary_emb = self.rope(feat_h, feat_w)
+        # stream_id=0 表示 DECO 原生 img1 或 Kuavo RGB；stream_id=1 表示 DECO 原生 img2 或 Kuavo depth。
+        stream_id = torch.tensor([0] * feat1.shape[1] + [1] * feat2.shape[1]).to(device)
+        stream_emb = self.pos_idx_embedd(stream_id).repeat(feat1.shape[0], 1, 1)
         feat = torch.cat([feat1, feat2], dim=1)  # (b, 2*seq_len, dim)
-        feat = feat + img_id
+        feat = feat + stream_emb
 
         return feat, image_rotary_emb
+
+    def encode_kuavo_tactile(self, tac1, tac2):
+        if tac1 is None or tac2 is None:
+            raise ValueError("use_tactile=True requires tac1 and tac2 tensors")
+        if tac1.ndim != 2 or tac2.ndim != 2:
+            raise ValueError(
+                "Kuavo tactile inputs must be [B, 15], "
+                f"got tac1={tuple(tac1.shape)}, tac2={tuple(tac2.shape)}"
+            )
+        if tac1.shape != tac2.shape or tac1.shape[-1] != self.tactile_dim_per_hand:
+            raise ValueError(
+                "Kuavo tactile expects left/right 15D tensors with the same shape, "
+                f"got tac1={tuple(tac1.shape)}, tac2={tuple(tac2.shape)}"
+            )
+
+        tactile_emb = self.tactile_encoder(torch.cat([tac1, tac2], dim=-1))
+        tactile = torch.cat([tac1, tac2, tactile_emb], dim=-1)
+        tactile = tactile * torch.sigmoid(self.gated(tactile))
+        tactile = self.pos_tac_embedd(tactile)  # (b, 64) --> (b, 64, dim)
+        return tactile
 
 
     def atten_forward(self, img, act, image_rotary_emb, t, tactile=None):
@@ -184,10 +314,72 @@ class DECO(nn.Module):
         t = t.view(act.shape[0], 1, 1)
         act = (1 - t) * act + t * noise
         return act, noise
+
+    def load_visual_pretrain(self, img_pretrain):
+        """加载 ImageNet/DECO 视觉预训练权重。
+
+        RGB-D 模式下，RGB encoder 复用原 `img_encoder` 命名以兼容旧权重；
+        depth encoder 除 conv1 外尽量加载 shape 匹配权重，conv1 由 RGB conv1
+        在通道维求均值得到，符合 Kuavo ACT depth backbone 初始化策略。
+        """
+        model_dict = torch.load(img_pretrain, map_location='cpu')
+        if isinstance(model_dict, dict) and isinstance(model_dict.get("state_dict"), dict):
+            model_dict = model_dict["state_dict"]
+
+        self.load_encoder_pretrain(self.img_encoder, model_dict)
+        if self.uses_rgbd:
+            self.load_encoder_pretrain(self.depth_encoder, model_dict, allow_rgb_to_depth=True)
+            self.sync_depth_conv1_from_rgb()
+
+    def load_encoder_pretrain(self, encoder, model_dict, allow_rgb_to_depth=False):
+        target_state = encoder.state_dict()
+        pretrain_dict = {}
+
+        for raw_key, value in model_dict.items():
+            if not torch.is_tensor(value):
+                continue
+            key = raw_key
+            if key.startswith("module."):
+                key = key[len("module."):]
+            if key.startswith("img_encoder."):
+                key = key[len("img_encoder."):]
+
+            if key not in target_state:
+                continue
+
+            target_shape = target_state[key].shape
+            if value.shape == target_shape:
+                pretrain_dict[key] = value
+            elif (
+                allow_rgb_to_depth
+                and key == "conv1.weight"
+                and len(value.shape) == 4
+                and value.shape[1] == 3
+                and target_shape[1] == 1
+            ):
+                pretrain_dict[key] = value.mean(dim=1, keepdim=True)
+
+        encoder.load_state_dict(pretrain_dict, strict=False)
+
+    def sync_depth_conv1_from_rgb(self):
+        if not self.uses_rgbd:
+            return
+        rgb_conv = self.img_encoder.conv1
+        depth_conv = self.depth_encoder.conv1
+        if rgb_conv.weight.shape[1] != 3 or depth_conv.weight.shape[1] != 1:
+            raise ValueError(
+                "RGB/depth conv1 channel mismatch, "
+                f"rgb={tuple(rgb_conv.weight.shape)}, depth={tuple(depth_conv.weight.shape)}"
+            )
+        with torch.no_grad():
+            depth_conv.weight.copy_(rgb_conv.weight.mean(dim=1, keepdim=True))
     
     def freeze(self):
         for param in self.img_encoder.parameters():
             param.requires_grad = False
+        if self.uses_rgbd:
+            for param in self.depth_encoder.parameters():
+                param.requires_grad = False
     
 
     def initialize_weights(self):
@@ -199,35 +391,6 @@ class DECO(nn.Module):
         self.apply(_basic_init)
         nn.init.constant_(self.linear.weight, 0)
         nn.init.constant_(self.linear.bias, 0)
-
-    def init_tac_regions(self):
-        _touch_regions = [
-            ("fingerone_tip_touch", 3 * 3, (3, 3)),
-            ("fingerone_top_touch", 12 * 8, (8, 12)),
-            ("fingerone_palm_touch", 10 * 8, (8, 10)),
-            ("fingertwo_tip_touch", 3 * 3, (3, 3)),
-            ("fingertwo_top_touch", 12 * 8, (8, 12)),
-            ("fingertwo_palm_touch", 10 * 8, (8, 10)),
-            ("fingerthree_tip_touch", 3 * 3, (3, 3)),
-            ("fingerthree_top_touch", 12 * 8, (8, 12)),
-            ("fingerthree_palm_touch", 10 * 8, (8, 10)),
-            ("fingerfour_tip_touch", 3 * 3, (3, 3)),
-            ("fingerfour_top_touch", 12 * 8, (8, 12)),
-            ("fingerfour_palm_touch", 10 * 8, (8, 10)),
-            ("fingerfive_tip_touch", 3 * 3, (3, 3)),
-            ("fingerfive_top_touch", 12 * 8, (8, 12)),
-            ("fingerfive_middle_touch", 3 * 3, (3, 3)),
-            ("fingerfive_palm_touch", 12 * 8, (8, 12)),
-            ("palm_touch", 8 * 14, (8, 14)),
-        ]
-        _touch_start = 0
-        self.tactile_data_index = {}
-
-        for region_name, region_size, _ in _touch_regions:
-            self.tactile_data_index[region_name] = [_touch_start, _touch_start + region_size]
-            _touch_start += region_size
-        assert _touch_start == 1062, "Total tactile data length should be 1062"
-
 
 # low-rank adapter module
 class PI_Adapter(nn.Module): 
@@ -305,11 +468,11 @@ class MMAttention(nn.Module):
     def forward(self, img, act, t, image_rotary_emb, tactile=None):
         """
         Args:
-            img: [B, 2*img_len, dim]
+            img: [B, 2*img_len, dim], 前半为 img1/RGB stream，后半为 img2/depth stream
             act: [B, chunk, dim]
             t: [B, dim]
             image_rotary_emb: tuple[Tensor, Tensor]
-            tactile: [B, 68, dim]
+            tactile: [B, 64, dim]
         """
         total_img_len = img.shape[1]
         scale1_feat, shift1_feat, gate1_feat, scale2_feat, shift2_feat, gate2_feat = self.img_bais(t)  # adaLN
@@ -323,7 +486,7 @@ class MMAttention(nn.Module):
         img_q, img_k = self.img_qknorm(img_q, img_k, img_v)  # qk norm
         # q,k,v: [B, H, l1, D]
         feat_len = int(total_img_len / 2)
-        # apply rotary embedding twice for qk in diff img features
+        # 前后两半共享同一组二维 RoPE；Kuavo RGB-D 模式下两半分别是 RGB stream 与 depth stream。
         img_q[:, :, :feat_len, :], img_k[:, :, :feat_len, :] = apply_rotary_emb(img_q[:, :, :feat_len, :], image_rotary_emb), apply_rotary_emb(img_k[:, :, :feat_len, :], image_rotary_emb)
         img_q[:, :, feat_len:, :], img_k[:, :, feat_len:, :] = apply_rotary_emb(img_q[:, :, feat_len:, :], image_rotary_emb), apply_rotary_emb(img_k[:, :, feat_len:, :], image_rotary_emb)
         
@@ -346,8 +509,8 @@ class MMAttention(nn.Module):
 
         # cross atten for tactile
         if self.use_tactile and tactile is not None:
-            tactile_k = self.tactile_key(tactile)  # [B, 68, dim]
-            tactile_v = self.tactile_value(tactile)  # [B, 68, dim]
+            tactile_k = self.tactile_key(tactile)  # [B, 64, dim]
+            tactile_v = self.tactile_value(tactile)  # [B, 64, dim]
             tactile_k = einops.rearrange(tactile_k, "B L (H D) -> B H L D", H=self.head, D=self.head_dim)
             tactile_v = einops.rearrange(tactile_v, "B L (H D) -> B H L D", H=self.head, D=self.head_dim)
 
@@ -428,7 +591,28 @@ class timeEmb(nn.Module):
         return emb
     
 
-def modeling(action_dim, chunk_size, obs_state, use_tactile=False, plugin=False, plugin_rank=32, use_task_condition=False, num_tasks=10, inf_step=10, num_attn_blocks=6, heads=8, dim=512, rope_axes_dim=(256, 256), img_pretrain=None, freeze_backbone=True, pretrain_model_path=False, adapter_model_path=False):
+def modeling(
+    action_dim,
+    chunk_size,
+    obs_state,
+    use_tactile=False,
+    plugin=False,
+    plugin_rank=32,
+    use_task_condition=False,
+    num_tasks=10,
+    inf_step=10,
+    num_attn_blocks=6,
+    heads=8,
+    dim=512,
+    rope_axes_dim=(256, 256),
+    img_pretrain=None,
+    freeze_backbone=True,
+    pretrain_model_path=False,
+    adapter_model_path=False,
+    visual_input_mode="dual_rgb",
+    vision_backbone="resnet34",
+    depth_backbone="resnet34",
+):
     # def get_trainable_state_dict(model):
     #     return {
     #         name: param.detach().cpu()
@@ -450,7 +634,10 @@ def modeling(action_dim, chunk_size, obs_state, use_tactile=False, plugin=False,
             dim=dim,
             rope_axes_dim=rope_axes_dim,
             img_pretrain=img_pretrain,
-            freeze_backbone=freeze_backbone
+            freeze_backbone=freeze_backbone,
+            visual_input_mode=visual_input_mode,
+            vision_backbone=vision_backbone,
+            depth_backbone=depth_backbone,
         )
     
     if pretrain_model_path:  # load pretrained weights for finetuning or inference
@@ -468,8 +655,10 @@ def modeling(action_dim, chunk_size, obs_state, use_tactile=False, plugin=False,
                     model_state = DeCO.state_dict()
                     pretrain_dict = {k: v for k, v in model_dict.items() if k in model_state.keys() and v.shape == model_state[k].shape}
                     DeCO.load_state_dict(pretrain_dict, strict=False)
+                    loaded_param_names = set(pretrain_dict.keys())
                     for name, param in DeCO.named_parameters():
-                        if name in model_dict.keys():
+                        # 只冻结实际 shape 匹配并成功加载的旧参数；Kuavo 30D tactile / RGB-D bridge 等新参数必须保持可训练。
+                        if name in loaded_param_names:
                             param.requires_grad = False
                         else:
                             print('trainable params:', name)
@@ -483,7 +672,12 @@ def modeling(action_dim, chunk_size, obs_state, use_tactile=False, plugin=False,
             # load vision model for inference
             print("loading vision pretrained weights from {} for inference".format(pretrain_model_path))
             model_dict = torch.load(pretrain_model_path)
-            DeCO.load_state_dict(model_dict, strict=True)
+            if visual_input_mode == "dual_stream_rgb_depth":
+                model_state = DeCO.state_dict()
+                pretrain_dict = {k: v for k, v in model_dict.items() if k in model_state.keys() and v.shape == model_state[k].shape}
+                DeCO.load_state_dict(pretrain_dict, strict=False)
+            else:
+                DeCO.load_state_dict(model_dict, strict=True)
 
         # save_dict = get_trainable_state_dict(DeCO)
         # torch.save(save_dict, './test.pth')
@@ -514,8 +708,8 @@ if __name__ == '__main__':
     # obs = torch.randn(1, 28)
     # act = torch.randn(1, 32, 28)
     # task_idx = torch.randint(0, 8, (1,))
-    # tac1 = torch.randn(1, 1062)
-    # tac2 = torch.randn(1, 1062)
+    # tac1 = torch.randn(1, 15)
+    # tac2 = torch.randn(1, 15)
 
     # act_train, _ = mmdit(img1, img2, obs=obs, act=act, task_idx=task_idx, training=True)
     # act_pred = mmdit(img1, img2, obs=obs, task_idx=task_idx, training=False)

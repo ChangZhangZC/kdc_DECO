@@ -33,7 +33,7 @@ def train(net, net_without_ddp, train_loader, optimizer, criterion, warmup_sched
             optimizer.step()
         else:
             with autocast(device_type='cuda', enabled=True, dtype=torch.float16):
-                out, noise = net(img1, img2, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=True) # (b, chunksize, 26)
+                out, noise = net(img1, img2, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=True) # (b, chunksize, 28)
                 loss = F.mse_loss(out, noise - action) 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -67,7 +67,7 @@ def val(net, test_loader, criterion, epoch, opt, act_dim, chunksize, obs_state, 
         pbar = tqdm(total=len(test_loader), desc=f'Epoch {epoch}/{opt.epochs}', postfix=dict, mininterval=0.3)
     net.eval()
     total_loss = 0
-    mae = torch.zeros(chunksize, act_dim).cuda(local_rank)  # (chunksize, 26) 用于统计模型的l1误差
+    mae = torch.zeros(chunksize, act_dim).cuda(local_rank)  # (chunksize, 28) 用于统计模型的l1误差
     
     with torch.no_grad():
         for batch_idx, (img1, img2, tac1, tac2, obs, action, mask, task_idx) in enumerate(test_loader):
