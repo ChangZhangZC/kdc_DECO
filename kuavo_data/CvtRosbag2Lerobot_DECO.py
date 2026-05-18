@@ -63,6 +63,7 @@ log = logging.getLogger(__name__)
 
 DECO_RGB_KEY = "head_cam_h"
 DECO_DEPTH_KEY = "depth_h"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
 GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
@@ -585,8 +586,11 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         self.include_tactile = profile_writes_tactile(self.profile, cfg)
         self.rgb_key = f"observation.images.{cfg_select(cfg, 'deco.rgb_key', DECO_RGB_KEY)}"
         self.depth_key = f"observation.{cfg_select(cfg, 'deco.depth_key', DECO_DEPTH_KEY)}"
-        self.depth_encoding = str(cfg_select(cfg, "deco.depth_encoding", "compressedDepth_png"))
+        self.depth_encoding = str(cfg_select(cfg, "deco.depth_encoding", "compressed_image"))
         self.allow_raw_depth_fallback = bool(cfg_select(cfg, "deco.allow_raw_depth_fallback", False))
+        self.depth_topic_candidates = self.build_depth_topic_candidates(cfg)
+        self._active_depth_topic: str | None = None
+        self._active_depth_encoding: str | None = None
         self.force_scale = float(cfg_select(cfg, "deco.tactile_force_scale", 100.0))
         self.train_hz = int(cfg_select(cfg, "dataset.train_hz", 30))
         self.sample_drop = int(cfg_select(cfg, "dataset.sample_drop", 0))
@@ -619,11 +623,79 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
 
         self._topic_process_map = self.build_topic_process_map(cfg)
 
+    def build_depth_topic_candidates(self, cfg: DictConfig) -> list[tuple[str, str]]:
+        """
+        构造 depth topic 候选表。
+
+        兼容两类当前已知数据：
+        1. 实采数据可能使用 `/cam_h/depth/image_raw/compressedDepth`，需要跳过
+           compressedDepth 配置头后再解 PNG。
+        2. 官方模拟数据可能使用 `/cam_h/depth/image_raw/compressed`，消息 data
+           本身就是标准 PNG/JPEG 压缩缓冲区，可直接 `cv2.imdecode`。
+
+        RGB topic 在两类截图中保持一致，因此不在这里做同类候选扩展。
+        """
+
+        candidates: list[tuple[str, str]] = []
+        seen_topics: set[str] = set()
+
+        def add_candidate(topic: str, encoding: str) -> None:
+            topic = str(topic)
+            encoding = str(encoding)
+            if not topic or topic in seen_topics:
+                return
+            candidates.append((topic, encoding))
+            seen_topics.add(topic)
+
+        configured_candidates = cfg_select(cfg, "deco.depth_topic_candidates", None)
+        if configured_candidates:
+            for item in configured_candidates:
+                if isinstance(item, str):
+                    add_candidate(item, "auto")
+                else:
+                    item_conf = OmegaConf.create(item)
+                    add_candidate(
+                        str(cfg_select(item_conf, "topic", "")),
+                        str(cfg_select(item_conf, "encoding", "auto")),
+                    )
+
+        configured_topic = str(cfg_select(cfg, "deco.depth_topic", "/cam_h/depth/image_raw/compressed"))
+        add_candidate(configured_topic, self.depth_encoding)
+        if configured_topic.endswith("/compressedDepth"):
+            add_candidate(configured_topic[: -len("Depth")], "compressed_image")
+        elif configured_topic.endswith("/compressed"):
+            add_candidate(f"{configured_topic}Depth", "compressedDepth_png")
+
+        add_candidate("/cam_h/depth/image_raw/compressed", "compressed_image")
+        add_candidate("/cam_h/depth/image_raw/compressedDepth", "compressedDepth_png")
+
+        if self.allow_raw_depth_fallback:
+            raw_depth_topic = str(cfg_select(cfg, "deco.raw_depth_topic", "/camera/depth/image_rect_raw"))
+            add_candidate(raw_depth_topic, "raw_16uc1")
+
+        return candidates
+
+    def _depth_process_fn_for_encoding(self, encoding: str) -> Any:
+        """按候选 topic 的实际封装格式选择 depth 解码函数。"""
+
+        if encoding == "auto":
+            return self.process_auto_depth_image
+        if encoding == "compressed_image":
+            return self.process_compressed_depth_image
+        if encoding == "compressedDepth_png":
+            return self.process_compressed_depth_png_image
+        if encoding == "raw_16uc1":
+            return self.process_raw_depth_image
+        raise ValueError(
+            f"不支持的 depth_encoding={encoding}；"
+            "当前支持 auto、compressedDepth_png、compressed_image 或 raw_16uc1"
+        )
+
     def build_topic_process_map(self, cfg: DictConfig) -> dict[str, tuple[str, Any]]:
         """集中定义 DECO 所需 topic，便于后续和配置文件逐项核对。"""
 
         rgb_topic = str(cfg_select(cfg, "deco.rgb_topic", "/cam_h/color/image_raw/compressed"))
-        depth_topic = str(cfg_select(cfg, "deco.depth_topic", "/cam_h/depth/image_raw/compressedDepth"))
+        depth_topic, depth_encoding = self.depth_topic_candidates[0]
         raw_depth_topic = str(cfg_select(cfg, "deco.raw_depth_topic", "/camera/depth/image_rect_raw"))
         tactile_topic = str(cfg_select(cfg, "deco.tactile_topic", "/dexhand/touch_state"))
         hand_state_topic = str(cfg_select(cfg, "deco.hand_state_topic", "/dexhand/state"))
@@ -632,21 +704,7 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         leju_claw_action_topic = str(cfg_select(cfg, "deco.leju_claw_action_topic", "/leju_claw_command"))
         rq2f85_state_topic = str(cfg_select(cfg, "deco.rq2f85_state_topic", "/gripper/state"))
         rq2f85_action_topic = str(cfg_select(cfg, "deco.rq2f85_action_topic", "/gripper/command"))
-
-        if self.depth_encoding == "compressedDepth_png":
-            # compressedDepth 格式：msg.data 前面有配置头，需要跳过找到 PNG magic header。
-            depth_process_fn = self._msg_processer.process_depth_image
-        elif self.depth_encoding == "compressed_image":
-            # CompressedImage 格式：msg.data 就是标准 PNG/JPEG 缓冲区，直接 cv2.imdecode。
-            # 实际 rosbag 中 /cam_h/depth/image_raw/compressed 使用的就是此格式。
-            depth_process_fn = self.process_compressed_depth_image
-        elif self.depth_encoding == "raw_16uc1":
-            depth_process_fn = self.process_raw_depth_image
-        else:
-            raise ValueError(
-                f"不支持的 depth_encoding={self.depth_encoding}；"
-                "当前支持 compressedDepth_png、compressed_image 或 raw_16uc1"
-            )
+        depth_process_fn = self._depth_process_fn_for_encoding(depth_encoding)
 
         topic_map: dict[str, tuple[str, Any]] = {
             self.rgb_key: (rgb_topic, self._msg_processer.process_color_image),
@@ -676,6 +734,61 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
             topic_map["observation.depth_h_raw"] = (raw_depth_topic, self.process_raw_depth_image)
         return topic_map
 
+    def resolve_depth_topic_for_bag(self, bag: Any) -> tuple[str, Any, str]:
+        """
+        在单个 rosbag 打开后选择真实存在的 depth topic。
+
+        LeRobot 原始清洗思路的启示是：配置层不应把某一个 topic 名称写死到所有数据源。
+        这里把“同一语义 depth”的多个 topic 名称变成候选表，按当前 bag 的实际 topic
+        自动选择，并让 topic 与 decoder 一一绑定。
+        """
+
+        available_topics = set(bag.get_type_and_topic_info().topics.keys())
+        for topic, encoding in self.depth_topic_candidates:
+            if topic not in available_topics:
+                continue
+            self._active_depth_topic = topic
+            self._active_depth_encoding = encoding
+            self.logger.info("DECO depth 使用 topic=%s, encoding=%s", topic, encoding)
+            return topic, self._depth_process_fn_for_encoding(encoding), encoding
+
+        candidate_text = ", ".join(
+            f"{topic}({encoding})" for topic, encoding in self.depth_topic_candidates
+        )
+        depth_like_topics = sorted(topic for topic in available_topics if "depth" in topic.lower())
+        raise ValueError(
+            "rosbag 缺少可用 DECO depth topic；"
+            f"已尝试：{candidate_text}；"
+            f"bag 中 depth 相关 topic：{depth_like_topics}"
+        )
+
+    def decode_depth_payload(
+        self,
+        msg: Any,
+        payload: bytes,
+        source_label: str,
+        *,
+        warn: bool = True,
+    ) -> dict[str, Any] | None:
+        """把 PNG/JPEG 压缩缓冲区解成 resize 后的 uint16 depth 图。"""
+
+        np_arr = np.frombuffer(payload, np.uint8)
+        image = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+        if image is None:
+            if warn:
+                self.logger.warning("%s depth image 解码失败，跳过此帧", source_label)
+            return None
+
+        if image.dtype != np.uint16 and warn:
+            self.logger.warning(
+                "%s depth image dtype=%s，期望 uint16；继续处理但精度可能下降",
+                source_label,
+                image.dtype,
+            )
+
+        depth_image = cv2.resize(image, (kuavo.RESIZE_W, kuavo.RESIZE_H), interpolation=cv2.INTER_NEAREST)
+        return {"data": depth_image, "timestamp": msg.header.stamp.to_sec()}
+
     def process_compressed_depth_image(self, msg: Any) -> dict[str, Any]:
         """
         处理 sensor_msgs/CompressedImage 格式的 depth 图像。
@@ -689,20 +802,44 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         消息类型为 sensor_msgs/CompressedImage，编码通常是 16-bit PNG。
         """
 
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        image = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)  # 直接解码，返回 uint16 深度图
-        if image is None:
-            self.logger.warning("compressed depth image 解码失败，跳过此帧")
+        return self.decode_depth_payload(msg, bytes(msg.data), "compressed_image")
+
+    def process_compressed_depth_png_image(self, msg: Any) -> dict[str, Any]:
+        """
+        处理 ROS compressedDepth 风格的 sensor_msgs/CompressedImage。
+
+        compressedDepth 的 `msg.data` 前缀包含插件配置头，真正的 PNG 从 magic header
+        开始。直接 `cv2.imdecode(msg.data)` 会失败，因此这里显式定位 PNG 起点。
+        """
+
+        payload = bytes(msg.data)
+        png_start = payload.find(PNG_MAGIC)
+        if png_start < 0:
+            self.logger.warning("compressedDepth depth image 未找到 PNG magic header，跳过此帧")
             return None
+        return self.decode_depth_payload(msg, payload[png_start:], "compressedDepth_png")
 
-        if image.dtype != np.uint16:
-            self.logger.warning(
-                "compressed depth image dtype=%s，期望 uint16；继续处理但精度可能下降",
-                image.dtype,
-            )
+    def process_auto_depth_image(self, msg: Any) -> dict[str, Any]:
+        """
+        自动 depth 解码：先按普通 CompressedImage 直解，失败后再按 compressedDepth 查找 PNG。
 
-        depth_image = cv2.resize(image, (kuavo.RESIZE_W, kuavo.RESIZE_H), interpolation=cv2.INTER_NEAREST)
-        return {"data": depth_image, "timestamp": msg.header.stamp.to_sec()}
+        该入口主要服务于未来用户通过 `deco.depth_topic_candidates` 只写 topic、不写
+        encoding 的情况；当前内置候选仍会优先使用明确绑定的 decoder。
+        """
+
+        payload = bytes(msg.data)
+        decoded = self.decode_depth_payload(msg, payload, "auto_direct", warn=False)
+        if decoded is not None:
+            return decoded
+
+        png_start = payload.find(PNG_MAGIC)
+        if png_start >= 0:
+            decoded = self.decode_depth_payload(msg, payload[png_start:], "auto_compressedDepth", warn=False)
+            if decoded is not None:
+                return decoded
+
+        self.logger.warning("auto depth image 解码失败，既不是直接压缩图像，也未找到 compressedDepth PNG")
+        return None
 
     def process_raw_depth_image(self, msg: Any) -> dict[str, Any]:
         """raw 16UC1 depth fallback，默认不开启。"""
@@ -747,13 +884,17 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         """
 
         bag = self.load_raw_rosbag(bag_path)
-        process_data: dict[str, list[dict[str, Any]]] = {
-            key: [] for key in self._topic_process_map.keys()
-        }
         try:
-            topic_names = [topic for topic, _ in self._topic_process_map.values()]
+            depth_topic, depth_process_fn, _ = self.resolve_depth_topic_for_bag(bag)
+            topic_process_map = dict(self._topic_process_map)
+            topic_process_map[self.depth_key] = (depth_topic, depth_process_fn)
+
+            process_data: dict[str, list[dict[str, Any]]] = {
+                key: [] for key in topic_process_map.keys()
+            }
+            topic_names = list(dict.fromkeys(topic for topic, _ in topic_process_map.values()))
             for topic, msg, bag_time in bag.read_messages(topics=topic_names):
-                for data_name, (mapped_topic, process_func) in self._topic_process_map.items():
+                for data_name, (mapped_topic, process_func) in topic_process_map.items():
                     if topic != mapped_topic:
                         continue
                     msg_data = process_func(msg)
@@ -839,6 +980,8 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
             "end_effector_profile": self.profile,
             "eef_type": self.eef_type,
             "include_tactile": self.include_tactile,
+            "depth_topic": self._active_depth_topic,
+            "depth_encoding": self._active_depth_encoding,
         }
         return aligned
 

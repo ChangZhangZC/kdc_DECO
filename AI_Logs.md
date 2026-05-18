@@ -2,6 +2,36 @@
 
 ## 2026-05-18
 
+### 清理 DECO 数据 YAML 中过时的 raw depth 配置项
+- **任务**: 根据用户要求，检查 `configs/data/KuavoRosbag2Lerobot_deco.yaml` 在 depth topic 自动候选适配后的配置项有效性，并删除已经不被当前转换脚本读取的无用字段。本次未运行 Python、validator、训练、ROS、部署、安装或环境变更命令。
+- **修改文件 1**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 删除 `deco.raw_depth_encoding`。当前 `kuavo_data/CvtRosbag2Lerobot_DECO.py` 中 raw fallback 已固定绑定为 `raw_16uc1`，只读取 `deco.raw_depth_topic` 与 `deco.allow_raw_depth_fallback`，不会读取该 YAML 字段。
+  - 更新 depth topic 注释：`deco.depth_topic` 与 `deco.depth_encoding` 仍作为优先候选保留，脚本会自动追加 `/cam_h/depth/image_raw/compressedDepth` + `compressedDepth_png` 兼容候选。
+  - 修正顶部 No-Runtime 注释，避免继续写成“静态审查”流程。
+- **保留字段说明**:
+  - `deco.rgb_key`、`deco.rgb_topic`、`deco.depth_key`、`deco.depth_topic`、`deco.depth_encoding` 仍被转换脚本读取，不删除。
+  - `deco.raw_depth_topic` 与 `deco.allow_raw_depth_fallback` 仍是 raw depth fallback 的显式入口，不删除。
+
+### 适配 DECO 洗数据脚本的 depth topic 候选兼容
+- **任务**: 根据用户要求，直接把 LeRobot 式“同一语义字段可由候选 topic 解析”的思路适配到当前 DECO 洗数据脚本，使脚本同时兼容用户实采数据与官方模拟数据中的 depth topic 差异。本次只修改洗数据脚本与三份记录文本；未修改 `README_DECO.md`、`kuavo_data/validate_deco_lerobot_dataset.py`、配置 YAML、部署代码或第三方子模块，也未运行 Python、validator、训练、ROS、部署、安装或环境变更命令。
+- **修改文件 1**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 新增 depth topic 候选表：默认优先 `/cam_h/depth/image_raw/compressed` + `compressed_image`，并自动追加 `/cam_h/depth/image_raw/compressedDepth` + `compressedDepth_png`；若后续显式启用 raw fallback，则继续把 `/camera/depth/image_rect_raw` 作为 `raw_16uc1` 候选。
+  - 新增按单个 rosbag 实际 topic 自动选择 depth 输入的逻辑：`process_rosbag()` 打开 bag 后读取 topic 列表，选择第一个存在的 depth 候选，并把该 topic 与对应 decoder 绑定到 `observation.depth_h`。
+  - 新增 `compressedDepth_png` 解码路径：对 ROS compressedDepth 风格的 `sensor_msgs/CompressedImage.data` 先定位 PNG magic header，再对 PNG payload 执行 `cv2.imdecode(..., IMREAD_UNCHANGED)`。
+  - 新增 `auto` depth decoder：当未来用户只配置 topic、不配置 encoding 时，先尝试普通 `CompressedImage` 直解，失败后再尝试 compressedDepth PNG payload。
+  - 保持 RGB topic 逻辑不变：两张截图中的 RGB topic 仍对应 `/cam_h/color/image_raw/compressed`，左右相机 RGB 仍是 `/cam_l|r/color/image_raw/compressed`，本轮不扩展 RGB 候选。
+  - 在 episode metadata 中记录实际选中的 `depth_topic` 与 `depth_encoding`，便于后续追踪同一数据集来自哪种 depth 封装。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 将 depth 决策从单一默认 topic 更新为候选 topic 策略，明确 `/compressed` 与 `/compressedDepth` 的语义差别和 decoder 绑定关系。
+  - 记录当前截图对齐结论：RGB topic 基本一致，因此当前只需要对 depth 做 topic/decoder 兼容。
+- **修改文件 3**: `PLANS.md`
+  - 更新阶段一数据引擎与 Done When，标记 DECO 转换脚本已兼容 `/cam_h/depth/image_raw/compressed` 和 `/cam_h/depth/image_raw/compressedDepth` 两类 depth 数据。
+  - 保留 raw `16UC1` 为显式 fallback 候选，不把它提升为默认路线。
+- **边界说明**:
+  - 本次按用户要求没有更新 README，也没有更新或执行验证数据脚本。
+  - 本次没有做额外静态代码审查；只进行了必要的文件定位与修改。
+  - 部署侧 depth topic 兼容不在本轮范围内，后续若进入部署阶段需单独同步 `ObsBuffer` 等在线数据入口。
+
 ### 完成 DECO 二夹爪无触觉 Profile 静态适配
 - **任务**: 根据用户确认的方案，完成 DECO 从当前 `qiangnao` 灵巧手 + 可选触觉路径放宽到 `gripper_no_tactile` 二夹爪 + 无触觉路径的静态代码与文档适配。本次没有修改 `kuavo_deploy/*` 部署代码，也未运行 Python、训练、forward、validator、ROS、仿真、部署或环境变更命令。
 - **修改文件 1**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`

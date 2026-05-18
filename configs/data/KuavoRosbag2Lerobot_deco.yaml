@@ -10,7 +10,7 @@ hydra:
 # 设计原则：
 # 1. 尽量复用现有 ACT/DP 清洗链路中的 topic 和 decoder。
 # 2. 仅在 DECO profile schema、30Hz 时间轴、可选 30 维触觉、state/action 重组处做专用适配。
-# 3. 当前机器只做代码修改和静态审查，不在 Codex 中直接运行转换。
+# 3. 当前机器遵守 No-Runtime 约束，不在 Codex 中直接运行转换。
 
 rosbag:
   # rosbag 文件目录，目录下应包含一个或多个 .bag 文件。
@@ -71,15 +71,14 @@ deco:
   rgb_key: head_cam_h
   rgb_topic: /cam_h/color/image_raw/compressed
   depth_key: depth_h
-  # 实际 rosbag 中的 depth topic 为 /cam_h/depth/image_raw/compressed（sensor_msgs/CompressedImage），
-  # 而非 /cam_h/depth/image_raw/compressedDepth（sensor_msgs/CompressedDepth）。
-  # compressed_image 解码器直接使用 cv2.imdecode，无需跳过 compressedDepth 的配置头。
+  # depth_topic/depth_encoding 是优先候选；转换脚本会自动追加
+  # /cam_h/depth/image_raw/compressedDepth + compressedDepth_png，用于兼容官方模拟数据或实采数据的 topic 差异。
+  # compressed_image 直接使用 cv2.imdecode；compressedDepth_png 会先跳过 PNG magic header 前的配置头。
   depth_topic: /cam_h/depth/image_raw/compressed
   depth_encoding: compressed_image
 
   # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
   raw_depth_topic: /camera/depth/image_rect_raw
-  raw_depth_encoding: raw_16uc1
   allow_raw_depth_fallback: false
 
   # 为兼容现有 LeRobot image/video writer，第一版 depth 在磁盘中保存为 3-channel depth image。
