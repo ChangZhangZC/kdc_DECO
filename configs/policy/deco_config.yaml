@@ -101,6 +101,7 @@ policy:
 
   # DECO action-token Flow Matching 主干。
   chunk_size: 32
+  # DECO loss 当前不消费 action_is_pad；必须丢弃至少 chunk_size-1 个尾帧，避免 padded action 入训。
   drop_n_last_frames: 31
   action_dim: 28
   obs_state: true
@@ -161,7 +162,8 @@ policy:
   # 外部初始化路径只在训练构造时读取；保存最终 policy 时会清空，保证 `.safetensors` 自包含。
   load_external_init_weights: true
 
-  # base/adapter 指向 LeRobot `.safetensors` policy 目录；deco_init_pth_path 仅兼容原生 `.pth`。
+  # base/adapter 指向 LeRobot `.safetensors` policy 目录；deco_init_pth_path 仅兼容可信本地历史 `.pth`。
+  # 若没有明确兼容需求，优先使用 `.safetensors`，避免 torch pickle checkpoint 的执行风险。
   base_policy_path: null
   adapter_model_path: null
   deco_init_pth_path: null

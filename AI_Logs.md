@@ -2,6 +2,23 @@
 
 ## 2026-05-18
 
+### 修复 DECO Wrapper 权重加载与配置早失败审查反馈
+- **任务**: 根据静态审查反馈，强化 DECO wrapper 和配置层的防错逻辑，避免 tactile adapter 第二阶段在权重未正确加载时静默冻结随机主干。本次只做静态代码与配置修改，未运行 Python、训练、forward、validator、仿真、ROS、部署或环境变更命令。
+- **修改文件 1**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 为外部权重加载增加 `_weight_load_reports` 与标准 logging 输出，记录每个初始化来源的 `matched`、`main_matched`、`target_missing`、`skipped_missing_key`、`skipped_shape` 和 `skipped_non_tensor` 等静态统计。
+  - 当外部初始化路径一个 tensor 都无法按 key/shape 匹配当前 wrapper 时，直接抛出 `ValueError`，避免用户误以为已经从 checkpoint 初始化。
+  - 当 `training_stage: tactile_adapter` 且 `freeze_pretrained_main: true` 时，要求至少一个非 tactile adapter 的主干参数成功匹配；否则拒绝继续冻结主干，避免随机初始化主干被冻结后只训练 tactile adapter。
+  - 将 `.pth` 兼容入口改为 `torch.load(..., weights_only=True)`，并在 PyTorch 不支持该安全参数时 fail-fast，提示优先使用 `.safetensors` 或升级环境。
+- **修改文件 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增 temporal window 校验：`chunk_size` 必须为正数；`drop_n_last_frames` 若未填写则自动设为 `chunk_size - 1`，若用户手动填写小于该值则报错。
+  - 在 `validate_features()` 中提前校验 RGB feature 必须为 `(3,H,W)`，depth feature 必须为 `(1,H,W)` 或 `(3,H,W)`，让配置错误在 wrapper 构造阶段暴露。
+- **修改文件 3**: `configs/policy/deco_config.yaml`
+  - 补充 `drop_n_last_frames` 约束注释：由于 DECO loss 当前不消费 `action_is_pad`，必须至少丢弃 `chunk_size - 1` 个尾帧。
+  - 补充 `.pth` 权重入口安全注释：`deco_init_pth_path` 仅用于可信本地历史权重；若没有明确兼容需求，应优先使用 `.safetensors`。
+- **未执行项与边界**:
+  - 未修改 `train_policy.py` 的训练循环、optimizer step、epoch loop、dataloader loop 或 checkpoint 保存主流程。
+  - 未执行 Python 编译、import、forward、训练、部署、ROS 节点、validator 或安装命令。
+
 ### 同步 PLANS 阶段六当前进度状态
 - **任务**: 根据四个部署链路文件已回退到提交 `dd323acfcdb162653acac201e63afa74874ab0a7` 的事实，修正 `PLANS.md` 中仍被误标为完成的阶段六部署项。本次只做文档状态同步，未运行 Python、ROS、训练、forward、validator、仿真、部署或环境变更命令。
 - **修改文件**: `PLANS.md`

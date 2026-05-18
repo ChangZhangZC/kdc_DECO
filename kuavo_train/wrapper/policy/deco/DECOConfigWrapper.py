@@ -103,10 +103,9 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self._convert_omegaconf_fields()
         self._merge_custom_fields()
         self._merge_default_normalization_mapping()
+        self._set_and_validate_temporal_window()
         self._validate_stage_and_tactile()
         self._validate_frequency()
-        if self.drop_n_last_frames is None:
-            self.drop_n_last_frames = max(self.chunk_size - 1, 0)
 
     def _convert_omegaconf_fields(self) -> None:
         for f in fields(self):
@@ -139,6 +138,18 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         merged = dict(default_map)
         merged.update(self.normalization_mapping)
         self.normalization_mapping = merged
+
+    def _set_and_validate_temporal_window(self) -> None:
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        required_drop = self.chunk_size - 1
+        if self.drop_n_last_frames is None:
+            self.drop_n_last_frames = required_drop
+        if self.drop_n_last_frames < required_drop:
+            raise ValueError(
+                "drop_n_last_frames must be >= chunk_size - 1 because DECO loss "
+                "does not consume action_is_pad. 请不要让尾部 padded action 进入训练。"
+            )
 
     def _validate_stage_and_tactile(self) -> None:
         if self.training_stage not in {"visual_main", "tactile_adapter"}:
@@ -201,8 +212,14 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         if ACTION not in self.output_features:
             raise ValueError(f"Missing action output feature: {ACTION}")
 
+        rgb_shape = tuple(self.input_features[self.rgb_key].shape)
+        depth_shape = tuple(self.input_features[self.depth_key].shape)
         state_shape = tuple(self.input_features[OBS_STATE].shape)
         action_shape = tuple(self.output_features[ACTION].shape)
+        if len(rgb_shape) != 3 or rgb_shape[0] != 3:
+            raise ValueError(f"{self.rgb_key} must be RGB image shape (3,H,W), got {rgb_shape}")
+        if len(depth_shape) != 3 or depth_shape[0] not in {1, 3}:
+            raise ValueError(f"{self.depth_key} must be depth image shape (1,H,W) or (3,H,W), got {depth_shape}")
         if state_shape != (self.action_dim,):
             raise ValueError(f"observation.state must be ({self.action_dim},), got {state_shape}")
         if action_shape != (self.action_dim,):

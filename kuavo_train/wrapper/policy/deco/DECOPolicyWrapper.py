@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from kuavo_train.wrapper.policy.deco.DECOConfigWrapper import CustomDECOConfigWr
 
 ensure_deco_on_path()
 from models.deco.deco import DECO  # noqa: E402
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CustomDECOPolicyWrapper(PreTrainedPolicy):
@@ -51,6 +55,7 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             depth_backbone=config.depth_backbone,
         )
         self._action_queue: deque[Tensor] = deque()
+        self._weight_load_reports: list[dict[str, int | str]] = []
         self._load_configured_weights()
         if self._should_freeze_main_for_tactile_adapter():
             self._freeze_main_for_tactile_adapter()
@@ -62,42 +67,150 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             self.config.training_stage == "tactile_adapter" and self.config.freeze_pretrained_main
         )
         if self.config.deco_init_pth_path:
-            self._load_torch_checkpoint(self.config.deco_init_pth_path, freeze_loaded=freeze_loaded_init)
+            self._load_torch_checkpoint(
+                self.config.deco_init_pth_path,
+                freeze_loaded=freeze_loaded_init,
+                require_main_match=self._should_freeze_main_for_tactile_adapter(),
+            )
         if self.config.base_policy_path:
             self._load_safetensors_policy(
                 self.config.base_policy_path,
                 freeze_loaded=freeze_loaded_init,
+                require_main_match=self._should_freeze_main_for_tactile_adapter(),
             )
         if self.config.adapter_model_path:
-            self._load_safetensors_policy(self.config.adapter_model_path, freeze_loaded=False)
+            self._load_safetensors_policy(
+                self.config.adapter_model_path,
+                freeze_loaded=False,
+                require_main_match=self._should_freeze_main_for_tactile_adapter(),
+            )
 
-    def _load_safetensors_policy(self, path: str | Path, *, freeze_loaded: bool) -> None:
+    def _load_safetensors_policy(
+        self,
+        path: str | Path,
+        *,
+        freeze_loaded: bool,
+        require_main_match: bool,
+    ) -> None:
         model_path = Path(path)
         if model_path.is_dir():
             model_path = model_path / SAFETENSORS_SINGLE_FILE
         state_dict = load_safetensors_file(str(model_path), device="cpu")
-        self._load_matching_tensors(state_dict, freeze_loaded=freeze_loaded)
+        self._load_matching_tensors(
+            state_dict,
+            freeze_loaded=freeze_loaded,
+            require_main_match=require_main_match,
+            source=str(model_path),
+        )
 
-    def _load_torch_checkpoint(self, path: str | Path, *, freeze_loaded: bool) -> None:
-        checkpoint = torch.load(path, map_location="cpu")
+    def _load_torch_checkpoint(
+        self,
+        path: str | Path,
+        *,
+        freeze_loaded: bool,
+        require_main_match: bool,
+    ) -> None:
+        checkpoint = self._safe_load_torch_checkpoint(path)
         if isinstance(checkpoint, dict) and isinstance(checkpoint.get("state_dict"), dict):
             checkpoint = checkpoint["state_dict"]
         if not isinstance(checkpoint, dict):
             raise ValueError(f"DECO checkpoint must be a state_dict-like mapping: {path}")
-        self._load_matching_tensors(checkpoint, freeze_loaded=freeze_loaded)
+        self._load_matching_tensors(
+            checkpoint,
+            freeze_loaded=freeze_loaded,
+            require_main_match=require_main_match,
+            source=str(path),
+        )
 
-    def _load_matching_tensors(self, state_dict: dict[str, Any], *, freeze_loaded: bool) -> None:
+    def _safe_load_torch_checkpoint(self, path: str | Path) -> Any:
+        try:
+            return torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError as exc:
+            raise RuntimeError(
+                "DECO .pth loading requires torch.load(weights_only=True). "
+                "请优先使用 `.safetensors`；若必须导入 `.pth`，请升级到支持 "
+                "weights_only=True 的 PyTorch 版本，并仅使用可信本地历史权重。"
+            ) from exc
+
+    def _load_matching_tensors(
+        self,
+        state_dict: dict[str, Any],
+        *,
+        freeze_loaded: bool,
+        require_main_match: bool,
+        source: str,
+    ) -> None:
         target_state = self.state_dict()
         matched: dict[str, Tensor] = {}
+        skipped_non_tensor = 0
+        skipped_missing_key = 0
+        skipped_shape = 0
 
         for raw_key, value in state_dict.items():
             if not torch.is_tensor(value):
+                skipped_non_tensor += 1
                 continue
+            key_exists = False
+            loaded = False
             for key in self._candidate_state_keys(raw_key):
-                if key in target_state and target_state[key].shape == value.shape:
-                    matched[key] = value
-                    break
+                if key not in target_state:
+                    continue
+                key_exists = True
+                if target_state[key].shape != value.shape:
+                    continue
+                matched[key] = value
+                loaded = True
+                break
+            if loaded:
+                continue
+            if key_exists:
+                skipped_shape += 1
+            else:
+                skipped_missing_key += 1
 
+        parameter_names = {name for name, _ in self.named_parameters()}
+        main_matched = sum(
+            1
+            for key in matched
+            if key in parameter_names and not self._is_tactile_adapter_parameter(key)
+        )
+        # 记录权重匹配统计，便于第二阶段确认被冻结主干确实来自 checkpoint。
+        report: dict[str, int | str] = {
+            "source": source,
+            "matched": len(matched),
+            "main_matched": main_matched,
+            "target_missing": len(set(target_state) - set(matched)),
+            "skipped_non_tensor": skipped_non_tensor,
+            "skipped_missing_key": skipped_missing_key,
+            "skipped_shape": skipped_shape,
+        }
+        self._weight_load_reports.append(report)
+
+        if not matched:
+            raise ValueError(
+                "No compatible tensors were loaded from DECO checkpoint "
+                f"{source}. skipped_missing_key={skipped_missing_key}, "
+                f"skipped_shape={skipped_shape}, skipped_non_tensor={skipped_non_tensor}"
+            )
+        if require_main_match and main_matched == 0:
+            raise ValueError(
+                "tactile_adapter with freeze_pretrained_main=True requires at least one "
+                "non-adapter main-branch tensor to match before freezing the main model. "
+                f"source={source}, matched={len(matched)}, main_matched={main_matched}, "
+                f"skipped_missing_key={skipped_missing_key}, skipped_shape={skipped_shape}"
+            )
+
+        LOGGER.info(
+            "Loaded DECO checkpoint tensors from %s: matched=%d, main_matched=%d, "
+            "target_missing=%d, skipped_missing_key=%d, skipped_shape=%d, skipped_non_tensor=%d",
+            source,
+            len(matched),
+            main_matched,
+            report["target_missing"],
+            skipped_missing_key,
+            skipped_shape,
+            skipped_non_tensor,
+        )
         self.load_state_dict(matched, strict=False)
         if freeze_loaded:
             loaded_names = set(matched)
