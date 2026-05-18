@@ -57,13 +57,10 @@ class DECO(nn.Module):
         use_task_condition=False,
         num_tasks=10,
         inf_step=10,
-        img_pretrain=False,
         num_attn_blocks=6,
         heads=8,
         dim=512,
         rope_axes_dim=[256, 256],
-        freeze_backbone=True,
-        visual_input_mode="dual_stream_rgb_depth",
         vision_backbone="resnet34",
         depth_backbone="resnet34",
     ):
@@ -76,12 +73,6 @@ class DECO(nn.Module):
         self.use_tactile = use_tactile
         self.use_task_condition = use_task_condition
         self.inference_step = inf_step
-        if visual_input_mode != "dual_stream_rgb_depth":
-            raise ValueError(
-                "Kuavo-DECO only supports visual_input_mode='dual_stream_rgb_depth', "
-                f"got {visual_input_mode}"
-            )
-        self.visual_input_mode = visual_input_mode
         self.rope = RotaryPosEmbed(head_dim, rope_axes_dim)  # initial mrope embedding
         self.img_encoder = build_resnet_backbone(vision_backbone, in_channels=3)  # RGB encoder
         self.img_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
@@ -140,11 +131,6 @@ class DECO(nn.Module):
 
         if not plugin:
             self.initialize_weights()
-
-        if img_pretrain:  # load weights after initialization
-            self.load_visual_pretrain(img_pretrain)
-            if freeze_backbone:
-                self.freeze()
 
     def forward(self, rgb, depth, obs=None, act=None, task_idx=None, tac1=None, tac2=None, action_mask=None, training=True):
         """
@@ -292,51 +278,6 @@ class DECO(nn.Module):
         act = (1 - t) * act + t * noise
         return act, noise
 
-    def load_visual_pretrain(self, img_pretrain):
-        """加载 ImageNet/DECO 视觉预训练权重。
-
-        RGB-D 模式下，RGB encoder 复用原 `img_encoder` 命名以兼容旧权重；
-        depth encoder 除 conv1 外尽量加载 shape 匹配权重，conv1 由 RGB conv1
-        在通道维求均值得到，符合 Kuavo ACT depth backbone 初始化策略。
-        """
-        model_dict = torch.load(img_pretrain, map_location='cpu')
-        if isinstance(model_dict, dict) and isinstance(model_dict.get("state_dict"), dict):
-            model_dict = model_dict["state_dict"]
-
-        self.load_encoder_pretrain(self.img_encoder, model_dict)
-        self.load_encoder_pretrain(self.depth_encoder, model_dict, allow_rgb_to_depth=True)
-        self.sync_depth_conv1_from_rgb()
-
-    def load_encoder_pretrain(self, encoder, model_dict, allow_rgb_to_depth=False):
-        target_state = encoder.state_dict()
-        pretrain_dict = {}
-
-        for raw_key, value in model_dict.items():
-            if not torch.is_tensor(value):
-                continue
-            key = raw_key
-            if key.startswith("module."):
-                key = key[len("module."):]
-            if key.startswith("img_encoder."):
-                key = key[len("img_encoder."):]
-
-            if key not in target_state:
-                continue
-
-            target_shape = target_state[key].shape
-            if value.shape == target_shape:
-                pretrain_dict[key] = value
-            elif (
-                allow_rgb_to_depth
-                and key == "conv1.weight"
-                and len(value.shape) == 4
-                and value.shape[1] == 3
-                and target_shape[1] == 1
-            ):
-                pretrain_dict[key] = value.mean(dim=1, keepdim=True)
-
-        encoder.load_state_dict(pretrain_dict, strict=False)
-
     def sync_depth_conv1_from_rgb(self):
         rgb_conv = self.img_encoder.conv1
         depth_conv = self.depth_encoder.conv1
@@ -347,13 +288,6 @@ class DECO(nn.Module):
             )
         with torch.no_grad():
             depth_conv.weight.copy_(rgb_conv.weight.mean(dim=1, keepdim=True))
-    
-    def freeze(self):
-        for param in self.img_encoder.parameters():
-            param.requires_grad = False
-        for param in self.depth_encoder.parameters():
-            param.requires_grad = False
-    
 
     def initialize_weights(self):
         def _basic_init(module):
@@ -578,111 +512,23 @@ def modeling(
     heads=8,
     dim=512,
     rope_axes_dim=(256, 256),
-    img_pretrain=None,
-    freeze_backbone=True,
-    pretrain_model_path=False,
-    adapter_model_path=False,
-    visual_input_mode="dual_stream_rgb_depth",
     vision_backbone="resnet34",
     depth_backbone="resnet34",
 ):
-    # def get_trainable_state_dict(model):
-    #     return {
-    #         name: param.detach().cpu()
-    #         for name, param in model.named_parameters()
-    #         if param.requires_grad
-    #     }
-    DeCO = DECO(
-            act_dim=action_dim,
-            chunk_size=chunk_size,
-            obs_state=obs_state,
-            use_tactile=use_tactile,
-            plugin=plugin,
-            plugin_rank=plugin_rank,
-            use_task_condition=use_task_condition,
-            num_tasks=num_tasks,
-            inf_step=inf_step,
-            num_attn_blocks=num_attn_blocks,
-            heads=heads,
-            dim=dim,
-            rope_axes_dim=rope_axes_dim,
-            img_pretrain=img_pretrain,
-            freeze_backbone=freeze_backbone,
-            visual_input_mode=visual_input_mode,
-            vision_backbone=vision_backbone,
-            depth_backbone=depth_backbone,
-        )
-    
-    if pretrain_model_path:  # load pretrained weights for finetuning or inference
-        if use_tactile:  # vision-tactile model or vision model
-            if plugin:  # adapter model or vision-tactile pretrained model
-                if adapter_model_path:  # adapter inference or adapter finetuning
-                    # load both base model and adapter model weights for inference, we save them together
-                    print("loading adapter weights from {} for adapter inference".format(adapter_model_path))
-                    model_dict = torch.load(adapter_model_path, map_location='cpu') 
-                    DeCO.load_state_dict(model_dict, strict=True)
-                else:
-                    # finetune adapter, load base model weights and freeze them, only train adapter weights
-                    print("loading vision pretrained weights from {} for adapter finetuning".format(pretrain_model_path))
-                    model_dict = torch.load(pretrain_model_path, map_location='cpu')
-                    model_state = DeCO.state_dict()
-                    pretrain_dict = {k: v for k, v in model_dict.items() if k in model_state.keys() and v.shape == model_state[k].shape}
-                    DeCO.load_state_dict(pretrain_dict, strict=False)
-                    loaded_param_names = set(pretrain_dict.keys())
-                    for name, param in DeCO.named_parameters():
-                        # 只冻结实际 shape 匹配并成功加载的旧参数；Kuavo 30D tactile / RGB-D bridge 等新参数必须保持可训练。
-                        if name in loaded_param_names:
-                            param.requires_grad = False
-                        else:
-                            print('trainable params:', name)
-            
-            else:
-                print("loading vision-tactile pretrained weights from {} for inference".format(pretrain_model_path))
-                model_dict = torch.load(pretrain_model_path)
-                DeCO.load_state_dict(model_dict, strict=True)
-
-        else:
-            # load vision model for inference
-            print("loading vision pretrained weights from {} for inference".format(pretrain_model_path))
-            model_dict = torch.load(pretrain_model_path)
-            model_state = DeCO.state_dict()
-            pretrain_dict = {k: v for k, v in model_dict.items() if k in model_state.keys() and v.shape == model_state[k].shape}
-            DeCO.load_state_dict(pretrain_dict, strict=False)
-
-        # save_dict = get_trainable_state_dict(DeCO)
-        # torch.save(save_dict, './test.pth')
-
-    return DeCO
-
-
-
-if __name__ == '__main__':
-    # model = torch.load('/root/yusun/ICML_codes/IL_training_codebase/models/mmrdt/1.pth')
-    # total_params = 0
-    # for k, v in model.items():
-    #     print(k, v.shape)
-    #     num = v.numel()
-    #     total_params += num
-    # print(f"\nTotal params: {total_params:,}")
-
-    import yaml 
-    with open('./deco.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-    model = modeling(**config['model'])
-
-
-    # from torchinfo import summary
-    # # mmdit = DECO(act_dim=28, chunk_size=16, num_attn_blocks=3, inf_step=1, use_task_condition=True)
-    # rgb = torch.randn(1, 3, 224, 224)
-    # depth = torch.randn(1, 1, 224, 224)
-    # obs = torch.randn(1, 28)
-    # act = torch.randn(1, 32, 28)
-    # task_idx = torch.randint(0, 8, (1,))
-    # tac1 = torch.randn(1, 15)
-    # tac2 = torch.randn(1, 15)
-
-    # act_train, _ = mmdit(rgb, depth, obs=obs, act=act, task_idx=task_idx, training=True)
-    # act_pred = mmdit(rgb, depth, obs=obs, task_idx=task_idx, training=False)
-    # print(act_train.shape, act_pred.shape)
-    
-    # summary(model, input_data=(rgb, depth, obs, act, task_idx, tac1, tac2), device='cpu')
+    return DECO(
+        act_dim=action_dim,
+        chunk_size=chunk_size,
+        obs_state=obs_state,
+        use_tactile=use_tactile,
+        plugin=plugin,
+        plugin_rank=plugin_rank,
+        use_task_condition=use_task_condition,
+        num_tasks=num_tasks,
+        inf_step=inf_step,
+        num_attn_blocks=num_attn_blocks,
+        heads=heads,
+        dim=dim,
+        rope_axes_dim=rope_axes_dim,
+        vision_backbone=vision_backbone,
+        depth_backbone=depth_backbone,
+    )

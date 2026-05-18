@@ -13,9 +13,9 @@ def train(net, net_without_ddp, train_loader, optimizer, criterion, warmup_sched
     net.train()
     total_loss = 0
 
-    for batch_idx, (img1, img2, tac1, tac2, obs, action, mask, task_idx) in enumerate(train_loader):
-        img1 = img1.cuda(local_rank)  # (b, 3, h, w)
-        img2 = img2.cuda(local_rank)  # (b, 3, h, w)
+    for batch_idx, (rgb, depth, tac1, tac2, obs, action, mask, task_idx) in enumerate(train_loader):
+        rgb = rgb.cuda(local_rank)  # (b, 3, h, w)
+        depth = depth.cuda(local_rank)  # (b, 1/3, h, w)
         obs = obs.cuda(local_rank)    # (b, 28)
         action = action.cuda(local_rank)  # (b, chunksize, 28)
         task_idx = task_idx.cuda(local_rank)  # (b, )
@@ -27,13 +27,13 @@ def train(net, net_without_ddp, train_loader, optimizer, criterion, warmup_sched
         if epoch <= opt.warm_up_epoch:
             warmup_scheduler.step()
         if not opt.amp:
-            out, noise = net(img1, img2, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=True)
+            out, noise = net(rgb, depth, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=True)
             loss = F.mse_loss(out, noise - action)
             loss.backward()
             optimizer.step()
         else:
             with autocast(device_type='cuda', enabled=True, dtype=torch.float16):
-                out, noise = net(img1, img2, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=True) # (b, chunksize, 28)
+                out, noise = net(rgb, depth, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=True) # (b, chunksize, 28)
                 loss = F.mse_loss(out, noise - action) 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -70,9 +70,9 @@ def val(net, test_loader, criterion, epoch, opt, act_dim, chunksize, obs_state, 
     mae = torch.zeros(chunksize, act_dim).cuda(local_rank)  # (chunksize, 28) 用于统计模型的l1误差
     
     with torch.no_grad():
-        for batch_idx, (img1, img2, tac1, tac2, obs, action, mask, task_idx) in enumerate(test_loader):
-            img1 = img1.cuda(local_rank)
-            img2 = img2.cuda(local_rank)
+        for batch_idx, (rgb, depth, tac1, tac2, obs, action, mask, task_idx) in enumerate(test_loader):
+            rgb = rgb.cuda(local_rank)
+            depth = depth.cuda(local_rank)
 
             obs = obs.cuda(local_rank)
             action = action.cuda(local_rank)
@@ -81,7 +81,7 @@ def val(net, test_loader, criterion, epoch, opt, act_dim, chunksize, obs_state, 
             tac1 = tac1.cuda(local_rank)
             tac2 = tac2.cuda(local_rank)
 
-            out = net(img1, img2, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=False)
+            out = net(rgb, depth, obs=obs, act=action, task_idx=task_idx, tac1=tac1, tac2=tac2, training=False)
 
             mask = mask.unsqueeze(-1).repeat(1, 1, act_dim)
             loss = (mask * criterion(out, action)).sum() / mask.sum()

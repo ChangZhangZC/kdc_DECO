@@ -47,16 +47,16 @@ Kuavo RGB + depth + state + action + tactile rosbag
 - **模型主干向 DECO 靠齐**：保留 DECO action token、Flow Matching 训练目标和去噪推理。
 - **backbone 默认向 DECO 容量靠齐**：默认 `resnet34`，允许配置切换 `resnet18`。
 - **RGB-D 编码分流**：RGB 与 depth 使用独立 ResNet backbone，depth 为 1-channel ResNet；二者不共享同一个 ResNet，只在 ResNet 后的 token 层做 cross-modal fusion。
-- **保留 DECO 两路视觉 token 假设**：阶段三第一版把原生 `img1/img2` 语义替换为 `fused_rgb/fused_depth`，仍以两路 visual tokens 接入 DECO `MMAttention`，暂不采用单路 visual token 重构。
+- **保留 DECO 两路视觉 token 假设**：阶段三第一版把原生双路视觉语义替换为 `fused_rgb/fused_depth`，仍以两路 visual tokens 接入 DECO `MMAttention`，暂不采用单路 visual token 重构。
 - **视觉预处理分层**：`Resize/Letterbox` 是 RGB 与 depth 共享的确定性空间预处理；`RGB_Augmenter` 是训练期随机增强池。二者不得混淆。默认空间输入采用 DECO 原生 `256x256 letterbox`，RGB padding 为灰色 `fill=128`，depth padding 单独配置。
-- **RGB 增强吸收 DECO blur 经验**：随机增强池以 Kuavo ACT 权重策略为主，并新增 GaussianBlur/RandomGaussianBlur 候选；默认保留一部分原图，另一部分从增强池中抽样。
+- **RGB 增强吸收 DECO blur 经验**：随机增强池以 Kuavo ACT 权重策略为主，并新增 GaussianBlur；默认保留一部分原图，另一部分从增强池中抽样。
 - **state 接入方式向 DECO 靠齐**：`observation.state` 由 LeRobot preprocessor 基于 dataset stats 归一化，但进入模型后仍走 DECO 的 `obs_encoder + time embedding` 条件路线，不改成 ACT 的 state token / VAE encoder 路线。
 - **tactile 接入方式向 DECO 靠齐**：洗数据阶段 `/100` 只做单位换算，把 Kuavo normal force 转为牛顿；LeRobot feature mapping 中将 `observation.tactile` 识别为独立 `TACTILE` 并使用 `IDENTITY`；进入模型前按左右手 tactile max 做 DECO-style 归一化并默认 clamp 到 `[0, 1]`，避免被 LeRobot 当作普通 STATE 执行 `MEAN_STD`。
 - **loss 向 DECO 原生靠齐**：训练目标保持 `F.mse_loss(out, noise - action)`，第一版不额外乘 `action_is_pad` mask。
 - **触觉微调向 DECO 靠齐**：保留源码中的 `plugin=True` / `PI_Adapter` 低秩 adapter 范式，默认冻结预训练主干，只微调触觉 adapter 和必要的 Kuavo 新增桥接模块。
 - **wrapper 边界清晰化**：`lerobot_patches/` 只做 LeRobot 全局 feature/type 兼容补丁，例如新增 `FeatureType.TACTILE`；DECO 专用 RGB-D `Resize/Letterbox`、RGB augmentation 接入顺序、tactile max normalization 和两阶段训练逻辑放在 `kuavo_train/wrapper/policy/deco/`。
-- **两阶段训练是两次独立启动**：第一阶段 `visual_main` 完整训练 RGB-D + state 主干并保存 `.safetensors` policy 目录；第二阶段 `tactile_adapter` 再加载第一阶段 policy，冻结主干，只训练 tactile encoder、tactile cross-attention、PI_Adapter 等新参数。若不使用触觉，则第一阶段产物就是最终部署产物。
-- **权重格式语义分层**：`.safetensors` policy 目录是 Kuavo-DECO 正式训练、续训、仿真和实机部署资产；`.pth` 只作为 DECO 原生 checkpoint 或历史 PyTorch 权重导入兼容入口。
+- **两阶段训练是两次独立启动**：第一阶段 `visual_main` 完整训练 RGB-D + state 主干并保存 Kuavo run 目录；第二阶段 `tactile_adapter` 再加载第一阶段选定 epoch 的 policy 权重，冻结主干，只训练 tactile encoder、tactile cross-attention、PI_Adapter 等新参数。若不使用触觉，则第一阶段 run 目录加选定 epoch 权重就是最终部署资产。
+- **权重格式语义分层**：`.safetensors` policy 权重目录是 Kuavo-DECO 正式训练、续训和加载权重的入口；`.pth` 只作为 DECO 原生 checkpoint 或历史 PyTorch 权重导入兼容入口。部署资产则沿用 Kuavo 原逻辑，以 `outputs/train/<task>/<method>/<timestamp>/` run 根目录为单位，`epoch<epoch>/` 只是其中被选择的权重子目录；最终保存的 policy 会清空外部初始化路径并关闭外部初始化读取，避免迁移后依赖原始初始化文件。
 - **频率处理分层**：数据转换阶段负责 30Hz 训练数据；部署 wrapper 负责 10Hz 控制输出。
 
 ### 2.2 被替代的旧方案
@@ -65,7 +65,7 @@ Kuavo RGB + depth + state + action + tactile rosbag
 
 - `use_depth: false`
 - 只保存 `/cam_h` RGB，不保存 depth
-- 将 `/cam_h` 单目图复制成 DECO 的 `img1/img2`
+- 将 `/cam_h` 单目图复制成 DECO 的双路视觉输入
 - 将 `/cam_h` 左右裁切成伪双目
 - 默认 10Hz LeRobot 数据转换频率
 - 在阶段一把 depth 剥离以严格保持 DECO 原生假设
@@ -126,7 +126,7 @@ Inspector 已确认：
 - 保存与头部 RGB 对齐的 depth feature，默认来源为 `/cam_h/depth/image_raw/compressed`。
 - DECO converter 应支持三类 depth decoder：默认 `compressed_image`，候选 `compressedDepth_png` 与 `raw_16uc1`。
 - DECO wrapper 通过 Kuavo/ACT 风格 RGB-D 视觉前端处理这两路视觉输入。
-- 不再把单目 RGB 复制成 `img1/img2`。
+- 不再把单目 RGB 复制成双路视觉输入。
 - 不再把 `/cam_h` 按宽度中线切成伪双目。
 
 ### 3.4 RGB 与 depth 的增强策略
@@ -155,7 +155,7 @@ RGB 随机增强池复用 Kuavo 现有 `RGB_Augmenter`，并新增 DECO blur 候
 - RandomBorderCutout
 - GaussianNoise
 - GammaCorrection
-- GaussianBlur 或 RandomGaussianBlur
+- GaussianBlur
 
 权重冻结建议：
 
@@ -175,11 +175,7 @@ RandomApply(GaussianBlur(kernel_size=random.choice([3, 5, 7]),
             p=0.5)
 ```
 
-Kuavo-DECO 不直接复刻 `p=0.5` 的触发概率，而是把 blur 放进 Kuavo 增强池。若要保留 DECO 的内部参数分布，应新增 `RandomGaussianBlur`：
-
-- 当该增强被池子采样到时，再随机选择 `kernel_size in [3, 5, 7]`。
-- 同时随机采样 `sigma in [0.1, 2.0]`。
-- 被采样概率仍由 Kuavo `RGB_Augmenter` 的权重控制。
+Kuavo-DECO 不直接复刻 `p=0.5` 的触发概率，而是把 blur 放进 Kuavo 增强池。当前第一版配置使用固定 `kernel_size: 5`，并保留 `sigma: [0.1, 2.0]` 参数范围，由 Kuavo `RGB_Augmenter` 的权重控制采样概率。
 
 Depth 策略：
 
@@ -396,7 +392,7 @@ DECO 固定 28 维顺序：
 DECO 原生视觉入口：
 
 ```text
-img1, img2
+two visual images
   -> shared ResNet34
   -> img_head Conv2d
   -> image tokens
@@ -418,7 +414,7 @@ RGB image, depth image
 
 - 默认使用 `resnet34`，允许配置切换 `resnet18`。
 - RGB 与 depth 使用独立 backbone，不共享同一个 ResNet；depth backbone 第一层为 1-channel conv，并参考 ACT 用 RGB conv1 权重的通道均值初始化。
-- 阶段三第一版保留 DECO 原生“两路视觉 token”结构，但把原生 `img1/img2` 语义替换为 `fused_rgb/fused_depth`。
+- 阶段三第一版保留 DECO 原生“两路视觉 token”结构，但把原生双路视觉语义替换为 `fused_rgb/fused_depth`。
 - `MMAttention` 内基于 `total_img_len / 2` 的视觉 token 分流逻辑可以保留，但代码注释必须说明当前两半不再是两张 RGB 图，而是 RGB stream 与 depth stream。
 - 保留空间 token，不优先使用 SpatialSoftmax 压成全局向量。
 - 暂不采用单路 `visual_tokens: [B, L, D]` 方案；该方案理论可行，但需要改写 `img_encoding`、`pos_idx_embedd`、RoPE 应用和 `MMAttention` 的两路视觉假设，作为后续 ablation 或二期重构候选。
@@ -439,7 +435,7 @@ RGB/depth cross attention
 
 Pros：
 
-- 最接近 DECO 原生 `img1/img2` 的两路视觉结构。
+- 最接近 DECO 原生双路视觉结构。
 - 对 DECO 主干改动更小，`total_img_len / 2`、RoPE 分半应用等逻辑可以保留。
 - RGB 和 depth 的语义在进入主干时仍可区分，便于后续分析和 ablation。
 
@@ -617,7 +613,7 @@ rosbag normal_force
 
 冻结逻辑：
 
-- 当 `pretrain_model_path`、`use_tactile=True`、`plugin=True` 且未指定 `adapter_model_path` 时，DECO 会加载预训练主干权重。
+- 当 `base_policy_path` 或 `deco_init_pth_path`、`use_tactile=True`、`use_tactile_lora=True` 且未指定 `adapter_model_path` 时，wrapper 会加载第一阶段 `.safetensors` policy 或兼容 `.pth` 初始化，并冻结主干，只保留 tactile/PI_Adapter 相关参数可训练。
 - checkpoint 中存在且 shape 匹配的参数会被加载。
 - checkpoint 中已有参数默认被冻结，即 `requires_grad=False`。
 - 新出现的参数保持可训练，包括 tactile encoder、tactile cross-attention、PI_Adapter，以及 Kuavo RGB-D 改造后必要的新 bridge 参数。
@@ -629,7 +625,7 @@ Kuavo 配置命名：
 - wrapper 内部将 `use_tactile_lora` 映射到 DECO 原生 `plugin`。
 - 用户配置层使用 `tactile_lora_rank` 表示低秩 rank，内部映射到 `plugin_rank`。
 - 第一阶段默认值：`use_tactile: false`、`use_tactile_lora: false`、`tactile_lora_rank: 32`、`freeze_pretrained_main: true`。
-- 第二阶段触觉 adapter override：`use_tactile: true`、`use_tactile_lora: true`、`base_policy_path` 指向第一阶段 `.safetensors` policy 目录，`freeze_pretrained_main: true`。
+- 第二阶段触觉 adapter override：`use_tactile: true`、`use_tactile_lora: true`、`base_policy_path` 指向第一阶段选定 epoch 的 `.safetensors` policy 权重目录，`freeze_pretrained_main: true`。
 - 如果用户完全不使用触觉，`use_tactile_lora: false` 时 PI_Adapter 不参与 forward；即使代码中存在未训练 adapter 参数，也不得影响推理输出。
 
 ### 4.8 分阶段训练与验证策略
@@ -641,11 +637,11 @@ Kuavo 配置命名：
    - 目标：验证 RGB-D 前端、30Hz 数据、28 维 action、Flow Matching 主干能独立闭环。
    - 允许训练范围：RGB-D bridge、视觉投影层以及按配置允许的 ResNet backbone。
    - 该阶段允许 `tactile_left_max` / `tactile_right_max` 仍为 `null`，因为 tactile 分支不参与 forward 与 loss。
-   - 训练完成后通过 LeRobot `save_pretrained()` 保存 `.safetensors` policy 目录；若用户不使用触觉，这个目录就是可进入仿真或实机部署的最终产物。
+   - 训练完成后通过 LeRobot `save_pretrained()` 保存 run 根目录与 `.safetensors` epoch 权重；若用户不使用触觉，部署资产就是该 run 根目录加选定 epoch 权重。
 
 2. **触觉 adapter 阶段**
    - 配置：`training_stage: tactile_adapter`、`use_tactile: true`、`use_tactile_lora: true`。
-   - 作为第二次独立训练启动，通过 `base_policy_path` 加载视觉-only / RGB-D 主干 `.safetensors` policy 目录。
+   - 作为第二次独立训练启动，通过 `base_policy_path` 加载视觉-only / RGB-D 主干的选定 `.safetensors` policy 权重目录。
    - 冻结预训练主干，训练 tactile encoder、tactile cross-attention、PI_Adapter 和必要的 Kuavo 触觉桥接参数。
    - 进入该阶段前必须填写正数 `tactile_left_max` / `tactile_right_max`，否则触觉尺度不符合 DECO-style normalization。
    - 第二阶段虽然只更新 tactile/adapter 参数，但 RGB-D visual branch 与 state branch 仍必须参与 forward，因为 tactile adapter 学到的是“在当前视觉和状态上下文下如何修正动作预测”。
@@ -664,13 +660,13 @@ Kuavo 配置命名：
 ```text
 启动 1：visual_main
   epoch 1..N：训练 RGB-D + state + DECO Flow Matching 主干
-  输出：第一阶段 .safetensors policy 目录
+  输出：第一阶段 run 根目录 + 选定 .safetensors epoch 权重
 
 启动 2：tactile_adapter
-  加载启动 1 的 policy
+  加载启动 1 的选定 epoch policy 权重
   冻结已经加载成功且 shape 匹配的主干参数
   epoch 1..M：训练 tactile encoder / tactile cross-attention / PI_Adapter
-  输出：第二阶段 .safetensors policy 目录
+  输出：第二阶段 run 根目录 + 选定 .safetensors epoch 权重
 ```
 
 - 若用户选择完全不使用触觉，则只执行启动 1，不执行启动 2。
@@ -700,14 +696,23 @@ Kuavo 配置命名：
 
 当前冻结语义：
 
-- `base_policy_path`：Kuavo/LeRobot 第一阶段 `visual_main` 输出的 policy 目录，内部包含 `.safetensors`、`config.json`、`policy_preprocessor.json`、`policy_postprocessor.json` 等文件。第二阶段 `tactile_adapter` 优先从这里加载主干权重。
+- `base_policy_path`：Kuavo/LeRobot 第一阶段 `visual_main` 选定 epoch 的 policy 权重目录，内部至少包含 `.safetensors` 与 `config.json`。第二阶段 `tactile_adapter` 优先从这里加载主干权重。
 - `adapter_model_path`：第二阶段或部署阶段可选加载的 adapter/full policy 目录，面向 Kuavo `.safetensors` 资产。
 - `deco_init_pth_path`：仅用于兼容 DECO 原生 `.pth` 或历史 PyTorch checkpoint 初始化，不作为 Kuavo-DECO 正式部署资产。
+- `load_external_init_weights`：训练初始化时为 `true`；最终保存 policy 时置为 `false`，并清空上述三个路径，避免部署或迁移时再次访问外部权重文件。
 
 最终部署规则：
 
-- 视觉主干部署：加载第一阶段 `.safetensors` policy 目录，配置 `use_tactile: false`、`use_tactile_lora: false`。
-- 触觉 adapter 部署：加载第二阶段 `.safetensors` policy 目录，配置 `use_tactile: true`、`use_tactile_lora: true`，并提供实时 tactile 观测。
+- 部署配置按原 Kuavo 三层路径填写：`task/method/timestamp` 对应 `outputs/train/<task>/<method>/<timestamp>/` run 根目录，`epoch` 只选择 `epoch<epoch>` 权重子目录。
+- `policy_preprocessor.json` 与 `policy_postprocessor.json` 保存在 run 根目录；权重和 `config.json` 保存在所选 `epoch<epoch>/` 子目录。因此 `epochbest/` 单独拷贝不是完整可部署 policy 包。
+- 视觉主干部署：使用第一阶段 run 根目录和选定 epoch，配置 `use_tactile: false`、`use_tactile_lora: false`。
+- 触觉 adapter 部署：使用第二阶段 run 根目录和选定 epoch，配置 `use_tactile: true`、`use_tactile_lora: true`，并提供实时 tactile 观测。
+- 通用 `configs/deploy/kuavo_env.yaml` 保持 ACT/DP 默认语义；DECO 使用 `configs/deploy/kuavo_deco_env.yaml` 记录 RGB-D depth topic 与 run-root 部署路径约定。
+- `configs/deploy/kuavo_deco_env.yaml` 使用 `state_layout: deco_28d`，在线 state/action 顺序与离线 converter 一致：左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。
+- `ObsBuffer` 对 DECO depth 使用 `depth_encoding: compressed_image`，直接解码 `/cam_h/depth/image_raw/compressed`；旧 `compressedDepth_png` 解码仍保留给 ACT/DP 通用配置。
+- `ObsBuffer` 对 `/dexhand/touch_state` 构造 30D `observation.tactile`，顺序为左手 15 + 右手 15，量纲换算保持 normal force `/100`。
+- `KuavoBaseRosEnv.step()` 对 DECO 28D action 执行双臂 14D 与双手 12D；head action 当前只保留维度，不下发头部控制。
+- `script.py` 与 `script_auto_test.py` 可通过 `--config configs/deploy/kuavo_deco_env.yaml` 显式选择 DECO 配置；`server.py` 支持 `--config` 或 `KUAVO_DEPLOY_CONFIG`，并在服务端内部执行 preprocessor、`policy.select_action` 和 postprocessor。
 
 仿真阶段的好结果标准：
 
@@ -723,22 +728,26 @@ Kuavo 配置命名：
 
 ## 5. 待同步文档与实现清单
 
-- [ ] 更新 `README_DECO.md`，说明 Kuavo-DECO 当前采用 RGB-D 前端，而不是原生双 RGB。
+- [x] 更新 `README_DECO.md`，说明 Kuavo-DECO 当前采用 RGB-D 前端，而不是原生双 RGB。
 - [x] 新建 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，默认 30Hz、use_depth true。
 - [x] 在数据配置中默认记录 `rgb_topic: /cam_h/color/image_raw/compressed`、`depth_topic: /cam_h/depth/image_raw/compressed`、`depth_encoding: compressed_image`，并把 `compressedDepth_png`、`/camera/depth/image_rect_raw` / `raw_16uc1` 标为待复核候选。
-- [ ] 新建 `configs/policy/deco_config.yaml`，默认 ResNet34 RGB-D、control_hz 10、action_stride 3，并显式包含 `training_stage`、`use_tactile_lora`、`tactile_lora_rank`、`freeze_pretrained_main`、`base_policy_path`、`adapter_model_path`、`deco_init_pth_path`。
-- [ ] 在 `configs/policy/deco_config.yaml` 中明确 `Resize/Letterbox` 是确定性 RGB-depth 空间预处理，不属于随机增强池；默认采用 DECO `256x256 letterbox`，RGB padding `128`，depth padding 独立配置。
-- [ ] 在 `configs/policy/deco_config.yaml` 中扩展 `RGB_Augmenter`：保留 Kuavo ACT 的 Identity/ColorJitter/SharpnessJitter/RandomMask/RandomBorderCutout/GaussianNoise/GammaCorrection，并新增 GaussianBlur/RandomGaussianBlur；默认 Identity/Notransform 权重 `3.0`，其他增强权重 `1.0`，`max_num_transforms: 1`。
-- [ ] 在 `configs/policy/deco_config.yaml` 中明确 `visual_token_mode: dual_stream_rgb_depth`，即 RGB/depth 独立 ResNet，cross attention 后仍按两路 visual tokens 接入 DECO。
-- [ ] 在 DECO wrapper 中明确 `observation.state` 由 LeRobot preprocessor 归一化后直接进入 DECO `obs_encoder + time embedding` 路线，不使用 DECO 原生手动归一化，也不改成 ACT state token / VAE 路线。
-- [ ] 在 `lerobot_patches/custom_patches.py` 中新增或扩展 `FeatureType.TACTILE`，确保 `observation.tactile` 不被识别为 STATE。
-- [ ] 新建 `kuavo_train/wrapper/policy/deco/DECOProcessor.py` 或等价模块，实现 DECO 专用 RGB-D preprocessor。
-- [ ] 在 DECO wrapper 中明确 `observation.tactile` 不走 STATE `MEAN_STD`，而是在 `/100` 牛顿单位基础上按左右手 tactile max 做 DECO-style 归一化并默认 clamp 到 `[0, 1]`。
-- [ ] 在 `configs/policy/deco_config.yaml` 中为 `tactile_left_max` / `tactile_right_max` 写明含义、单位、可填 `null` 的场景，以及 `use_tactile: true` 时必须为正数的约束。
-- [ ] 在 `configs/policy/deco_config.yaml` 中明确两阶段训练是两次独立启动：`visual_main` 产出可部署 `.safetensors` policy，`tactile_adapter` 加载第一阶段 policy 并冻结主干训练 tactile/PI_Adapter。
-- [ ] 在 DECO wrapper 中明确 loss 严格使用 `F.mse_loss(out, noise - action)`，第一版不使用 `action_is_pad` mask。
+- [x] 新建 `configs/policy/deco_config.yaml`，默认 ResNet34 RGB-D、control_hz 10、action_stride 3，并显式包含 `training_stage`、`use_tactile_lora`、`tactile_lora_rank`、`freeze_pretrained_main`、`base_policy_path`、`adapter_model_path`、`deco_init_pth_path`。
+- [x] 在 `configs/policy/deco_config.yaml` 中明确 `Resize/Letterbox` 是确定性 RGB-depth 空间预处理，不属于随机增强池；默认采用 DECO `256x256 letterbox`，RGB padding `128`，depth padding 独立配置。
+- [x] 在 `configs/policy/deco_config.yaml` 中扩展 `RGB_Augmenter`：保留 Kuavo ACT 的 Identity/ColorJitter/SharpnessJitter/RandomMask/RandomBorderCutout/GaussianNoise/GammaCorrection，并新增 GaussianBlur；默认 Identity/Notransform 权重 `3.0`，其他增强权重 `1.0`，`max_num_transforms: 1`。
+- [x] 在 DECO trunk 与 wrapper 中明确 RGB/depth 独立 ResNet，cross attention 后仍按两路 visual tokens 接入 DECO；不额外保留与当前模型逻辑无关的视觉 token 模式开关。
+- [x] 在 DECO wrapper 中明确 `observation.state` 由 LeRobot preprocessor 归一化后直接进入 DECO `obs_encoder + time embedding` 路线，不使用 DECO 原生手动归一化，也不改成 ACT state token / VAE 路线。
+- [x] 在 `lerobot_patches/custom_patches.py` 中新增或扩展 `FeatureType.TACTILE`，确保 `observation.tactile` 不被识别为 STATE。
+- [x] 新建 `kuavo_train/wrapper/policy/deco/DECOProcessor.py` 或等价模块，实现 DECO 专用 RGB-D preprocessor。
+- [x] 在 DECO wrapper 中明确 `observation.tactile` 不走 STATE `MEAN_STD`，而是在 `/100` 牛顿单位基础上按左右手 tactile max 做 DECO-style 归一化并默认 clamp 到 `[0, 1]`。
+- [x] 在 `configs/policy/deco_config.yaml` 中为 `tactile_left_max` / `tactile_right_max` 写明含义、单位、可填 `null` 的场景，以及 `use_tactile: true` 时必须为正数的约束。
+- [x] 在 `configs/policy/deco_config.yaml` 中明确两阶段训练是两次独立启动：`visual_main` 产出可部署 run 目录与 `.safetensors` epoch 权重，`tactile_adapter` 加载第一阶段 policy 并冻结主干训练 tactile/PI_Adapter。
+- [x] 在 DECO wrapper 中明确 loss 严格使用 `F.mse_loss(out, noise - action)`，第一版不使用 `action_is_pad` mask。
+- [x] 在 DECO wrapper/config 中明确最终保存的 policy 权重不依赖外部初始化路径：保存时清空外部初始化路径，加载最终 `.safetensors` 时不再读取第一阶段目录或 `.pth`；完整部署包仍以 run 根目录为单位。
+- [x] 在部署入口中静态注册 `deco` / `DECO` policy 类型，并导入 DECOProcessor 以注册 `deco_rgbd_letterbox_processor`。
+- [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，并明确 DECO 部署资产采用 Kuavo 原有 run 根目录：`outputs/train/<task>/<method>/<timestamp>/`；`epochbest/` 只是权重子目录，不是完整部署包。
+- [x] 在 `kuavo_deploy` 中静态接入 DECO 在线部署链路：`compressed_image` depth decoder、30D tactile callback、`deco_28d` state/action 和服务端 pre/post processor 接管。
 - [x] 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
 - [ ] 新建 `kuavo_data/validate_deco_lerobot_dataset.py`，检查单 rosbag 转换结果的字段、维度、30Hz 时间轴、RGB-depth 对齐、depth decoder、28 维 action 映射与 30 维 tactile 量纲。
-- [ ] 新建 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`。
-- [ ] 新建 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`。
-- [ ] 评估是否需要将 DECO 原包迁移到 `third_party/deco/` 后再做最小补丁。
+- [x] 新建 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`。
+- [x] 新建 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`。
+- [x] 已确定阶段四改动核心目标为 `third_party/deco/` 下的 Kuavo 定制 DECO 主干，并仅在 wrapper/config/patch 侧保留当前模型逻辑需要的最小字段。

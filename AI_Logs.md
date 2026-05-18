@@ -2,6 +2,91 @@
 
 ## 2026-05-18
 
+### 同步 PLANS 阶段六当前进度状态
+- **任务**: 根据四个部署链路文件已回退到提交 `dd323acfcdb162653acac201e63afa74874ab0a7` 的事实，修正 `PLANS.md` 中仍被误标为完成的阶段六部署项。本次只做文档状态同步，未运行 Python、ROS、训练、forward、validator、仿真、部署或环境变更命令。
+- **修改文件**: `PLANS.md`
+  - 将 `ObsBuffer` 接入 DECO depth topic 与 `depth_encoding: compressed_image` 的任务从已完成改为未完成。
+  - 将 `ObsBuffer` 接入 `/dexhand/touch_state` 并构造 30D `observation.tactile` 的任务从已完成改为未完成。
+  - 将 `ConfigEnv` / `KuavoBaseRosEnv` 在线拼接 `state_layout: deco_28d` 的任务从已完成改为未完成。
+  - 将 `KuavoBaseRosEnv.step()` 解释并下发 DECO 28D action 的任务从已完成改为未完成。
+  - 将 `server.py` 支持启动参数或 `KUAVO_DEPLOY_CONFIG` 选择部署配置的任务从已完成改为未完成。
+  - 将服务端统一加载 run 根目录 pre/post processor 并在 `select_action(raw_obs)` 内接管处理链路的任务从已完成改为未完成。
+  - 将 Done When 中“DECO 在线部署 obs/action 完成静态接入”改为未完成。
+- **当前边界**:
+  - `real_single_test.py` 与 `sim_auto_test.py` 中的 DECO policy 类型和 `DECOProcessor.py` 注册仍然保留，因此 `PLANS.md` 中对应两项继续保持已完成。
+  - `configs/deploy/kuavo_deco_env.yaml` 新增与 `configs/deploy/kuavo_env.yaml` 通用配置还原仍然成立，因此相关条目继续保持已完成。
+
+### 回退阶段六部署链路四个文件到指定提交状态
+- **任务**: 根据用户要求，暂时忽略此前对阶段六部署链路的实操改动，将四个部署链文件恢复到提交 `dd323acfcdb162653acac201e63afa74874ab0a7` 中的状态。本次未运行 Python、训练、forward、validator、仿真、ROS 节点、部署服务或环境变更命令。
+- **恢复文件**:
+  - `kuavo_deploy/config.py`
+  - `kuavo_deploy/utils/obs_buffer.py`
+  - `kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py`
+  - `kuavo_deploy/kuavo_service/server.py`
+- **恢复结果**:
+  - 上述四个文件已与 `dd323acfcdb162653acac201e63afa74874ab0a7` 中的版本一致。
+  - 此次恢复撤销了此前尚未正式确认手术方案的部署链改动，包括 `state_layout: deco_28d`、在线 28D state/action、DECO depth/tactile callback 和服务端 processor 接管等内容。
+- **边界说明**:
+  - 本次只按用户要求恢复四个部署链文件，不回退已确认的 wrapper、policy YAML、DECO 主干或训练入口相关文件。
+  - 后续阶段六部署链路应先补充手术方案并获得确认，再重新实施代码改动。
+
+### 明确 DECO 部署资产采用 run 根目录并新增专用部署配置
+- **任务**: 根据用户确认的方案 A，承认 DECO 部署资产是完整 `outputs/train/<task>/<method>/<timestamp>/` run 目录，而不是单独的 `epochbest/` 或任意 `epoch<epoch>/` 子目录。本次仅做静态配置与文档修改，未运行 Python、训练、forward、validator、仿真、部署或环境变更命令。
+- **新增文件**: `configs/deploy/kuavo_deco_env.yaml`
+  - 新增 DECO 专用部署配置，避免继续把 DECO 的 RGB-D depth topic、触觉说明和 run-root 部署语义混入通用 `kuavo_env.yaml`。
+  - 在文件头部明确完整部署资产为 `outputs/train/<task>/<method>/<timestamp>/`，其中 `epoch` 字段只选择 `epoch<epoch>` 权重子目录；`policy_preprocessor.json` 与 `policy_postprocessor.json` 仍保存在 run 根目录，所以 `epochbest/` 单独不是完整部署包。
+  - 将 DECO depth topic 写为 `/cam_h/depth/image_raw/compressed`，与当前数据转换规划中的 `compressed_image` decoder 路线保持一致。
+  - 保留 tactile adapter 的配置注释，说明阶段 6.1 完成 `dexhandTouchState -> 30D observation.tactile` 在线接入后再启用。
+- **修改文件 1**: `configs/deploy/kuavo_env.yaml`
+  - 将此前为了 DECO 审查临时扩展的 `policy_type` 注释还原为原通用配置语义：`Supports diffusion, act`。
+  - 未修改原有 ACT/DP topic、depth `compressedDepth` 路线、运行参数或字段结构。
+- **修改文件 2**: `README_DECO.md`
+  - 新增“部署路径约定”章节，说明 DECO 应使用 `configs/deploy/kuavo_deco_env.yaml`，通用 `kuavo_env.yaml` 保持 ACT/DP 默认语义。
+  - 明确部署配置中填写的是 `task/method/timestamp` 三层 run 路径，权重由 `epoch` 字段选择；完整部署、迁移或归档时应保留整个 `run_xxx/` 目录。
+  - 补充说明现有 `script.py` / `script_auto_test.py` 需要通过 `--config configs/deploy/kuavo_deco_env.yaml` 显式传入 DECO 配置；`server.py` 的配置路径可配置化仍属于阶段六后续项。
+- **修改文件 3**: `PLANS.md`
+  - 更新已确认技术决策和阶段 6.1 清单，记录 DECO 部署资产采用原 Kuavo run 根目录方案。
+  - 将 `kuavo_deco_env.yaml` 新增和 `kuavo_env.yaml` 还原标记为已完成；保留“严格 28D dexhand state/action 与 30D tactile 在线接入仍待阶段 6.1 后续完成”的未完成项。
+- **修改文件 4**: `Content/DECO_Technical_Decisions.md`
+  - 更新权重格式与路径语义，区分训练初始化用的 `.safetensors` policy 权重目录、兼容导入用的 `.pth`，以及部署归档用的完整 run 根目录。
+  - 明确 `epochbest/` 或任意 `epoch<epoch>/` 只是权重子目录，不包含完整 processor 资产。
+- **未执行项与边界**:
+  - 未运行任何 Python、YAML loader、ROS 节点、训练、forward、validator、仿真或部署命令。
+  - 未删除文件，未修改 `third_party/lerobot/`。
+
+### 处理阶段四 Wrapper 静态审查反馈
+- **任务**: 根据静态 code review 反馈修复 DECO wrapper、训练入口和部署入口中的一致性问题。本次仍遵守 No-Runtime 约束，未运行 Python、训练、forward、validator、仿真、部署或环境变更命令。
+- **修复 1**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 修正 `deco_init_pth_path` 初始化路径的冻结语义：当 `training_stage: tactile_adapter` 且 `freeze_pretrained_main: true` 时，`.pth` 初始化与 `.safetensors` 初始化一样会进入主干冻结策略。
+  - 新增 `_freeze_main_for_tactile_adapter()`：在 tactile adapter 阶段按参数名冻结主干，只保留 `tactile_encoder`、`gated`、`pos_tac_embedd`、tactile cross-attention 和 `PI_Adapter` 相关参数可训练。
+  - 当最终保存的 policy 配置关闭外部初始化读取时，加载 `.safetensors` 后不会再访问第一阶段目录或原生 `.pth`，但仍保留 tactile adapter 阶段的主干冻结语义。
+- **修复 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增 `load_external_init_weights`，用于区分“训练初始化需要读取外部权重”和“最终 policy 已经自包含”。
+  - 在 `_save_pretrained()` 中清空 `base_policy_path`、`adapter_model_path`、`deco_init_pth_path`，并将 `load_external_init_weights` 写为 `false`，保证最终 `.safetensors` policy 目录迁移后不依赖外部初始化路径。
+  - 放宽 tactile adapter 的路径校验：只有 `load_external_init_weights: true` 时才要求提供 `base_policy_path`、`deco_init_pth_path` 或 `adapter_model_path`。
+- **修复 3**: `configs/policy/deco_config.yaml`
+  - 新增并注释 `load_external_init_weights: true`，明确该字段只用于训练初始化，最终保存时会关闭。
+- **修复 4**: `kuavo_train/train_policy.py` 与 `kuavo_train/train_policy_with_accelerate.py`
+  - 优化器构建改为使用 `policy.get_optim_params()`，使 ACT/DECO wrapper 中的参数组和 `requires_grad` 过滤逻辑真正生效。
+  - 未修改训练循环、epoch、dataloader、checkpoint 或 scheduler 语义。
+- **修复 5**: `kuavo_deploy/src/eval/real_single_test.py` 与 `kuavo_deploy/src/eval/sim_auto_test.py`
+  - 新增 `CustomDECOPolicyWrapper` 导入，并支持 `policy_type: deco` / `DECO`。
+  - 显式导入 `DECOProcessor.py`，确保加载保存的 `policy_preprocessor.json` 时能注册并找到 `deco_rgbd_letterbox_processor`。
+  - 保留原 `diffusion`、`act`、`client` 分支，并避免对 `client` 分支强制调用模型专属的 `eval()` / `to()` / `reset()`。
+- **修复 6**: `kuavo_deploy/kuavo_service/server.py`
+  - 服务器侧新增 `act`、`deco` 分支，不再只硬编码 `CustomDiffusionPolicyWrapper`。
+  - 改用当前仓库存在的 `load_kuavo_config()` 和 `configs/deploy/kuavo_env.yaml`，避免继续引用不存在的 `configs.deploy.config_inference` 与 `kuavo_real_env.yaml`。
+  - 显式导入 `DECOProcessor.py`，为服务端可能加载 DECO processor 预留注册。
+- **修复 7**: `kuavo_deploy/config.py` 与 `configs/deploy/kuavo_env.yaml`
+  - 部署配置校验支持 `diffusion`、`act`、`deco`、`client`，并更新 YAML 注释。
+- **修复 8**: `README_DECO.md`、`PLANS.md`、`Content/DECO_Technical_Decisions.md`
+  - 同步 README 当前状态：训练 wrapper、DECO 专用 preprocessor、策略配置和基础部署入口注册已完成静态接入。
+  - 在计划和技术决策中记录最终 policy 自包含语义、部署入口 DECO 注册、DECOProcessor 注册和 optimizer 使用 wrapper 参数组的修复。
+- **未执行项与边界**:
+  - 未运行 Python、import 编译、forward shape test、训练、数据 validator、仿真、部署或服务端联调。
+  - 未执行任何安装、删除或环境变更命令。
+  - 未修改 `third_party/lerobot/`，未修改根目录 `DECO/` 原生备份。
+
 ### 同步阶段四/五 Wrapper 与两阶段训练设计决策
 - **任务**: 根据用户关于 DECO wrapper、tactile 独立分支、DECO 专用 preprocessor、两阶段训练和权重格式语义的确认，更新 `PLANS.md` 与 `Content/DECO_Technical_Decisions.md`。本次只做文档级方案同步，未运行 Python、训练、forward、validator、部署脚本或任何环境变更命令。
 - **修改文件 1**: `PLANS.md`
@@ -32,6 +117,73 @@
   - 未修改 wrapper 代码、训练入口、配置 YAML 或 LeRobot patch 代码。
   - 未运行 Python、未做 import 编译检查、未训练、未验证数据集、未部署。
   - 未修改 `third_party/lerobot/`。
+
+### 阶段四 DECO Wrapper 与第三方 DECO 主干静态实现
+- **任务**: 根据用户确认的阶段四 wrapper 方案，围绕 `third_party/deco` 下的 Kuavo 定制 DECO 主干完成训练 wrapper、DECO 专用 preprocessor、tactile feature 隔离、两阶段训练配置和文档同步。本次遵守 No-Runtime 约束，只做静态代码与文档修改，未运行 Python、训练、forward、validator、部署脚本或任何环境变更命令。
+- **修改文件 1**: `third_party/deco/models/deco/deco.py`
+  - 删除与当前 Kuavo-DECO RGB-D + tactile 三主枝逻辑无关、容易造成二次审阅混淆的旧字段和加载逻辑，包括 `visual_input_mode`、`img_pretrain`、`freeze_backbone`、`pretrain_model_path`、`adapter_model_path`、`load_visual_pretrain`、`load_encoder_pretrain`、旧 `freeze` 逻辑和底部示例代码。
+  - 将 DECO 主体收窄为纯 RGB-D action-token Flow Matching 模型：RGB 与 depth 使用独立 backbone，cross attention 后仍以两路 visual tokens 接入 MMAttention。
+  - 将 checkpoint 路径、`.safetensors` 加载、`.pth` 兼容加载和冻结策略全部上移到 Kuavo wrapper，避免第三方 DECO 主干同时承担训练编排职责。
+- **修改文件 2**: `third_party/deco/config/deco.yaml`
+  - 删除 `visual_input_mode`、`img_pretrain`、`freeze_backbone`、`pretrain_model_path`、`adapter_model_path` 等旧配置字段。
+  - 保留模型结构参数、RGB-D backbone、触觉 max 语义和当前 DECO 主干真正需要的字段，使 `third_party/deco` 默认只表达当前 Kuavo RGB-D 主干。
+- **修改文件 3**: `third_party/deco/models/deco/train_one_epoch.py`
+  - 将旧局部变量 `img1/img2` 重命名为 `rgb/depth`，只做命名级静态清理，不改变 DECO 原生训练辅助函数的 loss、优化或数据读取流程。
+- **新增文件 1**: `kuavo_train/wrapper/policy/deco/__init__.py`
+  - 新增 `ensure_deco_on_path()`，集中处理 `third_party/deco` 路径注入。
+  - 用中文注释明确 wrapper、DECO 主干和 LeRobot patch 的职责边界。
+- **新增文件 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增 `CustomDECOConfigWrapper` 并注册为 `custom_deco`。
+  - 配置字段只保留当前已确认逻辑：三主枝输入、RGB/depth key、tactile key、`training_stage`、`use_tactile_lora`、`tactile_lora_rank`、`freeze_pretrained_main`、`base_policy_path`、`adapter_model_path`、`deco_init_pth_path`、tactile max、letterbox、30Hz/10Hz stride、optimizer/scheduler 等。
+  - 增加配置 guard：`tactile_adapter` 必须开启 tactile 和 tactile LoRA，并提供 `base_policy_path` 或 `deco_init_pth_path`；`use_tactile: true` 时左右 tactile max 必须为正数；`dataset_hz/control_hz/action_stride` 必须一致。
+  - 默认 normalization mapping 将 `TACTILE` 设为 `IDENTITY`，避免 tactile 误走 `STATE: MEAN_STD`。
+- **新增文件 3**: `kuavo_train/wrapper/policy/deco/DECOProcessor.py`
+  - 新增 DECO 专用 RGB-D preprocessor：在 LeRobot normalizer 前对 RGB/depth 同步执行 `256x256 letterbox`。
+  - RGB 使用 bilinear 和灰色 padding，depth 使用 nearest 和独立 padding；depth 不做 photometric augmentation。
+  - 将 resize 调用封装为 `_interpolate()`，只有 bilinear/bicubic 模式传入 `align_corners=False`，nearest 模式不传该参数，避免 depth resize 分支出现不必要的 PyTorch 参数歧义。
+  - 构建 DECO 专用 pre/post processor pipeline，使训练入口中的 RGB 随机增强可以插在 letterbox 后、normalizer 前。
+- **新增文件 4**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 新增 `CustomDECOPolicyWrapper`，将 Kuavo batch 映射到 DECO 原生 `forward(rgb, depth, obs, action, task_id, tac1, tac2, training=True/False)`。
+  - `forward()` 中不执行 raw-pixel resize/padding，只读取 preprocessor 已处理的 RGB/depth。
+  - tactile 作为独立第三主枝读取 `observation.tactile`，拆成左右手各 15 维，按左右 tactile max 做 DECO-style 归一化并默认 clamp 到 `[0, 1]`。
+  - loss 严格保持 DECO Flow Matching 目标 `F.mse_loss(out, noise - action)`，第一版不额外使用 `action_is_pad` mask。
+  - 支持 `base_policy_path` 的 `.safetensors` 加载与第二阶段主干冻结，支持 `deco_init_pth_path` 作为历史 `.pth` 初始化兼容入口，支持 `adapter_model_path` 作为可选 adapter/full policy 加载入口。
+  - `select_action()` 使用 `action_stride` 从 action chunk 中按 30Hz 数据 / 10Hz 控制节奏抽取动作队列。
+- **修改文件 4**: `lerobot_patches/custom_patches.py`
+  - 新增或扩展 `FeatureType.TACTILE`，并在 `dataset_to_policy_features` 中优先将 `observation.tactile` 识别为 `TACTILE`，避免其被通用 `observation*` 规则错误归入 `STATE`。
+- **修改文件 5**: `kuavo_train/train_policy.py`
+  - 只做最小策略注册和 processor 分发：新增 `deco` / `DECO -> CustomDECOPolicyWrapper` 注册，并在 policy config 是 DECO wrapper 时使用 `make_deco_pre_post_processors()`。
+  - 未修改训练循环、优化器构建、dataloader、epoch 调度、checkpoint 逻辑或 LeRobot 主训练语义。
+- **修改文件 6**: `kuavo_train/train_policy_with_accelerate.py`
+  - 与单机训练入口保持同样的最小 DECO 注册和 pre/post processor 分发。
+  - 未修改 accelerate 训练循环或分布式训练语义。
+- **新增文件 5**: `configs/policy/deco_config.yaml`
+  - 新增 Kuavo-DECO 默认策略配置，默认面向第一阶段 `visual_main`：`use_tactile: false`、`use_tactile_lora: false`，第一阶段产物可作为无触觉 `.safetensors` policy 直接部署。
+  - 记录第二阶段 `tactile_adapter` 的 override 方式：开启 tactile 与 tactile LoRA，加载第一阶段 `base_policy_path`，冻结主干训练 tactile/PI_Adapter。
+  - 明确 RGB-D 预处理、RGB-only augmentation、ResNet34 默认 backbone、30Hz 数据 / 10Hz 控制、`action_stride: 3` 和 tactile max 配置约束。
+- **修改文件 7**: `README_DECO.md`
+  - 更新当前 wrapper 状态，说明 `kuavo_train/wrapper/policy/deco/` 已存在，并记录 DECO 主干已固定为 RGB-D，路径与 checkpoint 加载由 wrapper 负责。
+  - 更新当前限制，说明本地只完成静态实现，尚未执行 import、forward、训练或部署验证。
+- **修改文件 8**: `third_party/deco/README.MD`
+  - 更新示例配置，删除已从 `third_party/deco/config/deco.yaml` 移除的旧路径和冻结字段。
+  - 添加说明：路径、冻结与两阶段训练不再由 DECO 原生 YAML 表达，而由 Kuavo wrapper/config 负责。
+- **修改文件 9**: `Content/DECO_Technical_Decisions.md`
+  - 同步阶段四实现状态，勾选 DECO config、preprocessor、tactile feature、tactile max、两阶段训练和 wrapper 相关清单。
+  - 将随机增强描述收窄为实际实现的 `GaussianBlur`，并记录不额外保留 `visual_token_mode` 这类与当前逻辑无关的字段。
+  - 清理早期方案中未实现的随机 blur 变体描述，避免与当前 `configs/policy/deco_config.yaml` 的实际增强池不一致。
+  - 将早期方案中旧双路视觉接口名改为概念性描述，避免与当前 `forward(rgb, depth, ...)` 接口混淆。
+- **修改文件 10**: `PLANS.md`
+  - 勾选阶段四 wrapper 相关完成项、阶段五策略配置完成项和 Done When 中已静态完成的 RGB-D/tactile/two-stage 事项。
+  - 同步勾选阶段三 `3.5`、`3.6`、`3.7` 中已由本次 wrapper/config 实现完成的 tactile LoRA 映射、两阶段训练边界、DECO preprocessor 与 state/tactile 接入边界。
+  - 保留 validator、仿真、部署、requirements 最小化复查等尚未执行事项为未完成。
+  - 清理早期计划中未实现的第一阶段冻结开关、触觉阶段自动开关和随机 blur 变体描述，使计划只保留当前已确认的 wrapper/config 字段。
+  - 将早期计划中旧双路视觉接口名改为概念性描述，保持阶段四审阅材料只围绕 RGB-D 路线展开。
+- **修改文件 11**: `README_DECO.md` 与 `third_party/deco/README.MD`
+  - 将旧视觉模式字段名改为概念性描述，避免在当前阶段四审阅中继续出现已删除字段。
+- **未执行项与边界**:
+  - 未运行 Python、import 编译、forward shape test、训练、数据 validator、仿真或部署。
+  - 未执行 `pip install`、`conda install`、`brew install` 或其他环境修改命令。
+  - 未执行删除文件命令，未修改 `third_party/lerobot/`，未修改根目录 `DECO/` 原生备份。
 
 ## 2026-05-17
 

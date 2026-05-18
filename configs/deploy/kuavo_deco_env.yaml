@@ -1,0 +1,96 @@
+# ===============================
+# Kuavo-DECO Deploy Config File
+# ===============================
+#
+# DECO 部署资产采用 Kuavo 原有 run 目录语义：
+# outputs/train/<task>/<method>/<timestamp>/ 是完整 run 根目录，
+# epoch 字段只用于选择其中的 epoch<epoch> 权重子目录。
+# policy_preprocessor.json / policy_postprocessor.json 保存在 run 根目录，
+# 因此不要只拷贝或只填写 epochbest/ 作为完整部署资产。
+
+hydra:  # Hydra config directory, for parameter checking only
+  run:
+    dir: ./outputs/kuavo_deploy_hydra_save/singlerun/${now:%Y%m%d_%H%M%S}
+  sweep:
+    dir: ./outputs/kuavo_deploy_hydra_save/multirun/${now:%Y%m%d_%H%M%S}
+    subdir: ${hydra:job.override_dirname}
+
+
+# =====================================================
+# env config: DECO RGB-D deployment configuration
+# =====================================================
+env:
+  env_name: Kuavo-Sim
+  control_mode: joint
+  eef_type: qiangnao
+  which_arm: both
+  state_layout: deco_28d  # DECO 在线 state/action: left arm 7 + left hand 6 + right arm 7 + right hand 6 + head 2.
+  head_init: [0, 0.209]
+  ros_rate: 10  # DECO 数据为 30Hz，部署控制为 10Hz；降频由 wrapper 的 action_stride=3 处理。
+
+  only_arm: true
+
+  image_size: &IMGSIZE [640, 480]
+  depth_range: &DEPTHRANGE [0, 1500]
+  obs_key_map:
+    # DECO 默认只使用头部 RGB-D。depth topic 对齐当前数据规划中的 compressed_image 路线。
+    head_cam_h: ["/cam_h/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
+    depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
+    joint_q: ["/sensors_data_raw", "sensorsData", 500]
+    head_q: ["/sensors_data_raw", "sensorsData", 500]
+    qiangnao: ["/dexhand/state", "JointState", 500]
+    # tactile 第四项是 normal_force 的量纲换算系数；保持与数据转换阶段 /100 一致。
+    tactile: ["/dexhand/touch_state", "dexhandTouchState", 500, 100.0]
+
+  arm_state_keys: ["joint_q", "gripper", "head_q"]
+  frame_alignment: false
+  ratio: 1.0
+
+  limits:
+    joint_q:
+      min: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
+      max: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+    gripper:
+      min: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      max: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    head_q:
+      min: [-1.0, -1.0]
+      max: [1.0, 1.0]
+    eef:
+      min: [-1, -1, -1, -3.14, -3.14, -3.14, -1, -1, -1, -3.14, -3.14, -3.14]
+      max: [1, 1, 1, 3.14, 3.14, 3.14, 1, 1, 1, 3.14, 3.14, 3.14]
+    eef_relative:
+      min: [-0.005, -0.0075, -0.004, -0.03, -0.03, -0.05, -0.005, -0.0075, -0.004, -0.03, -0.03, -0.05]
+      max: [0.005, 0.0075, 0.004, 0.03, 0.03, 0.05, 0.005, 0.0075, 0.004, 0.03, 0.03, 0.05]
+    base:
+      min: [-2.0, -2.0, -3.14, 0]
+      max: [2.0, 2.0, 3.14, 1]
+
+  qiangnao_dof_needed: 6
+
+  is_binary: false
+
+
+# =====================================================
+# inference config: DECO policy selection and run-root path
+# =====================================================
+inference:
+  go_bag_path: /path/to/your/go.bag
+  policy_type: "deco"
+  eval_episodes: 100
+  seed: 42
+  start_seed: 42
+  device: "cuda"
+
+  # 这里按 Kuavo 原有三层填写 outputs 下的 run 根目录：
+  # outputs/train/<task>/<method>/<timestamp>/
+  # 例如 task: "your_task", method: "deco", timestamp: "run_20260518_120000"。
+  task: "your_task"
+  method: "deco"
+  timestamp: "your_run_timestamp"
+
+  # 权重文件仍从 run 根目录下的 epoch 子目录读取：
+  # outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
+  # 但 processor 从 run 根目录读取，所以 epochbest/ 单独拷贝不是完整部署包。
+  epoch: best
+  max_episode_steps: 200

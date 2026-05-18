@@ -1,6 +1,6 @@
 # DECO Model Integration Guide
 
-本文档记录 Kuavo-DECO 集成的使用方式。当前已完成阶段一的数据转换静态实现、阶段二的 DECO 源码复制归档与依赖记录，以及阶段三的 `third_party/deco` 模型手术静态实现；训练 wrapper 和部署 wrapper 仍以后续阶段为准。
+本文档记录 Kuavo-DECO 集成的使用方式。当前已完成阶段一的数据转换静态实现、阶段二的 DECO 源码复制归档与依赖记录、阶段三的 `third_party/deco` 模型手术静态实现，以及阶段四/五的训练 wrapper、DECO 专用 preprocessor、策略配置、基础部署入口注册和 DECO 专用部署配置。后续仍需完成 validator、仿真闭环、实机 dry-run 与依赖最小化复查。
 
 ## 阶段一：RGB-D 数据转换
 
@@ -9,7 +9,7 @@
 DECO 阶段一转换链路将 Kuavo rosbag 转成 DECO wrapper 预期的 LeRobot 数据集：
 
 - `observation.images.head_cam_h`：头部 RGB 图像。
-- `observation.depth_h`：与头部 RGB 对齐的 depth image。当前为了兼容 LeRobot image/video writer，磁盘中保存为 3-channel depth image；后续 wrapper 需按 depth 语义还原为单通道输入。
+- `observation.depth_h`：与头部 RGB 对齐的 depth image。当前为了兼容 LeRobot image/video writer，磁盘中保存为 3-channel depth image；DECO wrapper 会按 depth 语义取单通道输入。
 - `observation.state`：28 维，顺序为左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。
 - `observation.tactile`：30 维，顺序为左手 15 + 右手 15 的 normal force，原始值除以 100 后作为牛顿量纲。
 - `action`：28 维，顺序同 state；头部 action 当前固定为 `[0.0, 0.0]`。
@@ -106,7 +106,7 @@ third_party/lerobot/src/lerobot/policies/act
 third_party/lerobot/src/lerobot/policies/diffusion
 ```
 
-Kuavo 对 ACT/DP 的适配不直接修改 `third_party/lerobot/`，而是在 `kuavo_train/wrapper/policy/act/` 与 `kuavo_train/wrapper/policy/diffusion/` 中继承并封装原始 policy。DECO 后续也沿用该模式：不注册到 LeRobot submodule，不修改 `third_party/lerobot/`，而是在后续 `kuavo_train/wrapper/policy/deco/` 中接入 `third_party/deco/`。
+Kuavo 对 ACT/DP 的适配不直接修改 `third_party/lerobot/`，而是在 `kuavo_train/wrapper/policy/act/` 与 `kuavo_train/wrapper/policy/diffusion/` 中继承并封装原始 policy。DECO 沿用该模式：不注册到 LeRobot submodule，不修改 `third_party/lerobot/`，而是在 `kuavo_train/wrapper/policy/deco/` 中接入 `third_party/deco/`。
 
 ### Python 路径约定
 
@@ -117,7 +117,7 @@ from models.deco.deco import DECO
 from models.deco.img_encoder import ResNet34
 ```
 
-后续 wrapper 接入时，应在 wrapper 顶部把 `third_party/deco` 注入 `sys.path`，使这些导入继续按原始 DECO 结构工作：
+wrapper 接入时，会在 `kuavo_train/wrapper/policy/deco/__init__.py` 中把 `third_party/deco` 注入 `sys.path`，使这些导入继续按原始 DECO 结构工作：
 
 ```python
 import sys
@@ -128,7 +128,7 @@ if str(DECO_ROOT) not in sys.path:
     sys.path.insert(0, str(DECO_ROOT))
 ```
 
-该路径约定只说明后续 wrapper 的接入方式；阶段二不实现 `DECOPolicyWrapper`，也不执行训练或 forward 验证。
+当前 `DECOPolicyWrapper` 已按该路径约定接入；本仓库仍遵守静态修改约束，未在 Codex 机器上执行训练或 forward 验证。
 
 ### 依赖记录
 
@@ -148,12 +148,11 @@ third_party/deco/requirements.txt
 
 ```yaml
 model:
-  visual_input_mode: dual_stream_rgb_depth
   vision_backbone: resnet34
   depth_backbone: resnet34
 ```
 
-`visual_input_mode` 当前仅保留 `dual_stream_rgb_depth`，表示 Kuavo RGB-D 模式：`rgb` 为头部 RGB，`depth` 为对齐深度图。旧 DECO `dual_rgb` 双 RGB 兼容入口已从 Kuavo 定制副本的模型主体中移除，避免与当前 RGB-D 规划混淆。
+Kuavo 定制副本中的 DECO 主体已经固定为 RGB-D 路线：`rgb` 为头部 RGB，`depth` 为对齐深度图。旧 DECO 双 RGB 兼容入口已从模型主体中移除，避免与当前 RGB-D 规划混淆。
 
 RGB-D 模式下：
 
@@ -163,7 +162,7 @@ RGB-D 模式下：
 - RGB/depth 在 ResNet layer4 后做双向 cross attention。
 - 输出仍保留两路 visual tokens：`fused_rgb_tokens` 与 `fused_depth_tokens`，继续接入 DECO `MMAttention`。
 
-当前 `third_party/deco/config/deco.yaml` 默认使用 `dual_stream_rgb_depth`，表示该副本服务 Kuavo RGB-D 路线。
+当前 `third_party/deco/config/deco.yaml` 只保留模型结构字段；`.safetensors`、两阶段冻结和原生 `.pth` 兼容加载均由 `kuavo_train/wrapper/policy/deco/` 处理。
 
 ### 触觉输入
 
@@ -178,7 +177,7 @@ RGB-D 模式下：
 
 `third_party/deco/config/deco.yaml` 只保留 Kuavo 语义的 `tactile_left_max/tactile_right_max`。旧 DECO 别名 `tac_left_max/tac_right_max` 已移除，避免与 Kuavo 标准化 wrapper 字段混淆。当 `use_tactile: true` 时，这两个字段必须填写为正数。
 
-配置文件中也只保留一处 `chunk_size`：`model.chunk_size`。DECO 原生 `data.chunk_size`、obs/action 手动归一化统计量和旧 RGB `img_mean/img_std` 不再作为 Kuavo RGB-D 路线的权威配置；state/action/image 的标准化由后续 Kuavo LeRobot wrapper/preprocessor 负责。
+配置文件中也只保留一处 `chunk_size`：`model.chunk_size`。DECO 原生 `data.chunk_size`、obs/action 手动归一化统计量和旧 RGB `img_mean/img_std` 不再作为 Kuavo RGB-D 路线的权威配置；state/action/image 的标准化由 Kuavo LeRobot wrapper/preprocessor 负责。
 
 ### 保留项
 
@@ -191,9 +190,45 @@ RGB-D 模式下：
 - 训练目标 `F.mse_loss(out, noise - action)`
 - 推理阶段 denoising loop
 
+## 部署路径约定
+
+DECO 部署配置位于：
+
+```bash
+configs/deploy/kuavo_deco_env.yaml
+```
+
+通用 `configs/deploy/kuavo_env.yaml` 保持 ACT/DP 默认语义，不承载 DECO 专用 depth/tactile 配置。DECO 的头部 depth topic 固定为当前数据规划中的 `/cam_h/depth/image_raw/compressed`，与 `compressed_image` decoder 路线一致；旧 ACT/DP `compressedDepth_png` 路线仍保留给通用配置使用。
+
+部署资产沿用原 Kuavo 三层 run 路径：
+
+```text
+outputs/train/<task>/<method>/<timestamp>/
+```
+
+在 `kuavo_deco_env.yaml` 中填写：
+
+- `task`：对应 `outputs/train/<task>/`。
+- `method`：建议为 `deco` 或实际训练方法名。
+- `timestamp`：对应 run 目录名，例如 `run_20260518_120000`。
+- `epoch`：选择 run 目录下的 `epoch<epoch>` 权重子目录，例如 `best`、`50`、`100`。
+
+因此，模型权重实际从：
+
+```text
+outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
+```
+
+读取，但 `policy_preprocessor.json` 与 `policy_postprocessor.json` 保存在 run 根目录。`epochbest/` 或任意 `epoch<epoch>/` 单独拷贝不是完整部署包；部署、迁移或归档时应保留整个 `run_xxx/` 目录。
+
+当前 `kuavo_deco_env.yaml` 已启用 `state_layout: deco_28d`，在线 `observation.state` 顺序与离线 converter 保持一致：左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。`ObsBuffer` 也已静态接入 `/dexhand/touch_state`，按左手 15 + 右手 15 的 normal force 构造 30D `observation.tactile`，并保持 `/100` 牛顿换算。
+
+使用已有 `kuavo_deploy/src/scripts/script.py` 或 `script_auto_test.py` 时，应通过 `--config configs/deploy/kuavo_deco_env.yaml` 显式传入 DECO 配置。`kuavo_deploy/kuavo_service/server.py` 也支持 `--config configs/deploy/kuavo_deco_env.yaml`，或通过 `KUAVO_DEPLOY_CONFIG` 环境变量选择配置；服务端内部会从 run 根目录加载 pre/post processor，使调用方只需要发送 raw obs。
+
 ## 当前限制
 
-- 训练端 DECO wrapper 尚未完成；不要直接把 LeRobot 数据集喂给尚未完成的 Kuavo DECO wrapper。
-- 部署端 10Hz 控制频率不在洗数据阶段处理，后续由 wrapper/deploy action queue 使用 `action_stride=3` 完成。
+- 训练端 DECO wrapper 已完成静态接入，但尚未在本机执行 import、forward 或训练验证。
+- 部署入口已完成 DECO policy 类型、自定义 preprocessor step、`deco_28d` 在线 state/action、30D tactile callback 和服务端 processor 接管的静态注册，但尚未做仿真闭环、真机 dry-run 或服务端联调。
+- 部署端 10Hz 控制频率不在洗数据阶段处理，由 wrapper/deploy action queue 使用 `action_stride=3` 完成。
 - 当前新增转换脚本与 validator 仅完成静态审查，尚未在本机执行 rosbag 转换或 validator。
 - 阶段三模型修改仅做静态代码审查，尚未在本机执行 forward、训练或部署验证。

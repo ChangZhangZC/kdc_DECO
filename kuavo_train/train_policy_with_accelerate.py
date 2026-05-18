@@ -25,6 +25,9 @@ from lerobot.utils.random_utils import set_seed
 from lerobot.policies.factory import make_pre_post_processors
 from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
 from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOConfigWrapper import CustomDECOConfigWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOProcessor import make_deco_pre_post_processors
 from kuavo_train.wrapper.dataset.LeRobotDatasetWrapper import CustomLeRobotDataset
 from kuavo_train.utils.augmenter import crop_image, resize_image, DeterministicAugmenterColor
 from kuavo_train.utils.utils import save_rng_state, load_rng_state
@@ -82,7 +85,7 @@ def build_delta_timestamps(dataset_metadata, policy_cfg):
 
 def build_optimizer_and_scheduler(policy, cfg, total_frames, accelerator):
     """Return optimizer and scheduler."""
-    optimizer = policy.config.get_optimizer_preset().build(policy.parameters())
+    optimizer = policy.config.get_optimizer_preset().build(policy.get_optim_params())
     # If `max_training_step` is specified, it takes precedence; 
     # otherwise, the value is automatically determined based on `max_epoch`.
     if cfg.training.max_training_step is None:
@@ -110,8 +113,15 @@ def build_policy(name, policy_cfg):
     policy = {
         "diffusion": CustomDiffusionPolicyWrapper,
         "act": CustomACTPolicyWrapper,
+        "deco": CustomDECOPolicyWrapper,
+        "DECO": CustomDECOPolicyWrapper,
     }[name](policy_cfg)
     return policy
+
+def build_pre_post_processors(policy_cfg, dataset_stats):
+    if isinstance(policy_cfg, CustomDECOConfigWrapper):
+        return make_deco_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
+    return make_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
 
 def build_policy_config(cfg, input_features, output_features):
     def _normalize_feature_dict(d: Any) -> dict[str, PolicyFeature]:
@@ -247,7 +257,7 @@ def main(cfg: DictConfig):
     # Build policy
     policy = build_policy(cfg.policy_name, policy_cfg)
     accelerator.wait_for_everyone()
-    preprocessor, postprocessor = make_pre_post_processors(policy_cfg, dataset_stats=dataset_metadata.stats)
+    preprocessor, postprocessor = build_pre_post_processors(policy_cfg, dataset_stats=dataset_metadata.stats)
     if accelerator.is_main_process:
         preprocessor.save_pretrained(output_directory)
         postprocessor.save_pretrained(output_directory)

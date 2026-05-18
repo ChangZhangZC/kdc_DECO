@@ -128,19 +128,14 @@ model:
   use_task_condition: False   # Whether to enable one-hot task conditioning
   num_tasks: 10               # Number of tasks for one-hot embedding
   use_tactile: False          # Whether to use tactile observations
-  plugin: False               # Enable plugin tactile adapter for vision-based pretrained policy. If True, specify `pretrain_model_path`
+  plugin: False               # Enable plugin tactile adapter. Kuavo weight loading is handled by the wrapper.
   num_attn_blocks: 6          # Number of transformer attention blocks
   inf_step: 5                 # Number of flow-matching inference steps
   heads: 8                    # Number of attention heads
   dim: 512                    # Model hidden dimension
   rope_axes_dim: [256, 256]   # Rotary positional embedding dimensions for [height, width]
-  visual_input_mode: dual_stream_rgb_depth # Kuavo RGB-D only: rgb + aligned depth
   vision_backbone: resnet34   # resnet34 by default, resnet18 for lower latency
-  depth_backbone: resnet34    # used when visual_input_mode is dual_stream_rgb_depth
-  img_pretrain: /root/.cache/torch/hub/checkpoints/resnet34-b627a593.pth  # ImageNet-pretrained backbone path
-  freeze_backbone: False      # Whether to freeze the image encoder
-  pretrain_model_path: False  # Path to vision-based pretrained policy
-  adapter_model_path: False   # Path to plugin tactile adapter (for deployment)
+  depth_backbone: resnet34    # Kuavo aligned depth backbone
 
 data:
   # chunk_size 只保留在 model.chunk_size，避免同一含义重复配置。
@@ -152,7 +147,7 @@ img:
 ```
 </details>
 
-> Kuavo note: this copied `third_party/deco` configuration is now trimmed for the Kuavo RGB-D wrapper path. The old DECO-50 native dataset statistics, duplicate `data.chunk_size`, and legacy `tac_left_max/tac_right_max` aliases are intentionally not kept in `config/deco.yaml`.
+> Kuavo note: this copied `third_party/deco` configuration is now trimmed for the Kuavo RGB-D wrapper path. The old DECO-50 native dataset statistics, duplicate chunk-size setting, legacy tactile aliases, old visual-mode switch, and checkpoint path fields are intentionally not kept in `config/deco.yaml`.
 
 ## 4. Training
 > Kuavo note: the commands below describe the upstream standalone DECO training path and are kept only as a reference. The Kuavo RGB-D route should enter training through the future LeRobot wrapper, not by mixing this trimmed `config/deco.yaml` with the original `train.py` / `dataset.py` path.

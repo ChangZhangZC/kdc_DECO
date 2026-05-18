@@ -37,6 +37,8 @@ from tqdm import tqdm
 
 from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
 from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco import DECOProcessor  # noqa: F401 - 注册 DECO preprocessor step
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.utils.random_utils import set_seed
 import datetime
@@ -79,7 +81,7 @@ def setup_policy(pretrained_path, policy_type, device=torch.device("cuda")):
     
     Args:
         pretrained_path: Path to the checkpoint
-        policy_type: Type of policy ('diffusion' or 'act')
+        policy_type: Type of policy ('diffusion', 'act', 'deco', or 'client')
         
     Returns:
         Loaded policy model and device
@@ -89,21 +91,27 @@ def setup_policy(pretrained_path, policy_type, device=torch.device("cuda")):
         log_model.warning("Warning: Using CPU for inference, this may be slow.")
         time.sleep(3)  
     
-    if policy_type == 'diffusion':
+    policy_type_key = policy_type.lower()
+    if policy_type_key == 'diffusion':
         policy = CustomDiffusionPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
-    elif policy_type == 'act':
+    elif policy_type_key == 'act':
         policy = CustomACTPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
-    elif policy_type == 'client':
+    elif policy_type_key == 'deco':
+        policy = CustomDECOPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'client':
         policy = PolicyClient()
     else:
         raise ValueError(f"Unsupported policy type: {policy_type}")
-    
-    policy.eval()
-    policy.to(device)
-    policy.reset()
+
+    if policy_type_key != 'client':
+        policy.eval()
+        policy.to(device)
+    if hasattr(policy, "reset"):
+        policy.reset()
     # Log model info
     log_model.info(f"Model loaded from {pretrained_path}")
-    log_model.info(f"Model n_obs_steps: {policy.config.n_obs_steps}")
+    if hasattr(policy, "config"):
+        log_model.info(f"Model n_obs_steps: {policy.config.n_obs_steps}")
     log_model.info(f"Model device: {device}")
     
     return policy
@@ -145,13 +153,13 @@ def main(config: KuavoConfig, env: gym.Env):
 
     # We can verify that the shapes of the features expected by the policy match the ones from the observations
     # produced by the environment
-    if policy_type != 'client':
+    if policy_type.lower() != 'client':
         log_model.info(f"policy.config.input_features: {policy.config.input_features}")
         log_robot.info(f"env.observation_space: {env.observation_space}")
 
     # Similarly, we can check that the actions produced by the policy will match the actions expected by the
     # environment
-    if policy_type != 'client':
+    if policy_type.lower() != 'client':
         log_model.info(f"policy.config.output_features: {policy.config.output_features}")
         log_robot.info(f"env.action_space: {env.action_space}")
 

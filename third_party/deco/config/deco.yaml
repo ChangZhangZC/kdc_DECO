@@ -12,15 +12,9 @@ model:
   heads: 8
   dim: 512
   rope_axes_dim: [256, 256]
-  # 视觉输入模式：Kuavo-DECO 仅保留 RGB-D 路线，rgb=头部 RGB，depth=对齐深度图。
-  visual_input_mode: dual_stream_rgb_depth
   # Kuavo-DECO 默认建议 resnet34；resnet18 可作为低显存/低延迟备选。
   vision_backbone: resnet34
   depth_backbone: resnet34
-  img_pretrain: /root/.cache/torch/hub/checkpoints/resnet34-b627a593.pth
-  freeze_backbone: False
-  pretrain_model_path: False
-  adapter_model_path: False
 
 data:
   # Kuavo tactile max 用于 DECO-style tac / tactile_max 归一化。
