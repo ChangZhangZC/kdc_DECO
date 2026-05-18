@@ -16,6 +16,11 @@ from lerobot.optim.schedulers import DiffuserSchedulerConfig
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 
+QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
+GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
+SUPPORTED_END_EFFECTOR_PROFILES = {QIANGNAO_TACTILE_PROFILE, GRIPPER_NO_TACTILE_PROFILE}
+
+
 def _is_positive_number(value: float | int | None) -> bool:
     return value is not None and float(value) > 0.0
 
@@ -35,6 +40,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     drop_n_last_frames: int | None = None
 
     # 模型结构。
+    # end_effector_profile 决定 state/action 的物理 schema；action_dim 必须与 profile 一致。
+    end_effector_profile: str = QIANGNAO_TACTILE_PROFILE
     action_dim: int = 28
     obs_state: bool = True
     use_task_condition: bool = False
@@ -104,6 +111,7 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self._merge_custom_fields()
         self._merge_default_normalization_mapping()
         self._set_and_validate_temporal_window()
+        self._validate_end_effector_profile()
         self._validate_stage_and_tactile()
         self._validate_frequency()
 
@@ -151,10 +159,32 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
                 "does not consume action_is_pad. 请不要让尾部 padded action 进入训练。"
             )
 
+    def _validate_end_effector_profile(self) -> None:
+        if self.end_effector_profile not in SUPPORTED_END_EFFECTOR_PROFILES:
+            raise ValueError(
+                "end_effector_profile must be 'qiangnao_tactile' or 'gripper_no_tactile'."
+            )
+        expected_action_dim = 28 if self.end_effector_profile == QIANGNAO_TACTILE_PROFILE else 18
+        if self.action_dim != expected_action_dim:
+            raise ValueError(
+                f"{self.end_effector_profile} requires action_dim={expected_action_dim}, "
+                f"got action_dim={self.action_dim}."
+            )
+        if self.end_effector_profile == GRIPPER_NO_TACTILE_PROFILE:
+            if self.use_tactile or self.use_tactile_lora:
+                raise ValueError(
+                    "gripper_no_tactile has no observation.tactile; keep use_tactile=False "
+                    "and use_tactile_lora=False."
+                )
+            if self.training_stage == "tactile_adapter":
+                raise ValueError("gripper_no_tactile cannot enter tactile_adapter training_stage.")
+
     def _validate_stage_and_tactile(self) -> None:
         if self.training_stage not in {"visual_main", "tactile_adapter"}:
             raise ValueError("training_stage must be 'visual_main' or 'tactile_adapter'.")
         if self.training_stage == "tactile_adapter":
+            if self.end_effector_profile != QIANGNAO_TACTILE_PROFILE:
+                raise ValueError("tactile_adapter stage is only valid for qiangnao_tactile.")
             if not self.use_tactile or not self.use_tactile_lora:
                 raise ValueError("tactile_adapter stage requires use_tactile=True and use_tactile_lora=True.")
             if (
@@ -225,6 +255,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         if action_shape != (self.action_dim,):
             raise ValueError(f"action must be ({self.action_dim},), got {action_shape}")
 
+        if self.end_effector_profile == GRIPPER_NO_TACTILE_PROFILE and self.tactile_feature is not None:
+            raise ValueError("gripper_no_tactile dataset must not include observation.tactile.")
         if self.use_tactile:
             tactile = self.tactile_feature
             if tactile is None:

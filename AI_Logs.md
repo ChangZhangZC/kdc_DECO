@@ -2,6 +2,38 @@
 
 ## 2026-05-18
 
+### 完成 DECO 二夹爪无触觉 Profile 静态适配
+- **任务**: 根据用户确认的方案，完成 DECO 从当前 `qiangnao` 灵巧手 + 可选触觉路径放宽到 `gripper_no_tactile` 二夹爪 + 无触觉路径的静态代码与文档适配。本次没有修改 `kuavo_deploy/*` 部署代码，也未运行 Python、训练、forward、validator、ROS、仿真、部署或环境变更命令。
+- **修改文件 1**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 新增 `end_effector_profile` 解析逻辑：`deco.end_effector_profile=auto` 时从 `dataset.eef_type` 自动推导，`qiangnao` -> `qiangnao_tactile`，`leju_claw/rq2f85` -> `gripper_no_tactile`；显式填写 profile 时会检查其与 `dataset.eef_type` 是否一致。
+  - 新增 `gripper_no_tactile` 的 18D state/action 名称与构造逻辑：左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2。
+  - 新增二夹爪归一化 helper：`leju_claw` 保留原 0-100 `/100` 语义，`rq2f85` 保留原 state `/0.8`、action `/255` 语义；若 `rq2f85` 只提供一个对称夹爪值，则复制成左右两个夹爪维度。
+  - 将 rosbag topic map 改为随 profile 选择：`qiangnao_tactile` 读取 `/dexhand/state`、`/control_robot_hand_position`，并按 `deco.write_tactile` 可选读取 `/dexhand/touch_state`；`gripper_no_tactile` 读取 `/leju_claw_state`/`/leju_claw_command` 或 `/gripper/state`/`/gripper/command`，且不读取、不写入 tactile。
+  - 将 LeRobot dataset feature schema、frame validation、arm action clamp 索引和 episode metadata 都改为 profile 化，保证 28D 灵巧手与 18D 二夹爪不会混入同一个 schema。
+- **修改文件 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增 `end_effector_profile` policy 字段，并要求 `qiangnao_tactile` 对应 `action_dim=28`，`gripper_no_tactile` 对应 `action_dim=18`。
+  - 增加二夹爪训练保护：`gripper_no_tactile` 下禁止 `use_tactile=true`、`use_tactile_lora=true` 和 `training_stage=tactile_adapter`；若数据集仍包含 `observation.tactile` 也会在 feature 校验阶段报错。
+- **修改文件 3**: `kuavo_data/validate_deco_lerobot_dataset.py`
+  - 新增 `--end-effector-profile`、`--require-tactile` 和 `--no-require-tactile` 参数。
+  - validator 现在会按 profile 自动推导默认 state/action 维度：`qiangnao_tactile` 为 28D，`gripper_no_tactile` 为 18D；二夹爪 profile 会检查 metadata 和 parquet 中不存在 `observation.tactile`。
+- **修改文件 4**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 新增 `deco.end_effector_profile: auto`、`deco.write_tactile`、`leju_claw` 与 `rq2f85` 的 state/action topic 配置项。
+  - 将 validation 配置改为 profile 语义：`expected_state_dim/action_dim/require_tactile` 使用 `auto` 记录，由 validator 或人工运行时按 profile 推导。
+- **修改文件 5**: `configs/policy/deco_config.yaml`
+  - 新增 `policy.end_effector_profile: qiangnao_tactile` 默认值。
+  - 增加 `gripper_no_tactile` 训练 override 示例：`action_dim: 18`、`training_stage: visual_main`、关闭 tactile 和 tactile LoRA，并建议忽略外部初始化权重。
+- **修改文件 6**: `README_DECO.md`
+  - 将数据转换目标从单一 28D + tactile 更新为 profile 化说明。
+  - 增加二夹爪无触觉数据集的 validator 示例和训练配置示例。
+  - 明确当前 `gripper_no_tactile` 适配不修改部署代码，后续部署侧 18D 在线 state/action 拼接与下发需要单独方案。
+- **修改文件 7**: `Content/DECO_Technical_Decisions.md`
+  - 将技术决策更新为 `end_effector_profile: auto` 可从 `dataset.eef_type` 推导，并把数据配置、转换脚本、训练约束和 validator profile 适配项标记为完成。
+- **修改文件 8**: `PLANS.md`
+  - 勾选二夹爪 profile 相关任务，包括数据转换 profile、tactile 专属化、18D gripper 顺序、`leju_claw/rq2f85` 入口差异、训练 wrapper 保护、policy override 示例、validation profile 配置和 Done When 中的静态审查项。
+- **边界说明**:
+  - 本次没有运行任何代码验证，所有校验仅限静态阅读、diff 检查和逻辑推导。
+  - 本次没有修改部署链路；`gripper_no_tactile` 的在线部署适配仍是后续单独阶段。
+
 ### 冻结 DECO 末端执行器 Profile 放宽方案
 - **任务**: 根据用户确认，将 DECO 当前“锁死 qiangnao 灵巧手 + 触觉”的方案扩展为 profile 化技术决策记录。本次只更新方案文档与计划清单，未修改数据转换脚本、训练 wrapper、模型代码、部署代码，也未运行 Python、训练、forward、validator、ROS、仿真、部署或环境变更命令。
 - **修改文件 1**: `PLANS.md`

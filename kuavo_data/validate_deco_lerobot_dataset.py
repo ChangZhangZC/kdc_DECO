@@ -4,7 +4,7 @@
 Kuavo-DECO LeRobot 数据集验证脚本。
 
 用途：
-1. 验证已经转换好的 LeRobot 数据集是否符合阶段一 Kuavo-DECO schema。
+1. 验证已经转换好的 LeRobot 数据集是否符合阶段一 Kuavo-DECO profile schema。
 2. 不读取 rosbag，不依赖 ROS1/rospy/rosbag/kuavo_msgs。
 3. 基础检查只依赖 Python 标准库；若环境中存在 pyarrow/pandas/numpy/cv2，则自动做更深入的
    parquet 数值检查与视频文件首帧检查。
@@ -28,6 +28,13 @@ WARN = "WARN"
 FAIL = "FAIL"
 SKIP = "SKIP"
 
+QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
+GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
+PROFILE_DIMS = {
+    QIANGNAO_TACTILE_PROFILE: 28,
+    GRIPPER_NO_TACTILE_PROFILE: 18,
+}
+
 
 @dataclass
 class CheckResult:
@@ -43,10 +50,29 @@ class DecoDatasetValidator:
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
+        self.resolve_profile_expectations()
         self.root = Path(args.root).expanduser().resolve()
         self.report_path = Path(args.report).expanduser().resolve() if args.report else self.root / "deco_validation_report.md"
         self.results: list[CheckResult] = []
         self.info: dict[str, Any] = {}
+
+    def resolve_profile_expectations(self) -> None:
+        """根据 end-effector profile 推导默认维度和 tactile 要求。"""
+
+        if self.args.end_effector_profile not in PROFILE_DIMS:
+            raise ValueError(
+                f"Unsupported end_effector_profile={self.args.end_effector_profile!r}; "
+                f"choose {QIANGNAO_TACTILE_PROFILE} or {GRIPPER_NO_TACTILE_PROFILE}."
+            )
+        expected_dim = PROFILE_DIMS[self.args.end_effector_profile]
+        if self.args.expected_state_dim is None:
+            self.args.expected_state_dim = expected_dim
+        if self.args.expected_action_dim is None:
+            self.args.expected_action_dim = expected_dim
+        if self.args.expected_tactile_dim is None:
+            self.args.expected_tactile_dim = 30
+        if self.args.require_tactile is None:
+            self.args.require_tactile = self.args.end_effector_profile == QIANGNAO_TACTILE_PROFILE
 
     def add(self, name: str, status: str, detail: str) -> None:
         self.results.append(CheckResult(name=name, status=status, detail=detail))
@@ -108,11 +134,12 @@ class DecoDatasetValidator:
         features = self.info.get("features", {})
         required = {
             "observation.state": [self.args.expected_state_dim],
-            "observation.tactile": [self.args.expected_tactile_dim],
             "action": [self.args.expected_action_dim],
             self.args.expected_rgb_key: [3, self.args.expected_height, self.args.expected_width],
             self.args.expected_depth_key: [3, self.args.expected_height, self.args.expected_width],
         }
+        if self.args.require_tactile:
+            required["observation.tactile"] = [self.args.expected_tactile_dim]
 
         for key, expected_shape in required.items():
             feature = features.get(key)
@@ -127,11 +154,16 @@ class DecoDatasetValidator:
 
         state_names = features.get("observation.state", {}).get("names", {}).get("state", [])
         action_names = features.get("action", {}).get("names", {}).get("action", [])
-        tactile_names = features.get("observation.tactile", {}).get("names", {}).get("tactile", [])
 
         self.check_names("state names", state_names, self.args.expected_state_dim)
         self.check_names("action names", action_names, self.args.expected_action_dim)
-        self.check_names("tactile names", tactile_names, self.args.expected_tactile_dim)
+        if self.args.require_tactile:
+            tactile_names = features.get("observation.tactile", {}).get("names", {}).get("tactile", [])
+            self.check_names("tactile names", tactile_names, self.args.expected_tactile_dim)
+        elif "observation.tactile" in features:
+            self.add("tactile absence", FAIL, "gripper_no_tactile dataset must not contain observation.tactile")
+        else:
+            self.add("tactile absence", PASS, "observation.tactile not present")
 
         if state_names[-2:] == ["head_head_yaw", "head_head_pitch"]:
             self.add("head state names", PASS, "last two state dims are head yaw/pitch")
@@ -199,7 +231,9 @@ class DecoDatasetValidator:
         self.check_columns(table)
         self.check_timestamp(table, np)
         state = self.check_vector_column(table, np, "observation.state", self.args.expected_state_dim)
-        tactile = self.check_vector_column(table, np, "observation.tactile", self.args.expected_tactile_dim)
+        tactile = None
+        if self.args.require_tactile:
+            tactile = self.check_vector_column(table, np, "observation.tactile", self.args.expected_tactile_dim)
         action = self.check_vector_column(table, np, "action", self.args.expected_action_dim)
         self.check_head_semantics(np, state, action)
         self.check_tactile_semantics(np, tactile)
@@ -207,7 +241,6 @@ class DecoDatasetValidator:
     def check_columns(self, table: Any) -> None:
         required_columns = {
             "observation.state",
-            "observation.tactile",
             "action",
             "timestamp",
             "frame_index",
@@ -215,11 +248,15 @@ class DecoDatasetValidator:
             "index",
             "task_index",
         }
+        if self.args.require_tactile:
+            required_columns.add("observation.tactile")
         missing = sorted(required_columns - set(table.columns))
         if missing:
             self.add("parquet required columns", FAIL, f"missing columns: {missing}")
         else:
             self.add("parquet required columns", PASS, "all required scalar/vector columns exist")
+        if not self.args.require_tactile and "observation.tactile" in table.columns:
+            self.add("parquet tactile absence", FAIL, "gripper_no_tactile data must not contain observation.tactile")
 
     def series_to_matrix(self, np: Any, series: Any, dim: int) -> Any | None:
         values = []
@@ -330,6 +367,7 @@ class DecoDatasetValidator:
             "# Kuavo-DECO LeRobot Validation Report",
             "",
             f"- Dataset root: `{self.root}`",
+            f"- End-effector profile: `{self.args.end_effector_profile}`",
             f"- Expected FPS: `{self.args.expected_fps}`",
             "",
             "| Check | Status | Detail |",
@@ -366,15 +404,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata-only", action="store_true", help="Only check metadata and file layout; skip parquet/video value checks.")
     parser.add_argument("--skip-video-probe", action="store_true", help="Skip cv2 video first-frame probing.")
 
+    parser.add_argument(
+        "--end-effector-profile",
+        choices=sorted(PROFILE_DIMS),
+        default=QIANGNAO_TACTILE_PROFILE,
+        help="DECO dataset schema profile. gripper_no_tactile expects 18D state/action and no tactile.",
+    )
     parser.add_argument("--expected-codebase", default="v3.0")
     parser.add_argument("--expected-fps", type=int, default=30)
     parser.add_argument("--expected-width", type=int, default=640)
     parser.add_argument("--expected-height", type=int, default=480)
     parser.add_argument("--expected-rgb-key", default="observation.images.head_cam_h")
     parser.add_argument("--expected-depth-key", default="observation.depth_h")
-    parser.add_argument("--expected-state-dim", type=int, default=28)
-    parser.add_argument("--expected-action-dim", type=int, default=28)
-    parser.add_argument("--expected-tactile-dim", type=int, default=30)
+    parser.add_argument("--expected-state-dim", type=int, default=None)
+    parser.add_argument("--expected-action-dim", type=int, default=None)
+    parser.add_argument("--expected-tactile-dim", type=int, default=None)
+    parser.add_argument("--require-tactile", dest="require_tactile", action="store_true", default=None)
+    parser.add_argument("--no-require-tactile", dest="require_tactile", action="store_false")
     parser.add_argument("--timestamp-tolerance-s", type=float, default=0.01)
     parser.add_argument("--head-action-atol", type=float, default=1e-6)
     parser.add_argument("--head-state-std-max", type=float, default=0.02)

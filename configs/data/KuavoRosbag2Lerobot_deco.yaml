@@ -9,7 +9,7 @@ hydra:
 # Kuavo rosbag -> LeRobot 数据转换配置，DECO 专用版本。
 # 设计原则：
 # 1. 尽量复用现有 ACT/DP 清洗链路中的 topic 和 decoder。
-# 2. 仅在 DECO 固定 schema、30Hz 时间轴、30 维触觉、28 维 state/action 处做专用适配。
+# 2. 仅在 DECO profile schema、30Hz 时间轴、可选 30 维触觉、state/action 重组处做专用适配。
 # 3. 当前机器只做代码修改和静态审查，不在 Codex 中直接运行转换。
 
 rosbag:
@@ -26,7 +26,9 @@ dataset:
   # DECO 当前只训练上半身操作，不使用下肢 action。
   only_arm: true
 
-  # DECO 需要 Kuavo 灵巧手 6 DoF，而不是夹爪或 rq2f85。
+  # 末端执行器入口沿用 ACT/DP 语义：
+  # - qiangnao: 灵巧手，自动对应 deco.end_effector_profile=qiangnao_tactile。
+  # - leju_claw / rq2f85: 二夹爪，自动对应 deco.end_effector_profile=gripper_no_tactile。
   eef_type: qiangnao
   which_arm: both
 
@@ -42,7 +44,7 @@ dataset:
   main_timeline_fps: 30
   sample_drop: 10
 
-  # DECO 固定左右手各 6 DoF，禁止沿用 ACT/DP 默认 dex_dof_needed=1 的压缩手指策略。
+  # qiangnao_tactile 需要左右手各 6 DoF；gripper_no_tactile 不使用该字段。
   dex_dof_needed: 6
 
   is_binary: false
@@ -54,9 +56,15 @@ dataset:
     height: 480
 
 deco:
-  # 输出 schema 固定值，供转换脚本做 assert 和 metadata 记录。
-  state_dim: 28
-  action_dim: 28
+  # auto 会根据 dataset.eef_type 推导：
+  # - qiangnao -> qiangnao_tactile: 28D state/action，可写入 30D tactile。
+  # - leju_claw/rq2f85 -> gripper_no_tactile: 18D state/action，不写入 tactile。
+  # 也可以显式填写上述 profile，脚本会检查它与 dataset.eef_type 是否一致。
+  end_effector_profile: auto
+
+  # 输出 schema 记录项；auto 表示由 end_effector_profile 推导，转换脚本以 profile 为准。
+  state_dim: auto
+  action_dim: auto
   tactile_dim: 30
 
   # 默认复用现有 Kuavo/ACT-DP 清洗链路。
@@ -84,8 +92,14 @@ deco:
     - /kuavo_arm_traj
     - /joint_cmd
   hand_action_topic: /control_robot_hand_position
+  leju_claw_state_topic: /leju_claw_state
+  leju_claw_action_topic: /leju_claw_command
+  rq2f85_state_topic: /gripper/state
+  rq2f85_action_topic: /gripper/command
 
-  # 触觉 topic 与量纲换算。原始 normal_force 经过实验验证为 100 * N。
+  # 触觉 topic 与量纲换算。仅 qiangnao_tactile 可写入 tactile；
+  # gripper_no_tactile 会强制忽略 tactile，不能用全零 tactile 伪装无触觉。
+  write_tactile: true
   tactile_topic: /dexhand/touch_state
   tactile_force_scale: 100.0
 
@@ -107,14 +121,18 @@ deco:
 validation:
   # 该段仅作为后续 validate_deco_lerobot_dataset.py 的检查约定；当前转换脚本不会消费这些字段。
   run_after_conversion: true
+  end_effector_profile: auto
   expected_num_bags: 100
   expected_train_hz: 30
   expected_rgb_key: observation.images.head_cam_h
   expected_depth_key: observation.depth_h
-  expected_state_dim: 28
-  expected_action_dim: 28
+  # auto 表示 validator 按 end_effector_profile 推导：
+  # qiangnao_tactile -> state/action 28D，可要求 tactile 30D；
+  # gripper_no_tactile -> state/action 18D，且必须没有 tactile。
+  expected_state_dim: auto
+  expected_action_dim: auto
   expected_tactile_dim: 30
-  require_tactile: true
+  require_tactile: auto
   require_depth: true
   require_head_state_mean: true
   require_head_action_zero: true

@@ -100,6 +100,10 @@ policy:
   use_tactile_lora: false
 
   # DECO action-token Flow Matching 主干。
+  # end_effector_profile 必须与数据集 schema 一致：
+  # - qiangnao_tactile: action_dim=28，可在第二阶段启用 tactile_adapter。
+  # - gripper_no_tactile: action_dim=18，必须保持 use_tactile/use_tactile_lora=false。
+  end_effector_profile: qiangnao_tactile
   chunk_size: 32
   # DECO loss 当前不消费 action_is_pad；必须丢弃至少 chunk_size-1 个尾帧，避免 padded action 入训。
   drop_n_last_frames: 31
@@ -158,6 +162,14 @@ policy:
   tactile_left_max: null
   tactile_right_max: null
   clip_tactile_to_unit: true
+
+  # 二夹爪 gripper_no_tactile override 示例：
+  # end_effector_profile: gripper_no_tactile
+  # action_dim: 18
+  # training_stage: visual_main
+  # use_tactile: false
+  # use_tactile_lora: false
+  # load_external_init_weights: false
 
   # 外部初始化路径只在训练构造时读取；保存最终 policy 时会清空，保证 `.safetensors` 自包含。
   load_external_init_weights: true
