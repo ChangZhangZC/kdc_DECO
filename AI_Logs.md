@@ -2,6 +2,27 @@
 
 ## 2026-05-18
 
+### 冻结 DECO 末端执行器 Profile 放宽方案
+- **任务**: 根据用户确认，将 DECO 当前“锁死 qiangnao 灵巧手 + 触觉”的方案扩展为 profile 化技术决策记录。本次只更新方案文档与计划清单，未修改数据转换脚本、训练 wrapper、模型代码、部署代码，也未运行 Python、训练、forward、validator、ROS、仿真、部署或环境变更命令。
+- **修改文件 1**: `PLANS.md`
+  - 将总体架构从单一 28D 灵巧手接口更新为两类 end-effector profile：
+    - `qiangnao_tactile`：对应 `dataset.eef_type=qiangnao`，输出左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2 的 28D state/action，可按配置写入 30D `observation.tactile`，允许后续 tactile LoRA / PI_Adapter 二阶段训练。
+    - `gripper_no_tactile`：对应 `dataset.eef_type=leju_claw` 或 `rq2f85`，输出左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2 的 18D state/action，不写入、不要求、不使用 `observation.tactile`，禁止 tactile adapter 二阶段。
+  - 在阶段一新增待办：扩展 `configs/data/KuavoRosbag2Lerobot_deco.yaml` 与 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，通过 `end_effector_profile` 复用 ACT/DP 的 `eef_type` 入口，实现灵巧手与二夹爪两套 schema。
+  - 在阶段三/五新增待办：扩展 `DECOConfigWrapper`、`configs/policy/deco_config.yaml` 与 validator，使 `action_dim=18` 的二夹爪数据可以从零训练 DECO visual_main，同时禁止误开 `use_tactile`、`use_tactile_lora` 或 `training_stage=tactile_adapter`。
+  - 在 Done When 中新增 profile 支持与 gripper_no_tactile 静态审查项，并明确本轮仍不改动部署代码。
+  - 将历史已完成项中的“固定 28 维 state/action”措辞限定为“第一版固定 28 维”，避免后续读者误以为 `gripper_no_tactile` 也必须沿用 28D schema。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 将当前冻结架构图更新为 `optional tactile` 与 profile 化 state/action 维度。
+  - 新增 end-effector profile 决策：用户在数据清洗 config 中选择 `dataset.eef_type`，DECO 使用 `end_effector_profile` 固定最终 LeRobot schema；不同 profile 不应混在同一个 dataset 或训练 run 中。
+  - 记录 `leju_claw` 与 `rq2f85` 的区别只保留在数据清洗入口：二者 topic 与原始尺度不同，但进入 DECO 后共享 `gripper_no_tactile` 18D schema。
+  - 解释不同自由度能进入同一类 DECO 主干的原因：原始 state/action 先通过 `Linear(action_dim -> dim)` 投影到统一 hidden dim，attention 主干处理的是固定 hidden token；真正随 profile 改变的是输入/输出线性层、dataset feature schema 和 normalizer stats。
+  - 将触觉策略改为 `qiangnao_tactile` 专属；`gripper_no_tactile` 不用全零 tactile 伪装无接触，避免污染 tactile LoRA 语义。
+  - 将部署段落中的 `state_layout: deco_28d` 明确为第一版 `qiangnao_tactile` 部署目标，并注明当前部署侧文件已回退、本轮二夹爪方案不修改部署代码。
+- **边界说明**:
+  - 本次没有修改 `configs/data/KuavoRosbag2Lerobot_deco.yaml`、`kuavo_data/CvtRosbag2Lerobot_DECO.py`、`kuavo_train/wrapper/policy/deco/*` 或 `kuavo_deploy/*` 代码。
+  - 部署链路当前仍按此前计划保持未完成状态；`gripper_no_tactile` 的部署适配将作为后续单独方案处理。
+
 ### 修复 DECO Wrapper 权重加载与配置早失败审查反馈
 - **任务**: 根据静态审查反馈，强化 DECO wrapper 和配置层的防错逻辑，避免 tactile adapter 第二阶段在权重未正确加载时静默冻结随机主干。本次只做静态代码与配置修改，未运行 Python、训练、forward、validator、仿真、ROS、部署或环境变更命令。
 - **修改文件 1**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`

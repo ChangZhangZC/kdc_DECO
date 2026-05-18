@@ -27,16 +27,16 @@
 当前冻结方案：
 
 ```text
-Kuavo RGB + depth + state + action + tactile rosbag
-  -> 30Hz LeRobot RGB-D 数据集
+Kuavo RGB + depth + state + action + optional tactile rosbag
+  -> 30Hz LeRobot RGB-D 数据集（end_effector_profile 决定 state/action 维度与是否写入 tactile）
   -> DECO 专用 preprocessor：RGB/depth 同步 256x256 letterbox，RGB 再进入随机增强池
   -> LeRobot Normalizer：RGB/depth/state/action 按配置归一化，tactile 作为 TACTILE 保持 IDENTITY
   -> 三条平行主枝：
-     1) state branch：28D observation.state -> obs_encoder -> time embedding condition
+     1) state branch：profile action_dim 对应的 observation.state -> obs_encoder -> time embedding condition
      2) RGB-D visual branch：RGB ResNet34 + 1-channel Depth ResNet34 -> cross attention -> fused RGB/depth tokens
-     3) tactile branch：30D observation.tactile -> left/right tactile max normalize -> tactile encoder / PI_Adapter
+     3) tactile branch：仅 qiangnao_tactile 可启用；30D observation.tactile -> left/right tactile max normalize -> tactile encoder / PI_Adapter
   -> DECO action-token Flow Matching transformer
-  -> 28D action chunk
+  -> profile action_dim 对应的 action chunk（qiangnao 28D / gripper 18D）
   -> 部署阶段按 10Hz 控制频率消费动作队列
 ```
 
@@ -44,6 +44,7 @@ Kuavo RGB + depth + state + action + tactile rosbag
 
 - **视觉输入方式向 Kuavo 工具链靠齐**：使用 RGB + depth，而不是 DECO 原生双 RGB。
 - **数据清洗实现向 Kuavo 现有链路靠齐**：除 DECO 专属固定 schema、30Hz 时间轴、30 维触觉和 depth 单通道语义外，topic map、message decoder、state/action 来源优先复用 ACT/DP 当前清洗脚本。
+- **末端执行器 schema 向 ACT/DP 入口体验靠齐**：用户在数据清洗 config 中通过 `dataset.eef_type` 选择 `qiangnao`、`leju_claw` 或 `rq2f85`，DECO 再通过 `end_effector_profile` 固定最终 dataset schema；`qiangnao_tactile` 对应 28D 灵巧手 + 可选触觉，`gripper_no_tactile` 对应 18D 二夹爪且无触觉。
 - **模型主干向 DECO 靠齐**：保留 DECO action token、Flow Matching 训练目标和去噪推理。
 - **backbone 默认向 DECO 容量靠齐**：默认 `resnet34`，允许配置切换 `resnet18`。
 - **RGB-D 编码分流**：RGB 与 depth 使用独立 ResNet backbone，depth 为 1-channel ResNet；二者不共享同一个 ResNet，只在 ResNet 后的 token 层做 cross-modal fusion。
@@ -52,6 +53,7 @@ Kuavo RGB + depth + state + action + tactile rosbag
 - **RGB 增强吸收 DECO blur 经验**：随机增强池以 Kuavo ACT 权重策略为主，并新增 GaussianBlur；默认保留一部分原图，另一部分从增强池中抽样。
 - **state 接入方式向 DECO 靠齐**：`observation.state` 由 LeRobot preprocessor 基于 dataset stats 归一化，但进入模型后仍走 DECO 的 `obs_encoder + time embedding` 条件路线，不改成 ACT 的 state token / VAE encoder 路线。
 - **tactile 接入方式向 DECO 靠齐**：洗数据阶段 `/100` 只做单位换算，把 Kuavo normal force 转为牛顿；LeRobot feature mapping 中将 `observation.tactile` 识别为独立 `TACTILE` 并使用 `IDENTITY`；进入模型前按左右手 tactile max 做 DECO-style 归一化并默认 clamp 到 `[0, 1]`，避免被 LeRobot 当作普通 STATE 执行 `MEAN_STD`。
+- **gripper_no_tactile 禁止触觉分支**：`leju_claw` 与 `rq2f85` 在清洗入口 topic 和数值尺度不同，但进入 DECO 后共享 `gripper_no_tactile` 的 18D state/action schema；该 profile 不写入、不要求、不使用 `observation.tactile`，也不得进入 tactile LoRA / PI_Adapter 二阶段训练。
 - **loss 向 DECO 原生靠齐**：训练目标保持 `F.mse_loss(out, noise - action)`，第一版不额外乘 `action_is_pad` mask。
 - **触觉微调向 DECO 靠齐**：保留源码中的 `plugin=True` / `PI_Adapter` 低秩 adapter 范式，默认冻结预训练主干，只微调触觉 adapter 和必要的 Kuavo 新增桥接模块。
 - **wrapper 边界清晰化**：`lerobot_patches/` 只做 LeRobot 全局 feature/type 兼容补丁，例如新增 `FeatureType.TACTILE`；DECO 专用 RGB-D `Resize/Letterbox`、RGB augmentation 接入顺序、tactile max normalization 和两阶段训练逻辑放在 `kuavo_train/wrapper/policy/deco/`。
@@ -82,7 +84,25 @@ Kuavo RGB + depth + state + action + tactile rosbag
 
 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，将 Kuavo rosbag 转换为 DECO wrapper 可以直接消费的 LeRobot 数据集。
 
-目标输出字段：
+目标输出字段按 `end_effector_profile` 决定：
+
+| Profile | LeRobot 字段 | 目标形状 | 语义 |
+| ------- | ------------ | -------- | ---- |
+| `qiangnao_tactile` | `observation.state` | `(28,)` | 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2 |
+| `qiangnao_tactile` | `action` | `(28,)` | 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2 |
+| `qiangnao_tactile` | `observation.tactile` | `(30,)` | 左手 15 + 右手 15 法向触觉力，单位为牛顿；仅在配置要求触觉时写入/校验 |
+| `gripper_no_tactile` | `observation.state` | `(18,)` | 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2 |
+| `gripper_no_tactile` | `action` | `(18,)` | 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2 |
+| all | `observation.images.head_cam_h` | 自动推断或配置指定 | 头部 RGB 图像 |
+| all | `observation.depth_h` 或等价 depth key | 自动推断或配置指定 | 与头部 RGB 对齐的深度图 |
+
+兼容说明：
+
+- `dataset.eef_type=qiangnao` 必须配 `end_effector_profile=qiangnao_tactile`。
+- `dataset.eef_type=leju_claw` 或 `rq2f85` 必须配 `end_effector_profile=gripper_no_tactile`。
+- 不同 profile 不应混在同一个 LeRobot dataset 或同一个训练 run 中，因为 LeRobot feature schema、Normalizer stats、DECO 输入/输出线性层维度都必须固定。
+
+历史目标输出字段（当前 `qiangnao_tactile` 第一版实现）：
 
 | LeRobot 字段                           | 目标形状           | 语义                                       |
 | -------------------------------------- | ------------------ | ------------------------------------------ |
@@ -258,7 +278,7 @@ Contra：
 
 ### 3.5 28 维 state/action 映射
 
-DECO 固定 28 维顺序：
+`qiangnao_tactile` profile 使用 28 维顺序：
 
 ```text
 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2
@@ -266,7 +286,8 @@ DECO 固定 28 维顺序：
 
 已确认方案：
 
-- 输出必须固定为 28 维。
+- `qiangnao_tactile` 输出必须固定为 28 维。
+- `gripper_no_tactile` 后续输出必须固定为 18 维，顺序为 `左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2`。
 - 当前 rosbag 的 `/sensors_data_raw.joint_data.joint_q` 长度为 28，头部索引使用 V4x/V49 方案 `joint_q[26:28]`。
 - 当前样本头部固定姿态均值约为 `[-0.001657, 0.433904]` rad，即 `[-0.09494°, 24.86089°]`。
 - `/robot_head_motion_data` 显示 `[0.0, 25.0]`，可交叉确认 pitch 约 25°。
@@ -298,13 +319,14 @@ DECO 固定 28 维顺序：
 - `action` 原始读取 `/joint_cmd`。
 - arm action 随后被 `/kuavo_arm_traj` 覆盖；如果存在 `/kuavo_arm_traj_synced`，则优先使用 synced 版本。
 - hand action 使用 `/control_robot_hand_position`。
-- DECO 固定双手各 6 DoF，因此不得沿用 ACT/DP 默认 `dex_dof_needed: 1` 的手指压缩策略。
+- `qiangnao_tactile` 固定双手各 6 DoF，因此不得沿用 ACT/DP 默认 `dex_dof_needed: 1` 的手指压缩策略。
+- `gripper_no_tactile` 不使用 dexhand 6 DoF；`leju_claw` 读取 `/leju_claw_state` 与 `/leju_claw_command`，`rq2f85` 读取 `/gripper/state` 与 `/gripper/command`。二者在清洗入口 topic 与归一化尺度不同，但最终都映射到同一个 18D 二夹爪 schema。
 
 ### 3.6 触觉策略
 
 当前方案：
 
-- topic：`/dexhand/touch_state`
+- topic：`/dexhand/touch_state`，仅 `qiangnao_tactile` profile 使用。
 - 只提取每个手指的 `normal_force1/2/3`
 - 舍弃切向力、切向方向、接近觉和状态字段
 - 单手维度：5 指 × 3 点 = 15
@@ -320,8 +342,9 @@ DECO 固定 28 维顺序：
 
 缺失策略：
 
-- `/dexhand/touch_state` 缺失时直接报错，不静默补零。
-- 原因：当前目标是触觉版 DECO，触觉缺失会改变训练任务本质。
+- `qiangnao_tactile` 且配置要求触觉时，`/dexhand/touch_state` 缺失应直接报错，不静默补零。
+- `gripper_no_tactile` 不写入 tactile，也不把缺失触觉视为错误。
+- 原因：触觉 LoRA / PI_Adapter 的训练依赖真实 tactile 语义；二夹爪任务没有该模态，不能用全零 tactile 假装无接触。
 
 ### 3.7 时间对齐策略
 
@@ -364,12 +387,12 @@ DECO 固定 28 维顺序：
 
 - 阶段一暂不修改 `kuavo_data/common/kuavo_dataset.py`。
 - 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，优先复用现有 `KuavoRosbagReader` 的 topic map、message processor 和 nearest-neighbor 对齐思路。
-- 仅在 DECO 固定 28 维 state/action、30 维 tactile、30Hz 目标时间轴、depth 单通道语义和 validation report 等位置增加专用逻辑。
+- 仅在 DECO profile 化 state/action、可选 30 维 tactile、30Hz 目标时间轴、depth 单通道语义和 validation report 等位置增加专用逻辑。
 
 原因：
 
 - 避免影响 ACT/DP 既有数据转换链路。
-- DECO 需要固定 28 维 state/action、30 维 tactile、30Hz RGB-D 对齐，与当前配置化拼接逻辑差异较大。
+- DECO 需要 profile 化 state/action、可选 30 维 tactile、30Hz RGB-D 对齐，与当前 ACT/DP 配置化拼接逻辑相近但输出 schema 和触觉训练约束不同。
 - depth topic/decoder 当前已有稳定实现，优先继承该实现比引入未经复核的新 raw topic 风险更低。
 
 ### 3.10 阶段一实现状态
@@ -377,6 +400,7 @@ DECO 固定 28 维顺序：
 截至 2026-05-13，阶段一数据转换入口已完成静态实现：
 
 - 新增 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，记录 30Hz、RGB-D、触觉、28 维 state/action、depth fallback 和覆盖保护配置。
+- 后续需把该数据配置扩展为 profile 化：`qiangnao_tactile` 保持 28D + 可选 tactile，`gripper_no_tactile` 新增 18D + no tactile。
 - 新增 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，保持与原 ACT/DP 脚本并行，不修改公共 reader。
 - 转换脚本默认使用 `/cam_h/color/image_raw/compressed` 与 `/cam_h/depth/image_raw/compressed`，默认 `depth_encoding: compressed_image`，即直接解码 `sensor_msgs/CompressedImage.data`。
 - 转换脚本同时支持 `depth_encoding: compressedDepth_png` 与 `raw_16uc1`，但这两条路径仍必须由后续 Inspector/validator 复核后启用。
@@ -537,12 +561,13 @@ Kuavo-DECO 冻结策略：
 
 - `observation.state` 使用 Kuavo/LeRobot preprocessor 与 dataset stats 做一次归一化，默认保持 `STATE: MEAN_STD`。
 - DECO wrapper 内不得再次套用 DECO 原生 `config/deco.yaml` 的手动 state 归一化，避免二次归一化导致尺度错误。
-- 归一化后的 28 维 state 仍按 DECO 路线进入模型：`obs_encoder -> time embedding condition -> MMAttention`。
+- 归一化后的 state 仍按 DECO 路线进入模型：`obs_encoder(action_dim -> dim) -> time embedding condition -> MMAttention`。
 - 不把 state 改成 ACT 的 encoder token，也不引入 ACT 的 VAE latent 训练路线。
 - `observation.tactile` 必须从 batch 中单独取出，进入 tactile encoder / tactile cross-attention / PI_Adapter；不得与 `observation.state` 拼接成一个更长 state。
 - `lerobot_patches/custom_patches.py` 需要把 `observation.tactile` 显式识别为 `FeatureType.TACTILE`，而不是普通 `FeatureType.STATE`。
 - DECO config 的 normalization mapping 中，`TACTILE` 默认使用 `IDENTITY`。这样 LeRobot preprocessor 只负责把 tactile 张量移动到正确 device，不对它执行 `MEAN_STD` 或 `MIN_MAX`。
 - DECO wrapper 在 `use_tactile: true` 时再做 DECO-style tactile max normalization；在 `use_tactile: false` 时不启用 tactile 分支，未训练的 tactile/PI_Adapter 不参与 forward。
+- `gripper_no_tactile` profile 的 `action_dim=18`，不会创建或消费 tactile 分支；其 state/action 在进入主干前同样通过 `Linear(18 -> dim)` 投影成 DECO hidden token，因此主干 attention 层仍处理固定 hidden dim，而不是直接处理原始自由度维度。
 
 直观解释：
 
@@ -551,7 +576,7 @@ LeRobot preprocessor 负责数值尺度：
   raw state -> normalized state
 
 DECO 主干负责条件注入方式：
-  normalized state -> obs_encoder -> 与 time embedding 相加 -> 调制 action-token Flow Matching 主干
+  normalized state -> obs_encoder(action_dim -> dim) -> 与 time embedding 相加 -> 调制 action-token Flow Matching 主干
 
 触觉不走这条 state 路线：
   tactile(Newton) -> TACTILE: IDENTITY -> DECO-style left/right max normalization -> tactile encoder / PI_Adapter
@@ -581,6 +606,7 @@ DECO 主干负责条件注入方式：
 - `observation.tactile` 不应跟随 LeRobot STATE `MEAN_STD`，否则会偏离 DECO 原生“先按触觉最大值缩放，再进 tactile encoder”的处理方式。
 - 触觉预训练权重不可直接严格复用。
 - Kuavo 触觉 token 仍应进入 DECO 的 tactile cross-attention，而不是绕过 DECO 主干另接动作头。
+- `gripper_no_tactile` 不进入本节触觉手术路径；如果数据源是 `leju_claw` 或 `rq2f85`，配置层必须保持 `use_tactile: false` 与 `use_tactile_lora: false`。
 
 直观流程：
 
@@ -627,6 +653,7 @@ Kuavo 配置命名：
 - 第一阶段默认值：`use_tactile: false`、`use_tactile_lora: false`、`tactile_lora_rank: 32`、`freeze_pretrained_main: true`。
 - 第二阶段触觉 adapter override：`use_tactile: true`、`use_tactile_lora: true`、`base_policy_path` 指向第一阶段选定 epoch 的 `.safetensors` policy 权重目录，`freeze_pretrained_main: true`。
 - 如果用户完全不使用触觉，`use_tactile_lora: false` 时 PI_Adapter 不参与 forward；即使代码中存在未训练 adapter 参数，也不得影响推理输出。
+- 如果用户选择 `gripper_no_tactile`，不仅默认不使用触觉，而且必须禁止 tactile adapter 二阶段；否则会出现“没有 tactile 数据却训练 PI_Adapter”的语义错误。
 
 ### 4.8 分阶段训练与验证策略
 
@@ -634,7 +661,7 @@ Kuavo 配置命名：
 
 1. **视觉-only 阶段**
    - 配置：`training_stage: visual_main`、`use_tactile: false`、`use_tactile_lora: false`。
-   - 目标：验证 RGB-D 前端、30Hz 数据、28 维 action、Flow Matching 主干能独立闭环。
+   - 目标：验证 RGB-D 前端、30Hz 数据、profile 对应 action_dim、Flow Matching 主干能独立闭环。
    - 允许训练范围：RGB-D bridge、视觉投影层以及按配置允许的 ResNet backbone。
    - 该阶段允许 `tactile_left_max` / `tactile_right_max` 仍为 `null`，因为 tactile 分支不参与 forward 与 loss。
    - 训练完成后通过 LeRobot `save_pretrained()` 保存 run 根目录与 `.safetensors` epoch 权重；若用户不使用触觉，部署资产就是该 run 根目录加选定 epoch 权重。
@@ -645,6 +672,7 @@ Kuavo 配置命名：
    - 冻结预训练主干，训练 tactile encoder、tactile cross-attention、PI_Adapter 和必要的 Kuavo 触觉桥接参数。
    - 进入该阶段前必须填写正数 `tactile_left_max` / `tactile_right_max`，否则触觉尺度不符合 DECO-style normalization。
    - 第二阶段虽然只更新 tactile/adapter 参数，但 RGB-D visual branch 与 state branch 仍必须参与 forward，因为 tactile adapter 学到的是“在当前视觉和状态上下文下如何修正动作预测”。
+   - 该阶段仅允许 `qiangnao_tactile` profile；`gripper_no_tactile` 没有 `observation.tactile`，必须停留在 `visual_main` 路线。
 
 3. **部署验证阶段**
    - 先关闭触觉进入仿真，确认 RGB-D 主链路稳定。
@@ -708,7 +736,7 @@ Kuavo 配置命名：
 - 视觉主干部署：使用第一阶段 run 根目录和选定 epoch，配置 `use_tactile: false`、`use_tactile_lora: false`。
 - 触觉 adapter 部署：使用第二阶段 run 根目录和选定 epoch，配置 `use_tactile: true`、`use_tactile_lora: true`，并提供实时 tactile 观测。
 - 通用 `configs/deploy/kuavo_env.yaml` 保持 ACT/DP 默认语义；DECO 使用 `configs/deploy/kuavo_deco_env.yaml` 记录 RGB-D depth topic 与 run-root 部署路径约定。
-- `configs/deploy/kuavo_deco_env.yaml` 使用 `state_layout: deco_28d`，在线 state/action 顺序与离线 converter 一致：左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。
+- 第一版 `qiangnao_tactile` 部署目标使用 `state_layout: deco_28d`，在线 state/action 顺序与离线 converter 一致：左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2；当前部署侧文件已按用户要求回退，本轮 `gripper_no_tactile` 放宽方案不修改部署代码。
 - `ObsBuffer` 对 DECO depth 使用 `depth_encoding: compressed_image`，直接解码 `/cam_h/depth/image_raw/compressed`；旧 `compressedDepth_png` 解码仍保留给 ACT/DP 通用配置。
 - `ObsBuffer` 对 `/dexhand/touch_state` 构造 30D `observation.tactile`，顺序为左手 15 + 右手 15，量纲换算保持 normal force `/100`。
 - `KuavoBaseRosEnv.step()` 对 DECO 28D action 执行双臂 14D 与双手 12D；head action 当前只保留维度，不下发头部控制。
@@ -741,13 +769,15 @@ Kuavo 配置命名：
 - [x] 在 DECO wrapper 中明确 `observation.tactile` 不走 STATE `MEAN_STD`，而是在 `/100` 牛顿单位基础上按左右手 tactile max 做 DECO-style 归一化并默认 clamp 到 `[0, 1]`。
 - [x] 在 `configs/policy/deco_config.yaml` 中为 `tactile_left_max` / `tactile_right_max` 写明含义、单位、可填 `null` 的场景，以及 `use_tactile: true` 时必须为正数的约束。
 - [x] 在 `configs/policy/deco_config.yaml` 中明确两阶段训练是两次独立启动：`visual_main` 产出可部署 run 目录与 `.safetensors` epoch 权重，`tactile_adapter` 加载第一阶段 policy 并冻结主干训练 tactile/PI_Adapter。
+- [ ] 在数据配置与转换脚本中新增 `end_effector_profile`：`qiangnao_tactile` 使用 `dataset.eef_type=qiangnao`，输出 28D + 可选 tactile；`gripper_no_tactile` 使用 `dataset.eef_type=leju_claw/rq2f85`，输出 18D + no tactile。
+- [ ] 在 `configs/policy/deco_config.yaml` 和 `DECOConfigWrapper` 中新增 `gripper_no_tactile` 训练约束：`action_dim=18`、`use_tactile=false`、`use_tactile_lora=false`、禁止 `training_stage=tactile_adapter`。
 - [x] 在 DECO wrapper 中明确 loss 严格使用 `F.mse_loss(out, noise - action)`，第一版不使用 `action_is_pad` mask。
 - [x] 在 DECO wrapper/config 中明确最终保存的 policy 权重不依赖外部初始化路径：保存时清空外部初始化路径，加载最终 `.safetensors` 时不再读取第一阶段目录或 `.pth`；完整部署包仍以 run 根目录为单位。
 - [x] 在部署入口中静态注册 `deco` / `DECO` policy 类型，并导入 DECOProcessor 以注册 `deco_rgbd_letterbox_processor`。
 - [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，并明确 DECO 部署资产采用 Kuavo 原有 run 根目录：`outputs/train/<task>/<method>/<timestamp>/`；`epochbest/` 只是权重子目录，不是完整部署包。
-- [x] 在 `kuavo_deploy` 中静态接入 DECO 在线部署链路：`compressed_image` depth decoder、30D tactile callback、`deco_28d` state/action 和服务端 pre/post processor 接管。
+- [ ] 在 `kuavo_deploy` 中静态接入 DECO 在线部署链路：当前部署链路曾做过设计记录，但相关部署文件已按用户要求回退；本轮 `gripper_no_tactile` 方案暂不改动部署代码。
 - [x] 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
-- [ ] 新建 `kuavo_data/validate_deco_lerobot_dataset.py`，检查单 rosbag 转换结果的字段、维度、30Hz 时间轴、RGB-depth 对齐、depth decoder、28 维 action 映射与 30 维 tactile 量纲。
+- [ ] 新建/扩展 `kuavo_data/validate_deco_lerobot_dataset.py`，检查单 rosbag 转换结果的字段、维度、30Hz 时间轴、RGB-depth 对齐、depth decoder、profile 对应 action 映射与可选 30 维 tactile 量纲。
 - [x] 新建 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`。
 - [x] 新建 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`。
 - [x] 已确定阶段四改动核心目标为 `third_party/deco/` 下的 Kuavo 定制 DECO 主干，并仅在 wrapper/config/patch 侧保留当前模型逻辑需要的最小字段。
