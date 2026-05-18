@@ -310,7 +310,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 
 ## 阶段六：部署与演示阶段 (Deployment & Demonstration Phase)
 
-**核心目标**：验证 `.safetensors` 模型资产包能在 Kuavo 部署体系中以 10Hz 控制频率稳定输出 profile 对应动作；当前部署代码暂不纳入 `gripper_no_tactile` 改造范围。
+**核心目标**：验证 `.safetensors` 模型资产包能在 Kuavo 部署体系中以 10Hz 控制频率稳定输出 profile 对应动作。阶段六第一轮优先打通本地单进程推理闭环（`real_single_test.py` / `sim_auto_test.py`），server/client 推理放到第二轮；部署范围同时覆盖三种 DECO 推理模式：`qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile`。
 
 - [ ] **6.1 适配 `kuavo_deploy` 节点**
   - [x] 静态接入 `deco` / `DECO` policy 类型，确保部署脚本会调用 `CustomDECOPolicyWrapper.from_pretrained()` 读取 `.safetensors` 和 `config.json`。
@@ -318,24 +318,37 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，将 DECO 部署配置从通用 `kuavo_env.yaml` 中拆出，并把 depth topic 固定为当前数据规划的 `/cam_h/depth/image_raw/compressed`。
   - [x] 将 `configs/deploy/kuavo_env.yaml` 还原为 ACT/DP 通用部署配置，不在该文件中承载 DECO 专用 depth/tactile 语义。
   - [x] 文档明确部署资产采用原 Kuavo 三层 run 路径：`outputs/train/<task>/<method>/<timestamp>/`，`epoch` 字段只选择 `epoch<epoch>` 权重子目录；`epochbest/` 单独不是完整部署包。
+  - [ ] 将 `configs/deploy/kuavo_deco_env.yaml` 扩展为 DECO 唯一部署入口，明确三种 `deco.inference_mode`：
+    - `qiangnao_tactile`：28D 灵巧手 + 30D tactile，要求加载已保存 `use_tactile=true`、`use_tactile_lora=true` 的二阶段 tactile adapter checkpoint。
+    - `qiangnao_no_tactile`：28D 灵巧手，不订阅、不输入 `observation.tactile`，要求加载已保存 `use_tactile=false`、`use_tactile_lora=false` 的视觉主干 checkpoint。
+    - `gripper_no_tactile`：18D 二爪夹，不订阅、不输入 `observation.tactile`，支持 `eef_type=leju_claw` 与 `eef_type=rq2f85`，二者共享 18D state/action schema，仅 topic 与下发缩放不同。
+  - [ ] 在 `configs/deploy/kuavo_deco_env.yaml` 中新增并注释 `head_state_source`：
+    - `live_joint_q`：从 `/sensors_data_raw.joint_data.joint_q[26:28]` 实时读取头部 yaw/pitch，更贴近机器人当前状态，但可能带入传感器微小抖动。
+    - `fixed_config`：使用 `head_init` 作为固定头部 state，更稳定，适合部署期间头部固定的任务，但必须确认与训练数据头部姿态一致。
+  - [ ] `kuavo_deploy/config.py` 支持 `policy_type: deco`、`deco.inference_mode`、`state_layout: deco_28d/deco_18d`、`head_state_source` 与 `depth_encoding: compressed_image/compressedDepth_png`。
   - [ ] `ObsBuffer` 静态接入 DECO 默认 depth topic `/cam_h/depth/image_raw/compressed`，并通过 `depth_encoding: compressed_image` 区分普通 compressed image 与旧 `compressedDepth_png`。
-  - [ ] `ObsBuffer` 静态接入 `/dexhand/touch_state`，按左手 15 + 右手 15 的 normal force 顺序构造 30D `observation.tactile`，并保持 `/100` 牛顿换算。
-  - [ ] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_28d`，在线拼接 `left arm 7 + left hand 6 + right arm 7 + right hand 6 + head 2` 的 28D `observation.state`。
+  - [ ] `ObsBuffer` 仅在 `deco.inference_mode=qiangnao_tactile` 时静态接入 `/dexhand/touch_state`，按左手 15 + 右手 15 的 normal force 顺序构造 30D `observation.tactile`，并保持 `/100` 牛顿换算。
+  - [ ] 新增部署侧 DECO 映射 helper（建议 `kuavo_deploy/utils/deco_obs_action.py`），集中封装 `build_deco_28d_state`、`build_deco_18d_state`、`decode_deco_28d_action`、`decode_deco_18d_action`，避免把 DECO schema 细节散落在环境类中。
+  - [ ] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_28d`，在线拼接 `left arm 7 + left hand 6 + right arm 7 + right hand 6 + head 2` 的 28D `observation.state`；该 layout 同时支持 `qiangnao_tactile` 与 `qiangnao_no_tactile`。
+  - [ ] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_18d`，在线拼接 `left arm 7 + left gripper 1 + right arm 7 + right gripper 1 + head 2` 的 18D `observation.state`；该 layout 支持 `leju_claw` 与 `rq2f85`。
   - [ ] `KuavoBaseRosEnv.step()` 静态接入 DECO 28D action 解释与下发：双臂 14D 下发到 arm，双手 12D 还原到 0-100 dexhand 指令，head action 当前保留维度但不下发。
-  - [ ] 将 `kuavo_deploy/kuavo_service/server.py` 的部署配置路径改为启动参数或 `KUAVO_DEPLOY_CONFIG` 环境变量，避免服务端只能读取通用 `kuavo_env.yaml`。
-  - [ ] 服务端统一加载 run 根目录的 pre/post processor，并在 `select_action(raw_obs)` 内执行 `preprocessor -> policy.select_action -> postprocessor`。
-  - [ ] 部署侧观测已静态接入与训练字段一致的 RGB、depth、state、tactile；实际 ROS topic、shape 和时序仍需阶段 6.2/6.3 在允许运行的环境中验证。
-  - [ ] 部署团队仍只调用 `action = policy.select_action(obs_dict)`，不需要知道底层是 DECO、ACT 还是 DP。
+  - [ ] `KuavoBaseRosEnv.step()` 静态接入 DECO 18D action 解释与下发：双臂 14D 下发到 arm，左右夹爪 2D 按当前工具链既有比例分别下发到 `leju_claw` 或 `rq2f85`，head action 当前保留维度但不下发。
+  - [ ] 本地单进程推理入口先完成 DECO 闭环：`raw obs -> run-root preprocessor -> CustomDECOPolicyWrapper.select_action -> run-root postprocessor -> env.step()`，优先覆盖 `real_single_test.py` 与 `sim_auto_test.py`。
+  - [ ] 本地推理入口增加部署配置与 checkpoint config 的一致性校验：`deco.inference_mode`、`state_layout`、`eef_type`、`use_tactile`、`use_tactile_lora`、`action_dim` 必须与已保存 `config.json` 的结构语义一致；部署配置只做选择与校验，不强行覆盖 checkpoint 的模型结构字段。
+  - [ ] 第二轮再适配 server/client：将 `kuavo_deploy/kuavo_service/server.py` 的部署配置路径改为启动参数或 `KUAVO_DEPLOY_CONFIG` 环境变量，避免服务端只能读取通用 `kuavo_env.yaml`。
+  - [ ] 第二轮 server/client 明确 pre/post processor 归属：当前 ACT/DP 本地路径由 eval 脚本负责 pre/postprocessor；DECO server 方案应避免 client 与 server 双重归一化。推荐 server 内部执行 `preprocessor -> policy.select_action -> postprocessor`，client 只发送 raw obs 并接收可执行 action。
+  - [ ] 部署侧观测已静态接入与训练字段一致的 RGB、depth、state，以及仅在 `qiangnao_tactile` 下存在的 tactile；实际 ROS topic、shape 和时序仍需阶段 6.2/6.3 在允许运行的环境中验证。
 - [ ] **6.2 30Hz 数据 / 10Hz 控制一致性验证**
   - [ ] 检查 `dataset_hz=30` 与 `control_hz=10` 的 stride 关系，避免动作节奏过密或过稀。
   - [ ] 检查 action chunk 长度是否足够覆盖部署控制队列需求。
-  - [ ] 检查头部 action 维度 26-27 当前补零策略不会被部署端误解释为真实头部控制。
+  - [ ] 分别检查 `deco_28d` 的头部 action 维度 26-27 与 `deco_18d` 的头部 action 维度 16-17 当前补零策略不会被部署端误解释为真实头部控制。
+  - [ ] 检查 `head_state_source=live_joint_q/fixed_config` 对在线 state 分布的影响，确认部署输入与训练数据头部姿态语义一致。
 - [ ] **6.3 闭环测试验证**
-  - [ ] 第一轮关闭触觉进入仿真：`use_tactile: false`、`use_tactile_lora: false`，只验证 RGB-D + state + action 的 DECO 主干闭环。
+  - [ ] 第一轮关闭触觉进入仿真或真机 dry-run：覆盖 `qiangnao_no_tactile` 与 `gripper_no_tactile`，只验证 RGB-D + state + action 的 DECO 主干闭环。
   - [ ] 仿真好结果标准：无 NaN/Inf、无关节越界、动作输出平滑、左右手/左右臂映射正确、头部 action 补零不引入异常、10Hz action queue 节奏稳定。
   - [ ] 任务行为好结果标准：末端运动方向符合示教趋势，抓取或接触前动作不过早抖动，成功率和轨迹平滑度至少接近同数据上的 ACT/DP 基线。
   - [ ] RGB-D 感知验证：检查 RGB 与 depth 是否对齐，depth 是否进入正确 backbone，RGB 增强不会错误作用到 depth。
-  - [ ] 第二轮开启触觉 LoRA：加载视觉-only 或 RGB-D checkpoint，冻结主干，只训练/启用 tactile adapter，再做仿真或离线 replay 对比。
+  - [ ] 第二轮开启触觉 LoRA：使用 `qiangnao_tactile` 加载二阶段 tactile adapter checkpoint，再做仿真、离线 replay 或低风险真机验证。
   - [ ] 触觉反馈验证：在仿真或真机低风险场景中施加指尖压力，观察 30 维法向力变化是否能影响 action chunk，而不是被模型忽略。
 - [ ] **6.4 实机上线分级检查**
   - [ ] 上实机前先做 dry-run：真实传感器输入，策略输出只记录不下发，检查 10Hz 输出节奏、action 范围和异常峰值。

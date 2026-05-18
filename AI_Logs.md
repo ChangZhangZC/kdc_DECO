@@ -1,5 +1,30 @@
 # AI Execution Logs
 
+## 2026-05-19
+
+### 冻结阶段六 DECO 部署三模式计划
+- **任务**: 根据用户确认，将阶段六部署计划聚焦到 DECO 推理与本地闭环，明确同时支持灵巧手带触觉、灵巧手无触觉、二爪夹无触觉三种部署模式。本次只修改文本记录文件，未修改任何 Python/YAML 运行逻辑，未运行 Python、validator、训练、ROS、仿真、部署、安装或环境变更命令，也未执行静态代码检查。
+- **修改文件 1**: `PLANS.md`
+  - 将阶段六核心目标改为：第一轮优先打通本地单进程推理闭环（`real_single_test.py` / `sim_auto_test.py`），server/client 推理排到第二轮。
+  - 在 `6.1 适配 kuavo_deploy 节点` 中新增 DECO 三种部署推理模式：
+    - `qiangnao_tactile`：28D 灵巧手 + 30D tactile，要求加载 `use_tactile=true`、`use_tactile_lora=true` 的二阶段 tactile adapter checkpoint。
+    - `qiangnao_no_tactile`：28D 灵巧手，不订阅、不输入 `observation.tactile`，要求加载 `use_tactile=false`、`use_tactile_lora=false` 的视觉主干 checkpoint。
+    - `gripper_no_tactile`：18D 二爪夹，不订阅、不输入 `observation.tactile`，同时支持 `leju_claw` 与 `rq2f85`。
+  - 新增 `head_state_source` 规划：`live_joint_q` 表示实时读取 `/sensors_data_raw.joint_data.joint_q[26:28]`；`fixed_config` 表示使用部署配置中的 `head_init` 作为固定头部 state。
+  - 新增部署侧 helper 规划，建议通过 `kuavo_deploy/utils/deco_obs_action.py` 集中封装 28D/18D state 拼接与 action 反解逻辑。
+  - 将部署检查项扩展为同时覆盖 `state_layout: deco_28d` 与 `state_layout: deco_18d`，并明确 28D/18D 的 head action 均只保留维度、第一版不下发头部控制。
+  - 明确本地推理链路沿用当前 ACT/DP 主路径：`raw obs -> run-root preprocessor -> CustomDECOPolicyWrapper.select_action -> run-root postprocessor -> env.step()`。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 将最后更新时间更新为 `2026-05-19`。
+  - 在两阶段训练与部署规则中补充：部署必须允许 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式。
+  - 将最终部署规则重写为 DECO 专用部署配置语义：`configs/deploy/kuavo_deco_env.yaml` 是唯一 DECO 部署入口，部署配置负责选择和校验权重，不强行覆盖 checkpoint 中保存的模型结构字段。
+  - 写明 `deco.inference_mode` 三个可选值、`head_state_source` 两个可选值及各自含义。
+  - 记录 server/client 排在第二轮，并要求后续明确 pre/post processor 归属，避免 client 与 server 双重归一化。
+  - 记录 `leju_claw` 与 `rq2f85` 在 `gripper_no_tactile` 下共享 18D state/action schema，仅保留 topic、状态读取和下发缩放差异。
+- **边界说明**:
+  - 本次没有修改 `configs/deploy/kuavo_deco_env.yaml` 的实际字段，也没有修改 `kuavo_deploy/config.py`、`ObsBuffer`、`KuavoBaseRosEnv`、`server.py` 或任何 wrapper 代码。
+  - 下一步若进入实现，应先根据本次冻结计划更新 DECO 部署配置文件，再实现配置解析、ObsBuffer depth/tactile、28D/18D helper 与本地推理入口校验。
+
 ## 2026-05-18
 
 ### 清理 DECO 数据 YAML 中过时的 raw depth 配置项
