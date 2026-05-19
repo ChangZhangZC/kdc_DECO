@@ -1,18 +1,31 @@
+# Copied DECO 副本中的原生模型配置参考。
+# 当前 third_party/deco 已清理 ACT/DP baseline 文件，因此 model_name 固定为 deco。
+# Kuavo 正式训练入口使用 configs/policy/deco_config.yaml；本文件主要服务于原生 DECO 参考路径和模型主体默认参数。
 model_name: deco
 model:
+  # action_dim 必须与外层 Kuavo profile 一致：
+  # - qiangnao_tactile: 28
+  # - gripper_no_tactile: 18
   action_dim: 28
+  # chunk_size 表示一次预测的 action horizon，不表示视觉帧数或控制频率。
   chunk_size: 32
   obs_state: True
   use_task_condition: False
   num_tasks: 10
+  # use_tactile=false: 仅 RGB-D + state 主干。
+  # use_tactile=true: 需要外层提供 tac1/tac2，并配置 tactile max。
   use_tactile: False
+  # plugin=true 表示启用 DECO 自实现 PI_Adapter 触觉 adapter；不是外部 PEFT LoRA。
   plugin: False
   num_attn_blocks: 6
+  # inf_step 是 Flow Matching 推理去噪步数，不是机器人控制 Hz。
   inf_step: 5
   heads: 8
   dim: 512
   rope_axes_dim: [256, 256]
-  # Kuavo-DECO 默认建议 resnet34；resnet18 可作为低显存/低延迟备选。
+  # 可选值：
+  # - resnet34: Kuavo-DECO 默认容量。
+  # - resnet18: 低显存/低延迟备选。
   vision_backbone: resnet34
   depth_backbone: resnet34
 

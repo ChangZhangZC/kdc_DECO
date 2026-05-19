@@ -2,6 +2,48 @@
 
 ## 2026-05-19
 
+### 收尾复查 DECO 相关 YAML 配置
+- **任务**: 根据用户确认，对 DECO 新增/改动过的 YAML 配置做整体收尾复查，目标是删除无效或容易误导的参数，同时保留能向用户说明 DECO 固定约束和上游语义的信息字段，并为多选项配置补充可填写选项与每个选项的含义。本次只做静态文本修改和文本级 diff/grep 复查，未运行 Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境安装命令。
+- **修改文件 1**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 增加总原则说明：标注为“固定约束/信息字段”的配置用于说明 DECO schema，不代表可以随意切换到另一条链路。
+  - 强化 `dataset.eef_type` 注释，明确可选值 `qiangnao`、`leju_claw`、`rq2f85` 及其对应的 `qiangnao_tactile` / `gripper_no_tactile` profile 语义。
+  - 强化 `deco.end_effector_profile` 注释，明确可填写 `auto`、`qiangnao_tactile`、`gripper_no_tactile`，并写清 `auto` 从 `dataset.eef_type` 的推导规则。
+  - 将 `use_depth`、`main_timeline`、`main_timeline_fps`、`dex_dof_needed`、`delta_action`、`relative_start` 标注为固定约束或信息字段，说明这些字段保留的原因和不可作为 DECO 链路开关误改的边界。
+  - 删除 `state_dim`、`action_dim`、`tactile_dim` 三个容易被误解为可独立配置的记录型字段，改用注释说明 profile 推导出的 28D/18D/30D schema。
+  - 删除 `depth_storage` 字段，改用注释说明第一版 depth 磁盘存储为 3-channel depth image，wrapper 再取单通道送入 1-channel depth backbone；当前不提供 YAML 切换存储格式。
+  - 删除 `head_state_source` 字段，改用注释说明数据转换阶段头部 state 固定取 episode 内 `joint_q[26:28]` 均值，头部 action 当前补零。
+  - 删除 `expected_num_bags`、`validation_after_conversion` 和整个 `validation` 配置段，避免用户误以为转换脚本会自动消费这些字段或自动运行 validator；保留人工 validator 推荐检查项为注释。
+  - 为 `deco.depth_encoding` 增加可选值说明：`compressed_image`、`compressedDepth_png`、`auto`、`raw_16uc1`。
+- **修改文件 2**: `configs/policy/deco_config.yaml`
+  - 删除训练层 `ema_power` 字段，改为注释说明当前 DECO 训练入口不构建 EMA。
+  - 删除训练层重复的 `scheduler_name` 与 `scheduler_warmup_steps`，保留 `policy.scheduler_name` 与 `policy.scheduler_warmup_steps` 作为唯一学习率调度配置入口。
+  - 为 `training.RGB_Augmenter` 增加默认 transform 类型说明，包括 `Identity`、`ColorJitter`、`SharpnessJitter`、`RandomMask`、`RandomBorderCutout`、`GaussianNoise`、`GammaCorrection`、`GaussianBlur`。
+  - 为 `policy.training_stage` 增加可选值说明：`visual_main` 与 `tactile_adapter`。
+  - 为 `policy.end_effector_profile` 增加可选值说明：`qiangnao_tactile` 与 `gripper_no_tactile`，并明确二夹爪 profile 不含 tactile。
+  - 为 `vision_backbone` / `depth_backbone` 增加可选值说明：`resnet34` 默认容量，`resnet18` 低显存/低延迟备选。
+  - 为 `normalization_mapping` 增加 `MEAN_STD`、`MIN_MAX`、`IDENTITY` 的语义说明，强调 tactile 使用 `IDENTITY` 避免走 STATE 归一化。
+  - 为 `base_policy_path`、`adapter_model_path`、`deco_init_pth_path` 增加三类权重入口含义说明。
+- **修改文件 3**: `configs/deploy/kuavo_deco_env.yaml`
+  - 保留 `hydra` 段作为与原 Kuavo deploy YAML 对齐的目录记录信息，并明确该文件通常通过 `load_kuavo_config(path)` 读取，不依赖 Hydra 启动。
+  - 为 `env.eef_type` 增加可选值说明：`qiangnao`、`leju_claw`、`rq2f85` 及其必须匹配的 `state_layout` / `deco.inference_mode`。
+  - 为 `env.state_layout` 增加可选值说明：`deco_28d` 与 `deco_18d` 的 state/action 排列语义。
+  - 为 `obs_key_map.depth_h` 第六项 `depth_encoding` 增加可选值说明：`compressed_image`、`compressedDepth_png`、`auto`。
+  - 删除原 ACT/DP state 拼接使用的 `arm_state_keys` 字段，改用注释说明 DECO state 由 `state_layout` 对应 helper 拼接。
+  - 删除 DECO 部署路径不使用的 `limits.eef`、`limits.eef_relative`、`limits.base`，只保留 `joint_q`、`gripper`、`head_q` 三类 DECO observation/action space 会使用的 limits。
+  - 为 `limits.gripper` 增加 `deco_28d` 使用 12 维灵巧手、`deco_18d` 使用 2 维二指夹爪的说明。
+  - 保留 `deco.runtime_mode` 并补充边界说明：它是部署意图记录字段，不会自动选择脚本入口；实际入口仍由用户运行的 eval/server 脚本决定。
+  - 为 `inference.policy_type` 增加 DECO 专用可选值说明：`deco` 与 `client`。
+- **修改文件 4**: `third_party/deco/config/deco.yaml`
+  - 在 copied DECO 原生参考配置顶部说明：`third_party/deco` 已清理 ACT/DP baseline，`model_name` 固定为 `deco`；Kuavo 正式训练入口是 `configs/policy/deco_config.yaml`。
+  - 为 `action_dim`、`chunk_size`、`use_tactile`、`plugin`、`inf_step`、`vision_backbone`、`depth_backbone` 增加语义和可选项说明。
+- **修改文件 5**: `PLANS.md`
+  - 在阶段二新增 `2.4 DECO YAML 配置收尾复查`，记录数据清洗、训练、部署、third_party DECO config 四类 YAML 的清理与注释增强已经完成。
+  - 在 Done When 中增加 DECO YAML 收尾复查完成项。
+- **边界说明**:
+  - 本次没有修改原 Kuavo ACT/DP 配置文件 `configs/policy/act_config.yaml`、`configs/policy/diffusion_config.yaml`、`configs/data/KuavoRosbag2Lerobot.yaml` 或通用部署配置 `configs/deploy/kuavo_env.yaml`。
+  - 本次没有修改原始 `DECO/` 目录，也没有修改 `third_party/lerobot/`。
+  - 本次没有运行 YAML parser 或 Python 校验；复查仅限静态阅读、`rg` 文本搜索和 `git diff` 审查。
+
 ### 清理 third_party/deco 中 ACT/DP baseline 文件
 - **任务**: 根据用户确认，从 copied DECO 副本 `third_party/deco` 中删除上游 ACT 与 Diffusion Policy baseline 链路文件，使该第三方副本后续只保留当前 DECO 主链路与 Kuavo-DECO wrapper 所需代码。本次用户明确授权在当前任务中执行 `rm`；按用户后续要求，删除后不做静态引用复查，只更新 `PLANS.md` 与 `AI_Logs.md`。本次未运行 Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境安装命令。
 - **删除文件 1**: `third_party/deco/config/act.yaml`

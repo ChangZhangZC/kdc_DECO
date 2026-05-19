@@ -8,6 +8,8 @@
 # policy_preprocessor.json / policy_postprocessor.json 保存在 run 根目录，
 # 因此不要只拷贝或只填写 epochbest/ 作为完整部署资产。
 
+# 信息字段：该文件通常通过 load_kuavo_config(path) 读取，不依赖 Hydra 启动；
+# 保留 hydra 段是为了对齐原 Kuavo deploy YAML 的目录记录习惯。
 hydra:  # Hydra config directory, for parameter checking only
   run:
     dir: ./outputs/kuavo_deploy_hydra_save/singlerun/${now:%Y%m%d_%H%M%S}
@@ -21,16 +23,23 @@ hydra:  # Hydra config directory, for parameter checking only
 # =====================================================
 env:
   env_name: Kuavo-Sim
+  # 固定约束：DECO 第一版只支持 joint-space action；eef/base 控制不属于 DECO action_dim。
   control_mode: joint
-  # DECO 当前支持三种推理模式，具体由下方 deco.inference_mode 选择。
-  # - qiangnao_tactile / qiangnao_no_tactile: eef_type=qiangnao, state_layout=deco_28d.
-  # - gripper_no_tactile: eef_type=leju_claw 或 rq2f85, state_layout=deco_18d.
+  # 可选值：
+  # - qiangnao: 强脑灵巧手；必须搭配 state_layout=deco_28d 和 qiangnao_dof_needed=6。
+  # - leju_claw: Leju 二指夹爪；必须搭配 deco.inference_mode=gripper_no_tactile 和 state_layout=deco_18d。
+  # - rq2f85: Robotiq/RQ2F85 二指夹爪或仿真夹爪；必须搭配 deco.inference_mode=gripper_no_tactile 和 state_layout=deco_18d。
   eef_type: qiangnao
+  # 固定约束：DECO 28D/18D 在线 schema 当前都要求双臂。
   which_arm: both
-  state_layout: deco_28d  # DECO 在线 state/action: left arm 7 + left hand 6 + right arm 7 + right hand 6 + head 2.
+  # 可选值：
+  # - deco_28d: 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2，用于 qiangnao_tactile / qiangnao_no_tactile。
+  # - deco_18d: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2，用于 gripper_no_tactile。
+  state_layout: deco_28d
   head_init: [0, 0.209]
   ros_rate: 10  # DECO 数据为 30Hz，部署控制为 10Hz；降频由 wrapper 的 action_stride=3 处理。
 
+  # 固定约束：DECO 部署不下发下肢/base action。
   only_arm: true
 
   image_size: &IMGSIZE [640, 480]
@@ -38,6 +47,10 @@ env:
   obs_key_map:
     # DECO 默认只使用头部 RGB-D。depth topic 对齐当前数据规划中的 compressed_image 路线。
     head_cam_h: ["/cam_h/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
+    # depth_h 第 6 项为 depth_encoding，可选值：
+    # - compressed_image: 普通 CompressedImage 直解；当前默认。
+    # - compressedDepth_png: ROS compressedDepth，需要定位 PNG payload。
+    # - auto: 先尝试 compressed_image，再尝试 compressedDepth_png。
     depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
     joint_q: ["/sensors_data_raw", "sensorsData", 500]
     head_q: ["/sensors_data_raw", "sensorsData", 500]
@@ -48,30 +61,26 @@ env:
     # 只有 deco.inference_mode=qiangnao_tactile 时才会真正订阅该 topic。
     tactile: ["/dexhand/touch_state", "dexhandTouchState", 500, 100.0]
 
-  arm_state_keys: ["joint_q", "gripper", "head_q"]
+  # DECO state 由 state_layout 对应 helper 直接拼接，不使用原 ACT/DP 的 arm_state_keys。
   frame_alignment: false
   ratio: 1.0
 
+  # DECO 在线 observation/action space 使用 joint_q、gripper、head_q 三类 limits。
   limits:
     joint_q:
       min: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
       max: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+    # gripper limits:
+    # - deco_28d 使用前 12 个值，表示左右灵巧手各 6 DoF，范围为归一化开合量 [0, 1]。
+    # - deco_18d 使用前 2 个值，表示左右二指夹爪，范围为归一化开合量 [0, 1]。
     gripper:
       min: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
       max: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     head_q:
       min: [-1.0, -1.0]
       max: [1.0, 1.0]
-    eef:
-      min: [-1, -1, -1, -3.14, -3.14, -3.14, -1, -1, -1, -3.14, -3.14, -3.14]
-      max: [1, 1, 1, 3.14, 3.14, 3.14, 1, 1, 1, 3.14, 3.14, 3.14]
-    eef_relative:
-      min: [-0.005, -0.0075, -0.004, -0.03, -0.03, -0.05, -0.005, -0.0075, -0.004, -0.03, -0.03, -0.05]
-      max: [0.005, 0.0075, 0.004, 0.03, 0.03, 0.05, 0.005, 0.0075, 0.004, 0.03, 0.03, 0.05]
-    base:
-      min: [-2.0, -2.0, -3.14, 0]
-      max: [2.0, 2.0, 3.14, 1]
 
+  # 固定约束：DECO 灵巧手部署需要读取左右手各 6 维；ACT/DP 默认单维开合量不适用。
   qiangnao_dof_needed: 6
 
   is_binary: false
@@ -96,8 +105,9 @@ deco:
   # 可选值：
   # - local_real: 本地单进程真机推理，沿用 real_single_test.py 的 pre/postprocessor 路径。
   # - local_sim: 本地单进程仿真推理，沿用 sim_auto_test.py 的 pre/postprocessor 路径。
-  # - server: 第二轮再接入 server/client；第一轮不作为主要实现目标。
+  # - server: server/client 模式；server 只负责 processed observation -> raw policy action。
   # - dry_run: 真实传感器输入，策略输出只记录不下发。
+  # 注意：runtime_mode 是部署意图记录字段，不会自动选择脚本入口；实际入口仍由用户运行的 eval/server 脚本决定。
   runtime_mode: local_real
 
   # 可选值：
@@ -114,6 +124,9 @@ deco:
 # =====================================================
 inference:
   go_bag_path: /path/to/your/go.bag
+  # 可选值：
+  # - deco: 本地加载 Kuavo-DECO policy。
+  # - client: eval/client 调用侧连接 kuavo_service/server.py；pre/postprocessor 仍在调用侧。
   policy_type: "deco"
   eval_episodes: 100
   seed: 42

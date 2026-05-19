@@ -11,6 +11,7 @@ hydra:
 # 1. 尽量复用现有 ACT/DP 清洗链路中的 topic 和 decoder。
 # 2. 仅在 DECO profile schema、30Hz 时间轴、可选 30 维触觉、state/action 重组处做专用适配。
 # 3. 当前机器遵守 No-Runtime 约束，不在 Codex 中直接运行转换。
+# 4. 标注为“固定约束/信息字段”的配置用于向用户说明 DECO schema，不代表可以随意改成另一条链路。
 
 rosbag:
   # rosbag 文件目录，目录下应包含一个或多个 .bag 文件。
@@ -23,16 +24,19 @@ rosbag:
   lerobot_dir: /your/path/to/your/lerobotdata_deco/lerobot
 
 dataset:
-  # DECO 当前只训练上半身操作，不使用下肢 action。
+  # 固定约束：DECO 当前只训练上半身操作，不使用下肢/base action。
   only_arm: true
 
-  # 末端执行器入口沿用 ACT/DP 语义：
-  # - qiangnao: 灵巧手，自动对应 deco.end_effector_profile=qiangnao_tactile。
-  # - leju_claw / rq2f85: 二夹爪，自动对应 deco.end_effector_profile=gripper_no_tactile。
+  # 可选值：
+  # - qiangnao: 强脑灵巧手；auto profile 会映射为 qiangnao_tactile，state/action 为 28D，可选写入 30D tactile。
+  # - leju_claw: Leju 二指夹爪；auto profile 会映射为 gripper_no_tactile，state/action 为 18D，不写入 tactile。
+  # - rq2f85: Robotiq/RQ2F85 二指夹爪或仿真夹爪；auto profile 会映射为 gripper_no_tactile，state/action 为 18D，不写入 tactile。
   eef_type: qiangnao
+  # 固定约束：DECO profile 当前要求双臂 schema；left/right 单臂配置仍属于原 ACT/DP 数据链路。
   which_arm: both
 
-  # RGB-D 路线默认开启 depth。
+  # 固定约束/信息字段：Kuavo-DECO 是 RGB-D 路线，转换脚本始终要求 head RGB + aligned depth。
+  # 保留该字段是为了对齐原 ACT/DP 配置习惯；不要把它改成 false 作为“无 depth”开关。
   use_depth: true
   depth_range: [0, 1500]
 
@@ -40,14 +44,19 @@ dataset:
 
   # DECO 训练数据统一下采样为 30Hz；部署 10Hz 在 policy/deploy wrapper 阶段处理。
   train_hz: 30
+  # 信息字段：DECO 实际使用 head_cam_h 的真实时间戳生成 30Hz 目标时间轴，不依赖整数跳帧。
+  # 保留 main_timeline/main_timeline_fps 是为了说明主视觉流语义；不要把它当作 ACT/DP 式跳帧开关。
   main_timeline: head_cam_h
   main_timeline_fps: 30
   sample_drop: 10
 
-  # qiangnao_tactile 需要左右手各 6 DoF；gripper_no_tactile 不使用该字段。
+  # 固定约束/信息字段：qiangnao_tactile 使用左右手各 6 DoF；gripper_no_tactile 不消费该字段。
+  # 这里保留 6 是为了提醒 DECO 不沿用 ACT/DP 默认的单维灵巧手开合量。
   dex_dof_needed: 6
 
   is_binary: false
+  # 信息字段：下面两个字段来自原 ACT/DP 配置模板；当前 DECO 转换不支持 delta/relative action 路线。
+  # 保留为 false 是为了明确当前输出为绝对 joint/action schema。
   delta_action: false
   relative_start: false
 
@@ -56,16 +65,18 @@ dataset:
     height: 480
 
 deco:
-  # auto 会根据 dataset.eef_type 推导：
-  # - qiangnao -> qiangnao_tactile: 28D state/action，可写入 30D tactile。
-  # - leju_claw/rq2f85 -> gripper_no_tactile: 18D state/action，不写入 tactile。
-  # 也可以显式填写上述 profile，脚本会检查它与 dataset.eef_type 是否一致。
+  # 可选值：
+  # - auto: 根据 dataset.eef_type 自动推导 profile，推荐默认值。
+  # - qiangnao_tactile: 显式指定强脑灵巧手 profile；要求 dataset.eef_type=qiangnao。
+  # - gripper_no_tactile: 显式指定二夹爪无触觉 profile；要求 dataset.eef_type=leju_claw 或 rq2f85。
+  # auto 推导规则：
+  # - dataset.eef_type=qiangnao -> qiangnao_tactile，28D state/action，可写入 30D tactile。
+  # - dataset.eef_type=leju_claw/rq2f85 -> gripper_no_tactile，18D state/action，不写入 tactile。
   end_effector_profile: auto
 
-  # 输出 schema 记录项；auto 表示由 end_effector_profile 推导，转换脚本以 profile 为准。
-  state_dim: auto
-  action_dim: auto
-  tactile_dim: 30
+  # 输出 schema 固定由 end_effector_profile 推导，不提供单独维度开关：
+  # - qiangnao_tactile: observation.state/action 为 28D，observation.tactile 为 30D。
+  # - gripper_no_tactile: observation.state/action 为 18D，且没有 observation.tactile。
 
   # 默认复用现有 Kuavo/ACT-DP 清洗链路。
   rgb_key: head_cam_h
@@ -73,17 +84,20 @@ deco:
   depth_key: depth_h
   # depth_topic/depth_encoding 是优先候选；转换脚本会自动追加
   # /cam_h/depth/image_raw/compressedDepth + compressedDepth_png，用于兼容官方模拟数据或实采数据的 topic 差异。
-  # compressed_image 直接使用 cv2.imdecode；compressedDepth_png 会先跳过 PNG magic header 前的配置头。
   depth_topic: /cam_h/depth/image_raw/compressed
+  # 可选值：
+  # - compressed_image: 普通 sensor_msgs/CompressedImage，data 可直接 cv2.imdecode；当前默认。
+  # - compressedDepth_png: ROS compressedDepth 封装，data 前缀有配置头，需要定位 PNG payload 后解码。
+  # - auto: 先按 compressed_image 尝试，再按 compressedDepth_png 尝试；适合只知道 topic、不确定封装格式时使用。
+  # - raw_16uc1: raw depth fallback，只有 allow_raw_depth_fallback=true 且对应 topic 存在时才应使用。
   depth_encoding: compressed_image
 
   # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
   raw_depth_topic: /camera/depth/image_rect_raw
   allow_raw_depth_fallback: false
 
-  # 为兼容现有 LeRobot image/video writer，第一版 depth 在磁盘中保存为 3-channel depth image。
-  # wrapper 阶段再从该 depth image 取单通道并送入 1-channel depth backbone。
-  depth_storage: image_3channel
+  # 固定信息：为兼容现有 LeRobot image/video writer，第一版 depth 在磁盘中保存为 3-channel depth image；
+  # wrapper 阶段再从该 depth image 取单通道并送入 1-channel depth backbone。当前不提供 YAML 开关切换存储格式。
 
   # 原清洗链路的 action 来源优先级。
   arm_action_priority:
@@ -100,10 +114,10 @@ deco:
   # gripper_no_tactile 会强制忽略 tactile，不能用全零 tactile 伪装无触觉。
   write_tactile: true
   tactile_topic: /dexhand/touch_state
+  # Kuavo 原始 normal_force / tactile_force_scale -> 牛顿量纲；默认 /100 与当前数据转换和部署保持一致。
   tactile_force_scale: 100.0
 
-  # 头部 state 使用 episode 内 joint_q[26:28] 均值；头部 action 当前补零。
-  head_state_source: joint_q_26_28_episode_mean
+  # 固定信息：头部 state 使用 episode 内 joint_q[26:28] 均值；头部 action 当前补零。
   head_action_fill: [0.0, 0.0]
 
   # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
@@ -113,25 +127,6 @@ deco:
   # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
   arm_traj_gap_threshold_s: null
 
-  # 当前阶段不在 Codex 中运行转换；这些字段用于人工运行前确认。
-  expected_num_bags: 100
-  validation_after_conversion: true
-
-validation:
-  # 该段仅作为后续 validate_deco_lerobot_dataset.py 的检查约定；当前转换脚本不会消费这些字段。
-  run_after_conversion: true
-  end_effector_profile: auto
-  expected_num_bags: 100
-  expected_train_hz: 30
-  expected_rgb_key: observation.images.head_cam_h
-  expected_depth_key: observation.depth_h
-  # auto 表示 validator 按 end_effector_profile 推导：
-  # qiangnao_tactile -> state/action 28D，可要求 tactile 30D；
-  # gripper_no_tactile -> state/action 18D，且必须没有 tactile。
-  expected_state_dim: auto
-  expected_action_dim: auto
-  expected_tactile_dim: 30
-  require_tactile: auto
-  require_depth: true
-  require_head_state_mean: true
-  require_head_action_zero: true
+  # 转换完成后的 validator 需要人工单独运行；当前转换脚本不会自动消费 validation 配置段。
+  # 推荐检查项：30Hz、observation.images.head_cam_h、observation.depth_h、profile 对应 state/action 维度、
+  # qiangnao_tactile 的 30D tactile、gripper_no_tactile 不含 tactile，以及 head action 全零。

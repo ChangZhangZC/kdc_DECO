@@ -157,6 +157,12 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 删除 `third_party/deco/models/act/` 与 `third_party/deco/models/dp/` 下的 ACT/DP baseline Python 文件，只保留 `third_party/deco/models/deco/` 作为当前 DECO 主体代码路径。
   - [x] 保留原 Kuavo 工具链中的 ACT/DP wrapper、配置与 LeRobot 集成内容不变；本次清理范围仅限 `third_party/deco` 内部 copied baseline 文件。
   - [x] 保留 `third_party/deco/train.py`、`third_party/deco/inference.py`、`third_party/deco/dataset.py`、`third_party/deco/config/deco.yaml` 与 `third_party/deco/models/deco/*`，避免影响原生 DECO 参考链路和 Kuavo-DECO wrapper 链路。
+- [x] **2.4 DECO YAML 配置收尾复查**
+  - [x] 复查 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，清理容易误导用户的无效配置项，并把固定 schema、固定 RGB-D 路线、depth 存储格式、validator 检查项等信息迁移为注释说明。
+  - [x] 复查 `configs/policy/deco_config.yaml`，删除 DECO 训练入口不消费的 `ema_power` 字段和训练层重复 scheduler 字段，保留 policy 层 scheduler 作为唯一学习率调度配置入口。
+  - [x] 复查 `configs/deploy/kuavo_deco_env.yaml`，删除 DECO 部署路径不使用的 eef/base limits 与原 ACT/DP `arm_state_keys` 字段，并补充 eef/profile/state layout/inference mode/head state source 的可选项说明。
+  - [x] 复查 `third_party/deco/config/deco.yaml`，补充原生 DECO 参考配置中 action_dim、chunk_size、tactile/plugin、backbone、inf_step 等字段语义。
+  - [x] 对所有保留的说明型字段标注“固定约束/信息字段”等边界，避免用户误以为它们是可切换到另一条链路的开关。
 
 ---
 
@@ -396,4 +402,5 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] `requirements_DECO.txt` 已改为 Linux pip-only requirements，覆盖 DECO 数据转换、训练、validator、本地部署与 server/client 推理服务中 pip 可安装的依赖；ROS/Kuavo 消息环境作为系统前置条件，不再写成 pip 安装条目。
 - [x] 阶段三/四完成实际 DECO import 范围确认后，已复查 `requirements_DECO.txt`：保留 Kuavo/LeRobot 当前版本作为主线，不采用 DECO 原生会冲突的 `torch/torchvision/diffusers/huggingface-hub` pin，也不照搬 `requirements_total.txt` 中不可可靠 pip 安装的 ROS 包。
 - [x] `third_party/deco` 中上游 ACT/DP baseline 配置与模型文件已删除；原 Kuavo ACT/DP 工具链、`third_party/deco/models/deco/*` 与 Kuavo-DECO wrapper 路线保持不变。
+- [x] DECO 相关 YAML 已完成收尾复查：无效字段已清理，固定约束/信息字段已转为明确注释，多选项字段已列明可填值与语义。
 - [x] `AI_Logs.md` 用中文记录每次文档与代码修改。
