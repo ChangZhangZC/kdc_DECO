@@ -29,6 +29,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from rich.logging import RichHandler
 from tqdm import tqdm
+from termcolor import colored
 
 # 保持与原转换脚本一致：先加载 LeRobot patch，避免直接修改 third_party/lerobot 子模块。
 try:
@@ -1101,6 +1102,7 @@ def populate_dataset(
         total=len(bag_files),
         desc="Processing DECO rosbag",
     ):
+        tqdm.write(colored(f"Processing {ep_path}", "yellow", attrs=["bold"]))
         try:
             bag_data = reader.process_rosbag(ep_path)
             metadata = bag_data["__metadata__"]

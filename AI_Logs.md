@@ -2,6 +2,16 @@
 
 ## 2026-05-20
 
+### 为 DECO 清洗脚本补充当前 rosbag 加粗黄色进度提示
+- **任务**: 根据用户确认，将原版清洗脚本中“加粗黄色显示当前 Processing bag 路径”的终端输出风格同步到 DECO 数据清洗脚本。用户明确要求做完后不要执行静态代码检查；本次未运行 `rg`、`git diff --check`、Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境变更命令。
+- **修改文件 1**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 新增 `from termcolor import colored`。
+  - 在 `populate_dataset()` 的 `tqdm(..., desc="Processing DECO rosbag")` 循环中，进入 `reader.process_rosbag(ep_path)` 前调用 `tqdm.write(colored(f"Processing {ep_path}", "yellow", attrs=["bold"]))`。
+  - 使用 `tqdm.write()` 而不是普通 `print()`，保持与原版加粗黄色显示效果一致，同时减少与 tqdm 进度条互相覆盖的概率。
+- **未修改文件**:
+  - 按用户要求，本次没有修改 `PLANS.md`。
+  - 本次没有修改训练、模型、部署或配置逻辑。
+
 ### 修复 DECO 静态审查遗留的部署与 legacy 命名问题
 - **任务**: 根据用户确认，修复上一轮全盘静态审查中列出的 4 条需处理问题：README server 示例过期、远程 client 配置未接入 YAML、部署 `observation_space` 图像宽高语义不一致、`third_party/deco` 非活动原生旁路仍残留 `img1/img2` 旧命名。本次按用户要求不修改 `PLANS.md`；未运行 Python、训练、validator、ROS、仿真、部署 server/client、pip、conda 或任何环境变更命令，仅执行静态文件读取、文本修改、`rg`/`git diff`/`git diff --check` 检查。
 - **修改文件 1**: `README_DECO.md`
