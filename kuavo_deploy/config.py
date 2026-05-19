@@ -230,8 +230,12 @@ class ConfigDeco:
     head_state_source: str = "live_joint_q"
 
     def validate(self, env: ConfigEnv, inference: ConfigInference):
-        if inference.policy_type != "deco":
+        deco_policy = inference.policy_type == "deco"
+        deco_client = inference.policy_type == "client" and env.state_layout.startswith("deco_")
+        if not (deco_policy or deco_client):
             return
+        # client 模式下真实 policy 在 server 端，但调用侧仍负责构造 DECO observation
+        # 并反解 DECO action；因此只要使用 deco_* state_layout，就必须校验 env/deco schema。
         if self.inference_mode not in ["qiangnao_tactile", "qiangnao_no_tactile", "gripper_no_tactile"]:
             raise ValueError(
                 "deco.inference_mode must be 'qiangnao_tactile', 'qiangnao_no_tactile', or 'gripper_no_tactile'."

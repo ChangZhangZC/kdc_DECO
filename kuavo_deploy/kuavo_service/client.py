@@ -23,16 +23,46 @@ import zmq
 
 class TorchSerializer:
     @staticmethod
-    def to_bytes(data: dict) -> bytes:
+    def to_bytes(data: Any) -> bytes:
         buffer = BytesIO()
         torch.save(data, buffer)
         return buffer.getvalue()
 
     @staticmethod
-    def from_bytes(data: bytes) -> dict:
+    def from_bytes(data: bytes) -> Any:
         buffer = BytesIO(data)
-        obj = torch.load(buffer, weights_only=False)
-        return obj
+        try:
+            return torch.load(buffer, weights_only=True)
+        except TypeError as exc:
+            raise RuntimeError(
+                "Inference message loading requires torch.load(weights_only=True). "
+                "请升级到支持 weights_only=True 的 PyTorch 版本，避免对网络输入使用 pickle 反序列化。"
+            ) from exc
+
+
+def _validate_safe_payload(value: Any, path: str = "payload") -> None:
+    """限制 client/server 消息只携带推理需要的安全结构。"""
+
+    if value is None or isinstance(value, (str, int, float, bool, torch.Tensor)):
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_safe_payload(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} keys must be strings, got {type(key).__name__}.")
+            _validate_safe_payload(item, f"{path}.{key}")
+        return
+    raise ValueError(f"{path} contains unsupported type: {type(value).__name__}.")
+
+
+def _host_requires_token(host: str) -> bool:
+    """判断保留的 server helper 是否绑定到非本机地址。"""
+
+    local_hosts = {"localhost", "127.0.0.1", "::1", "[::1]"}
+    return host.strip().lower() not in local_hosts
 
 
 @dataclass
@@ -47,7 +77,12 @@ class BaseInferenceServer:
     Can add custom endpoints by calling `register_endpoint`.
     """
 
-    def __init__(self, host: str = "*", port: int = 5555, api_token: str = None):
+    def __init__(self, host: str = "127.0.0.1", port: int = 5555, api_token: str = None):
+        if _host_requires_token(host) and not api_token:
+            raise ValueError(
+                "Binding inference server to a non-local host requires api_token. "
+                "请仅在可信网络中显式提供 token 后再暴露 ZeroMQ 推理服务。"
+            )
         self.running = True
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REP)
@@ -97,6 +132,8 @@ class BaseInferenceServer:
             try:
                 message = self.socket.recv()
                 request = TorchSerializer.from_bytes(message)
+                if not isinstance(request, dict):
+                    raise ValueError(f"Inference request must be a dict, got {type(request).__name__}.")
 
                 # Validate token before processing request
                 if not self._validate_token(request):
@@ -106,16 +143,22 @@ class BaseInferenceServer:
                     continue
 
                 endpoint = request.get("endpoint", "select_action")
+                if not isinstance(endpoint, str):
+                    raise ValueError("request.endpoint must be a string.")
 
                 if endpoint not in self._endpoints:
                     raise ValueError(f"Unknown endpoint: {endpoint}")
 
                 handler = self._endpoints[endpoint]
+                data = request.get("data", {})
+                if handler.requires_input:
+                    _validate_safe_payload(data, "request.data")
                 result = (
-                    handler.handler(request.get("data", {}))
+                    handler.handler(data)
                     if handler.requires_input
                     else handler.handler()
                 )
+                _validate_safe_payload(result, "response")
                 self.socket.send(TorchSerializer.to_bytes(result))
             except Exception as e:
                 print(f"Error in server: {e}")
@@ -176,8 +219,11 @@ class BaseInferenceClient:
             data: The input data for the endpoint.
             requires_input: Whether the endpoint requires input data.
         """
+        if not isinstance(endpoint, str):
+            raise ValueError("endpoint must be a string.")
         request: dict = {"endpoint": endpoint}
         if requires_input:
+            _validate_safe_payload(data, "request.data")
             request["data"] = data
         if self.api_token:
             request["api_token"] = self.api_token
@@ -188,8 +234,14 @@ class BaseInferenceClient:
         if isinstance(response, dict) and "error" in response:
             # server 端已经捕获到异常时，不把错误字典伪装成 action 继续向下游 postprocessor 传递。
             raise RuntimeError(f"Inference server error: {response['error']}")
+        _validate_safe_payload(response, "response")
 
         return response
+
+    def reset(self):
+        """远端重置真实 policy，清空服务端 action queue。"""
+
+        self.call_endpoint("reset", requires_input=False)
 
     def __del__(self):
         """Cleanup resources on destruction"""
@@ -211,6 +263,9 @@ class ExternalRobotInferenceClient(BaseInferenceClient):
         by the policy, which contains the modalities configuration.
         """
         return self.call_endpoint("select_action", observations)
+
+    def reset(self) -> None:
+        self.call_endpoint("reset", requires_input=False)
         
 
 # policy client
@@ -228,6 +283,11 @@ class PolicyClient:
     def select_action(self, obs_dict):
         self.action = self.policy.select_action(obs_dict)
         return self.action
+
+    def reset(self) -> None:
+        """保持本地 policy API 一致；真实 reset 通过 server endpoint 执行。"""
+
+        self.policy.reset()
 
 
 # # convert hardware observations to policy's observation dict

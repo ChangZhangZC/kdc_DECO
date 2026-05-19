@@ -431,6 +431,8 @@ class MMAttention(nn.Module):
         if self.use_tactile and self.plugin:
             img = img + gate1_feat * self.img_proj_pi(img_attn)
 
+        # 与 DECO 原生源码保持一致：PI_Adapter MLP 在主 MLP residual 写回后再次读取 img/act，
+        # 形成串行 residual 叠加，而不是共享同一个 pre-norm 输入的并行分支。
         img = img + gate2_feat * self.img_mlp((1 + scale2_feat) * self.img_norm2(img) + shift2_feat) # residual after mlp layer
         if self.use_tactile and self.plugin:
             img = img + gate2_feat * self.img_mlp_pi((1 + scale2_feat) * self.img_norm2(img) + shift2_feat)

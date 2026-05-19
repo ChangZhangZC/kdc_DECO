@@ -2,6 +2,35 @@
 
 ## 2026-05-19
 
+### 修复 DECO 部署侧 server/client 漏洞并记录技术决策
+- **任务**: 根据用户确认，修复本轮静态审查中发现的 DECO 部署侧问题；`P3 img_head/depth_head 512 hardcode`、`P5 depth 局部归一化` 不进入本轮修复，`P4 PI_Adapter MLP 串行/并行` 只补充代码备注并保持 DECO 原生逻辑。本次未运行 Python、训练、validator、ROS、仿真、部署 server/client、pip、conda 或任何环境变更命令；仅做静态代码与文档修改。
+- **修改文件 1**: `kuavo_deploy/kuavo_service/server.py`
+  - 将 `TorchSerializer.from_bytes()` 从 `torch.load(..., weights_only=False)` 改为 `torch.load(..., weights_only=True)`，避免对 ZMQ 网络输入使用默认 pickle 反序列化路径。
+  - 新增 `_validate_safe_payload()`，限制 request/response 只包含策略推理需要的安全结构，例如 `dict[str, ...]`、`list/tuple`、基础标量与 `torch.Tensor`。
+  - 新增 `_host_requires_token()`，并将 server 默认绑定地址从 `*` 改为 `127.0.0.1`；若用户显式绑定非本机地址，则必须提供 `--api-token`，避免无鉴权暴露推理服务。
+  - 在 `BaseInferenceServer.run()` 中增加 request 类型检查、endpoint 字符串检查、输入输出 payload schema 检查。
+  - 在 `RobotInferenceServer` 中注册新的 `reset` endpoint。
+  - 在服务端 `Policy` 包装类中新增 `reset()`，调用真实 policy 的 `reset()`，用于清空 DECO/ACT 等策略内部 action queue，避免 client 模式下 episode 间沿用旧动作队列。
+- **修改文件 2**: `kuavo_deploy/kuavo_service/client.py`
+  - 将 `TorchSerializer.from_bytes()` 同样切换为 `weights_only=True`。
+  - 新增 `_validate_safe_payload()`，在 client 发送 request 前和接收 response 后做静态 payload 类型约束。
+  - 将文件内保留的 `BaseInferenceServer` 默认绑定地址从 `*` 改为 `127.0.0.1`，并补齐非本机绑定必须提供 token、request/response schema 检查，降低后续误用 copied helper 时的默认暴露面。
+  - 在 `BaseInferenceClient`、`ExternalRobotInferenceClient` 和 `PolicyClient` 中新增 `reset()`，通过远端 `reset` endpoint 重置 server 侧真实 policy，保持本地 `policy.reset()` API 与本地推理入口一致。
+- **修改文件 3**: `kuavo_deploy/config.py`
+  - 修改 `ConfigDeco.validate()` 的触发条件：除 `policy_type=deco` 外，当 `policy_type=client` 且 `env.state_layout` 为 `deco_28d` 或 `deco_18d` 时，也执行 DECO env/deco schema 校验。
+  - 目的在于保证 server/client 调用侧虽然不直接加载本地 policy，但仍会在构造 DECO observation 和反解 DECO action 前检查 `deco.inference_mode`、`env.eef_type`、`env.state_layout`、`qiangnao_dof_needed` 等约束。
+- **修改文件 4**: `third_party/deco/models/deco/deco.py`
+  - 在 `MMAttention.forward()` 的 MLP adapter 位置补充中文注释，明确当前 `PI_Adapter` MLP 路径保持 DECO 原生源码语义：主 MLP residual 先写回 `img` / `act`，随后 `img_mlp_pi` / `act_mlp_pi` 再读取更新后的特征继续叠加，因此是串行 residual adapter，不是并行分支。
+  - 本次不修改 P4 的模型逻辑，保持与原生 DECO 对齐。
+- **修改文件 5**: `Content/DECO_Technical_Decisions.md`
+  - 在 depth 存储策略中补充说明：当前 per-frame depth normalize 不是 DECO 集成时新引入的差异，而是继续沿用 Kuavo ACT/DP 转换脚本的数据链路；当前处理方式是保留跨 Kuavo ACT-DP 的既有 depth 语义，优先保证训练/部署输入一致。
+  - 记录该 depth 策略的隐患：per-frame normalize 不保留严格绝对毫米尺度；该问题暂不作为本轮部署漏洞处理，只作为未来 metric depth 存储或 ablation 的技术钩子保留。
+  - 在 PI_Adapter 技术决策中补充串行/并行说明：当前保持 DECO 原生串行 residual adapter 语义，不改成并行分支；仅保留注释和技术记录，作为未来研究并行 adapter 或标准 PEFT LoRA 的钩子。
+- **未修改文件**:
+  - 按用户要求，本次没有修改 `PLANS.md`。
+  - 本次没有修改 P3 的 `img_head/depth_head` 512 通道假设，因为当前仅支持并只需兼顾 ResNet18/34，两者输出通道均为 512。
+  - 本次没有修改 P5 的 depth 归一化逻辑，因为它与 Kuavo ACT/DP 当前训练和部署 depth 链路一致，且变更会要求重新转换数据和重新训练。
+
 ### 重构 README_DECO 使用指导文档
 - **任务**: 根据用户要求，直接重构 `README_DECO.md`，使其从阶段性集成记录调整为面向用户的 DECO 使用 instruction。文档需要覆盖安装与配置、数据处理、两阶段训练、何时关闭 LoRA、如果不启用二阶段应调整哪些 YAML 配置，以及部署阶段的配置与运行入口。本次按用户要求不执行静态代码检查，也未运行 Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境变更命令。
 - **修改文件 1**: `README_DECO.md`

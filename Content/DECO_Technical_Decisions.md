@@ -276,6 +276,9 @@ Contra：
 最终决策：
 
 - 阶段三第一版沿用现有 3-channel uint8 兼容存储策略。
+- 该策略不是 DECO 集成时新引入的 depth 语义，而是继续沿用 Kuavo ACT/DP 转换脚本中的数据链路：先按 `depth_range` clip，再按单帧自身 min/max 做 per-frame normalize，最后以 3-channel image/video 形式写入 LeRobot。
+- 当前处理方式是保留跨 Kuavo ACT-DP 的既有 depth 数据链路，优先保证 DECO 与 Kuavo 现有采集、清洗、部署输入语义一致。
+- 已知隐患是 per-frame normalize 不保留严格绝对毫米尺度；该问题暂不作为本轮部署漏洞处理，只作为后续 metric depth 存储或 ablation 的技术钩子保留。
 - 在 `PLANS.md` 与 `configs/policy/deco_config.yaml` 中显式声明该策略不是严格 metric depth。
 - 第二版或后续 ablation 再评估单通道 `uint16` / metric depth 存储。
 
@@ -639,6 +642,8 @@ rosbag normal_force
   - `act_proj_pi`
   - `act_mlp_pi`
 - forward 中 adapter 输出以 residual delta 形式加到原始 QKV、attention projection 和 MLP 输出上。
+- MLP 路径保持 DECO 原生源码语义：主 MLP residual 先写回 `img` / `act`，随后 `img_mlp_pi` / `act_mlp_pi` 再读取更新后的特征继续叠加，因此这里是串行 residual adapter，而不是与主 MLP 共用同一个 pre-norm 输入的并行 adapter。
+- 当前处理方式是与 DECO 完全对齐，不把该结构改成并行分支；仅在代码中保留注释，作为未来如果要研究并行 adapter 或标准 PEFT LoRA 时的改造钩子。
 
 冻结逻辑：
 
