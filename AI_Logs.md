@@ -2,6 +2,37 @@
 
 ## 2026-05-19
 
+### 重构 README_DECO 使用指导文档
+- **任务**: 根据用户要求，直接重构 `README_DECO.md`，使其从阶段性集成记录调整为面向用户的 DECO 使用 instruction。文档需要覆盖安装与配置、数据处理、两阶段训练、何时关闭 LoRA、如果不启用二阶段应调整哪些 YAML 配置，以及部署阶段的配置与运行入口。本次按用户要求不执行静态代码检查，也未运行 Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境变更命令。
+- **修改文件 1**: `README_DECO.md`
+  - 重写文档开头，说明当前 DECO 是后续合并到 Kuavo 跨端工具链中的策略链路，使用时需要同时遵守 Kuavo/LeRobot 的数据、训练、部署资产组织方式与 DECO 自身的 RGB-D、Flow Matching、tactile adapter 约束。
+  - 新增“安装与配置”章节，明确只面向 Linux 主线环境，不考虑 Windows；说明 DECO pip 依赖统一通过 `pip install -r requirements_DECO.txt` 安装，且 `requirements_total.txt` 中的 ROS 分发包不应作为 DECO pip requirements 来源。
+  - 在安装章节补充 ROS Noetic 与 Kuavo 消息环境边界：`rospy`、`rosbag`、`cv_bridge`、`sensor_msgs`、`std_msgs`、`geometry_msgs`、`std_srvs`、`kuavo_msgs` 等需要由系统 ROS 或 Kuavo ROS workspace 提供，并在运行前 source 对应 `setup.bash`。
+  - 新增“数据处理”章节，明确从仓库根目录运行 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，脚本默认读取 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，并说明长期使用建议改 YAML、临时测试可使用 Hydra override。
+  - 在数据处理章节列明需要人工调整的字段：`rosbag.rosbag_dir`、`rosbag.num_used`、`rosbag.lerobot_dir`、`dataset.task_description`、`dataset.eef_type`、`deco.end_effector_profile`、`deco.write_tactile`、`deco.depth_topic/depth_encoding`、`deco.overwrite`。
+  - 说明 `dataset.eef_type` 可选 `qiangnao`、`leju_claw`、`rq2f85`，以及 `deco.end_effector_profile=auto` 到 `qiangnao_tactile` / `gripper_no_tactile` 的映射规则；同时写清 28D 灵巧手、30D tactile、18D 二夹爪无触觉的 state/action 排列。
+  - 补充 depth 配置说明，解释 `compressed_image`、`compressedDepth_png`、`auto`、`raw_16uc1` 的含义，并记录第一版 depth 以 3-channel image 兼容存储、wrapper 再取单通道送入 1-channel depth backbone 的边界。
+  - 补充不建议随意修改的固定字段说明，包括 `only_arm`、`which_arm`、`use_depth`、`train_hz`、`dex_dof_needed`、`delta_action`、`relative_start`，避免用户把这些信息字段误当成路线切换开关。
+  - 新增训练章节，明确训练入口为 `kuavo_train/train_policy.py`，训练配置为 `configs/policy/deco_config.yaml`，并给出 `policy_name=deco` 的启动示例。
+  - 写清第一阶段 `visual_main` 的配置：`training_stage=visual_main`、`use_tactile=false`、`use_tactile_lora=false`；分别给出 28D 强脑灵巧手和 18D 二夹爪无触觉的命令行 override 示例。
+  - 写清第二阶段 `tactile_adapter` 只适用于 `qiangnao_tactile`，需要 `use_tactile=true`、`use_tactile_lora=true`、`base_policy_path` 指向第一阶段选定 epoch、`tactile_left_max/right_max` 填写正数，并说明 `use_tactile_lora` 对应 DECO 自实现 `plugin` / `PI_Adapter`，不是外部 PEFT LoRA。
+  - 新增“什么时候关闭 LoRA / tactile adapter”小节，明确二夹爪 profile、无触觉训练/部署、第一阶段主干训练、触觉量纲未确认、无触觉 ablation、加载第一阶段 checkpoint 等情况下应保持 `use_tactile_lora=false`。
+  - 补充如果不使用二阶段触觉训练，应在 `configs/policy/deco_config.yaml` 或命令行 override 中保持 `training_stage=visual_main`、`use_tactile=false`、`use_tactile_lora=false`、外部 adapter 路径为空，并明确二阶段不是 `train_policy.py` 自动切换。
+  - 新增部署章节，明确 `configs/deploy/kuavo_deco_env.yaml` 是 DECO 唯一部署入口，列出需要人工调整的 `env.eef_type`、`env.state_layout`、`deco.inference_mode`、`deco.head_state_source`、`inference.policy_type`、`task/method/timestamp/epoch/device`、`obs_key_map.depth_h` 等字段。
+  - 写清三种部署模式：`qiangnao_no_tactile` 加载第一阶段 28D 无触觉 checkpoint，`qiangnao_tactile` 加载第二阶段 tactile adapter checkpoint，`gripper_no_tactile` 加载 18D 二夹爪无触觉 checkpoint。
+  - 补充本地真机入口 `kuavo_deploy/src/scripts/script.py --task run --config configs/deploy/kuavo_deco_env.yaml`、仿真入口 `script_auto_test.py --task auto_test`、server 入口 `kuavo_deploy/kuavo_service/server.py --config configs/deploy/kuavo_deco_env.yaml` 的使用说明。
+  - 修正旧 README 中关于 server/client 的过期描述，明确当前 server/client 采用 Kuavo ACT 原版语义：eval/client 侧执行 run-root preprocessor 和 postprocessor，server 只负责 processed observation 到 raw model action 的 policy 推理。
+  - 新增推荐工作流，分别覆盖强脑灵巧手无触觉、强脑灵巧手带 tactile adapter、二夹爪无触觉三条路线。
+  - 新增常见误配和验证边界，提醒不要混用 28D/18D、不要在二夹爪下开启 tactile/LoRA、不要只拷贝 `epochbest/` 部署、不要把 `train_hz=30` 改成部署频率、不要让 client/server 两侧重复执行 pre/postprocessor。
+- **修改文件 2**: `PLANS.md`
+  - 将阶段一中“将视觉策略同步写入 `README_DECO.md` 的数据转换与训练说明”标记为完成。
+  - 在阶段二新增 `2.5 README_DECO 使用指导重构`，记录安装、数据清洗、两阶段训练、LoRA 关闭条件和部署说明已经写入 README。
+  - 在 Done When 中新增 `README_DECO.md` 已重构为完整 DECO 使用指导的完成项。
+- **边界说明**:
+  - 本次没有修改 `README.md`、`README_ZH.md`、`train_act_guide.md` 或通用 ACT/DP 文档。
+  - 本次没有修改任何 Python/YAML 运行逻辑，也没有修改 `third_party/lerobot/`。
+  - 按用户明确要求，本次不执行静态代码检查；仅进行必要的文件阅读与文本编辑。
+
 ### 收尾复查 DECO 相关 YAML 配置
 - **任务**: 根据用户确认，对 DECO 新增/改动过的 YAML 配置做整体收尾复查，目标是删除无效或容易误导的参数，同时保留能向用户说明 DECO 固定约束和上游语义的信息字段，并为多选项配置补充可填写选项与每个选项的含义。本次只做静态文本修改和文本级 diff/grep 复查，未运行 Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境安装命令。
 - **修改文件 1**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`

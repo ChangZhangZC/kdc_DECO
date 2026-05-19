@@ -86,7 +86,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] Inspector 显示 `/cam_h/color/image_raw/compressed` 为 848×480 的完整头部 RGB 画面；左右半图只是裁切同一视野，不是真实双目。
   - [x] 放弃“单目复制成双路输入”和“左右切分伪双目”作为主路线。
   - [x] 新主路线冻结为：保存 Kuavo 头部 RGB + 对齐 depth，训练时通过 Kuavo/ACT 风格 RGB-D 视觉前端替换 DECO 原生双路视觉编码入口。
-  - [ ] 将该视觉策略同步写入 `README_DECO.md` 的数据转换与训练说明。
+  - [x] 将该视觉策略同步写入 `README_DECO.md` 的数据转换与训练说明。
 - [x] **1.3 完整 DECO RGB-D 数据转换流程实现**
   - [x] 新建 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，默认 `train_hz: 30`、`use_depth: true`、`main_timeline_fps` 按真实主视觉流填写。
   - [x] 默认以当前实际数据配置为准：RGB 使用 `/cam_h/color/image_raw/compressed`；depth 默认使用 `/cam_h/depth/image_raw/compressed` + `compressed_image`，并兼容 `/cam_h/depth/image_raw/compressedDepth` + `compressedDepth_png`。
@@ -163,6 +163,12 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 复查 `configs/deploy/kuavo_deco_env.yaml`，删除 DECO 部署路径不使用的 eef/base limits 与原 ACT/DP `arm_state_keys` 字段，并补充 eef/profile/state layout/inference mode/head state source 的可选项说明。
   - [x] 复查 `third_party/deco/config/deco.yaml`，补充原生 DECO 参考配置中 action_dim、chunk_size、tactile/plugin、backbone、inf_step 等字段语义。
   - [x] 对所有保留的说明型字段标注“固定约束/信息字段”等边界，避免用户误以为它们是可切换到另一条链路的开关。
+- [x] **2.5 README_DECO 使用指导重构**
+  - [x] 将 `README_DECO.md` 从阶段性记录重构为面向用户的 DECO instruction，开头说明 DECO 是后续合并到 Kuavo 跨端工具链中的策略链路。
+  - [x] 补充 Linux 主线安装说明，明确 `pip install -r requirements_DECO.txt` 是唯一 DECO pip requirements 入口，ROS Noetic 与 Kuavo 消息环境仍由系统/ROS workspace 提供。
+  - [x] 补充数据清洗说明，明确从仓库根目录运行 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，配置文件为 `configs/data/KuavoRosbag2Lerobot_deco.yaml`，并列明 `eef_type`、profile、depth encoding、tactile、overwrite 等需要人工调整的参数。
+  - [x] 补充 DECO 两阶段训练说明，明确 `visual_main` 与 `tactile_adapter` 是两次独立启动，强脑灵巧手可选第二阶段 tactile PI_Adapter，二夹爪 profile 必须关闭 tactile/LoRA。
+  - [x] 补充部署说明，明确 `configs/deploy/kuavo_deco_env.yaml` 是 DECO 唯一部署入口，并写清 `qiangnao_no_tactile`、`qiangnao_tactile`、`gripper_no_tactile` 三种部署模式、run-root 权重资产和 server/client pre/postprocessor 归属。
 
 ---
 
@@ -185,7 +191,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 清理 `third_party/deco/models/deco/deco.py`：移除旧双 RGB 兼容分支和相关模型主体命名，forward 接口改为 `forward(rgb, depth, ...)`，使模型主体仅保留 Kuavo RGB-D 路线。
   - [x] 保留空间 token 形式，而不是过早压成单个全局向量，以匹配 DECO 原本 image tokens 与 action tokens 联合 attention 的结构。
   - [x] 第一版暂不采用单路 `visual_tokens: [B, L, D]` 方案；该方案作为后续 ablation 或二期重构候选。
-- [ ] **3.2 触觉编码器手术 (Tactile Encoder Surgery)**
+- [x] **3.2 触觉编码器手术 (Tactile Encoder Surgery)**
   - [x] 删除或绕过原版 `init_tac_regions` 的 1062 维 Inspire Hand 区域均值逻辑。
   - [x] 将触觉输入改为 Kuavo 双手 30 维：左手 15 + 右手 15。
   - [x] 洗数据脚本中 `normal_force / 100` 只作为单位换算，表示把 Kuavo 原始触觉量转换为牛顿；模型入口仍需执行 DECO-style 触觉归一化。
@@ -194,8 +200,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] `tactile_left_max` 与 `tactile_right_max` 允许先填写 `null` 作为待统计占位；但当 `use_tactile: true` 进入正式触觉训练时必须填写正数，可来自训练集统计最大值、分位数上限或人工审定安全上限。
   - [x] 清理 `third_party/deco/config/deco.yaml`：移除旧 DECO `tac_left_max/tac_right_max` 别名，只保留 Kuavo 标准字段 `tactile_left_max/tactile_right_max`。
   - [x] 清理 `third_party/deco/config/deco.yaml`：移除重复的 `data.chunk_size`，以 `model.chunk_size` 作为 DECO action chunk 长度的唯一权威配置。
-  - [ ] 若 `use_tactile: true` 且这两个 tactile max 仍为 `null` 或非正数，DECO wrapper/config 应显式报错，避免静默用错误尺度训练触觉分支。
-  - [ ] 避免 `observation.tactile` 被 LeRobot 识别为普通 STATE 后走 `MEAN_STD`；若当前 feature type 无法区分 tactile，则通过 `lerobot_patches/custom_patches.py` 或 wrapper/preprocessor 适配把 tactile 从 STATE 归一化路径中隔离出来。
+  - [x] 若 `use_tactile: true` 且这两个 tactile max 仍为 `null` 或非正数，DECO wrapper/config 应显式报错，避免静默用错误尺度训练触觉分支。
+  - [x] 避免 `observation.tactile` 被 LeRobot 识别为普通 STATE 后走 `MEAN_STD`；若当前 feature type 无法区分 tactile，则通过 `lerobot_patches/custom_patches.py` 或 wrapper/preprocessor 适配把 tactile 从 STATE 归一化路径中隔离出来。
   - [x] 新增 `gripper_no_tactile` 配置保护：二夹爪 profile 下必须保持 `use_tactile: false`、`use_tactile_lora: false`，并禁止 `training_stage: tactile_adapter`。
   - [x] 将 `self.tactile_encoder` 输入维度从 `1062*2` 改为 `15*2`。
   - [x] 将 tactile gating/fusion 维度从 `68` 调整为 `64`：15 + 15 + 34。
@@ -323,7 +329,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 
 **核心目标**：验证 `.safetensors` 模型资产包能在 Kuavo 部署体系中以 10Hz 控制频率稳定输出 profile 对应动作。阶段六第一轮优先打通本地单进程推理闭环（`real_single_test.py` / `sim_auto_test.py`），server/client 推理放到第二轮；部署范围同时覆盖三种 DECO 推理模式：`qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile`。
 
-- [ ] **6.1 适配 `kuavo_deploy` 节点**
+- [x] **6.1 适配 `kuavo_deploy` 节点**
   - [x] 静态接入 `deco` / `DECO` policy 类型，确保部署脚本会调用 `CustomDECOPolicyWrapper.from_pretrained()` 读取 `.safetensors` 和 `config.json`。
   - [x] 在部署入口导入 `DECOProcessor.py`，确保加载保存的 `policy_preprocessor.json` 时能找到 `deco_rgbd_letterbox_processor`。
   - [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，将 DECO 部署配置从通用 `kuavo_env.yaml` 中拆出，并把 depth topic 固定为当前数据规划的 `/cam_h/depth/image_raw/compressed`。
@@ -403,4 +409,5 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 阶段三/四完成实际 DECO import 范围确认后，已复查 `requirements_DECO.txt`：保留 Kuavo/LeRobot 当前版本作为主线，不采用 DECO 原生会冲突的 `torch/torchvision/diffusers/huggingface-hub` pin，也不照搬 `requirements_total.txt` 中不可可靠 pip 安装的 ROS 包。
 - [x] `third_party/deco` 中上游 ACT/DP baseline 配置与模型文件已删除；原 Kuavo ACT/DP 工具链、`third_party/deco/models/deco/*` 与 Kuavo-DECO wrapper 路线保持不变。
 - [x] DECO 相关 YAML 已完成收尾复查：无效字段已清理，固定约束/信息字段已转为明确注释，多选项字段已列明可填值与语义。
+- [x] `README_DECO.md` 已重构为完整 DECO 使用指导，覆盖 Linux 安装、数据清洗、两阶段训练、关闭 LoRA 的条件、部署配置和常见误配。
 - [x] `AI_Logs.md` 用中文记录每次文档与代码修改。
