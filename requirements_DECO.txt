@@ -1,38 +1,77 @@
-# DECO Model Dependencies
+# Kuavo-DECO Linux pip requirements
 #
-# 说明：
-# - 本文件用于记录 Kuavo-DECO 集成所需的依赖来源和兼容边界。
-# - 当前阶段只做静态整理，不在本机执行 pip/conda 安装。
-# - 不建议直接用本文件覆盖现有 Kuavo/LeRobot 环境；尤其 torch、torchvision、
-#   diffusers、huggingface-hub 等核心库应以后续实际训练环境为准。
+# 使用方式：
+#   pip install -r requirements_DECO.txt
 #
-# DECO 原始依赖文件：
-# - third_party/deco/requirements.txt
+# 目标环境：
+# - Linux + Python 3.10。
+# - 本文件只包含 pip 可安装的 Python 依赖与本仓库 editable 包。
+# - 不考虑 Windows，不从 `requirements_total.txt` 复制完整环境 freeze。
 #
-# DECO 上游原始 pin，仅作版本参考：
-# - numpy==2.2.6
-# - pandas==2.3.3
-# - scipy==1.15.3
-# - torch==2.6.0
-# - torchvision==0.21.0
-# - transformers==4.57.3
-# - diffusers==0.36.0
-# - Pillow==12.0.0
-# - PyYAML==6.0.3
-# - einops==0.8.1
-# - tqdm==4.67.1
-# - huggingface-hub==0.36.0
+# 重要边界：
+# - ROS Noetic 及其消息包不是 pip requirements 的职责范围。
+# - 运行 rosbag 数据转换、仿真或实机部署前，系统仍需要通过 apt/ROS workspace
+#   提供 rospy、rosbag、cv_bridge、sensor_msgs、std_msgs、geometry_msgs、std_srvs、
+#   kuavo_msgs 等 ROS 包，并 source 对应 setup.bash。
+# - 若 `kuavo-humanoid-sdk` 无法从当前 pip 源安装，请按 Kuavo 官方 SDK/ROS
+#   workspace 安装方式提供该包；它被部署侧 `kuavo_deploy` 直接导入。
 #
-# 当前 Kuavo/LeRobot 环境静态对照：
-# - requirements_total.txt 已包含 numpy、pandas、scipy、torch、torchvision、
-#   diffusers、Pillow/pillow、PyYAML、einops、tqdm、huggingface-hub。
-# - third_party/lerobot/requirements-ubuntu.txt 已包含 transformers。
-# - AGX Orin 环境中的 numpy/torch/torchvision 版本可能与桌面环境不同，
-#   因此这些核心数值/深度学习库不要在 DECO 集成阶段单独强制改版。
-#
-# 后续阶段三/四接入 wrapper 前需要人工确认：
-# - DECO 主干实际使用 torch、numpy、einops。
-# - DECO 原始 dataset/train/inference 路径还会使用 pandas、Pillow、torchvision、
-#   scipy、matplotlib、tqdm、PyYAML。
-# - DECO 原始 DP 分支使用 diffusers；Kuavo-DECO 主路线若只接入 models/deco，
-#   可暂不新增 DP 分支专属依赖。
+# 版本选择原则：
+# - 以当前 Kuavo/LeRobot Linux 工具链为主，避免 DECO 原生 pin 覆盖核心库。
+# - 不采用 DECO 原生 diffusers==0.36.0 / huggingface-hub==0.36.0，
+#   因为当前 LeRobot 0.4.2 约束为 <0.36.0。
+# - 不采用 DECO 原生 torch==2.6.0 / torchvision==0.21.0；
+#   当前 Linux 主线使用 torch==2.7.1 / torchvision==0.22.1。
+
+# Local editable packages
+-e third_party/lerobot
+-e .
+
+# Core deep learning stack
+torch==2.7.1
+torchvision==0.22.1
+torchcodec==0.5
+accelerate==1.11.0
+diffusers==0.34.0
+transformers==4.57.1
+tokenizers==0.22.1
+huggingface-hub==0.34.3
+safetensors==0.5.3
+datasets==4.1.1
+
+# Numeric, table, and dataset IO stack
+numpy==2.2.6
+pandas==2.3.1
+pyarrow==21.0.0
+scipy==1.15.3
+pillow==11.3.0
+opencv-python-headless==4.12.0.88
+av==15.0.0
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+
+# Model components and visual augmentation
+einops==0.8.1
+timm==1.0.19
+kornia==0.8.1
+
+# Config, training, and logging
+hydra-core==1.3.2
+omegaconf==2.3.0
+draccus==0.10.0
+PyYAML==6.0.2
+pyyaml-include==1.4.1
+rich==14.1.0
+tqdm==4.67.1
+tensorboard==2.20.0
+wandb==0.21.0
+matplotlib==3.10.5
+
+# Kuavo data/deploy Python utilities
+Flask==3.1.1
+gymnasium==1.2.1
+pyzmq==27.1.0
+fastapi==0.119.0
+uvicorn==0.37.0
+pycryptodomex==3.23.0
+kuavo-humanoid-sdk==1.2.2

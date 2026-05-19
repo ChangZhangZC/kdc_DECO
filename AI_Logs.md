@@ -2,6 +2,58 @@
 
 ## 2026-05-19
 
+### 清理 third_party/deco 中 ACT/DP baseline 文件
+- **任务**: 根据用户确认，从 copied DECO 副本 `third_party/deco` 中删除上游 ACT 与 Diffusion Policy baseline 链路文件，使该第三方副本后续只保留当前 DECO 主链路与 Kuavo-DECO wrapper 所需代码。本次用户明确授权在当前任务中执行 `rm`；按用户后续要求，删除后不做静态引用复查，只更新 `PLANS.md` 与 `AI_Logs.md`。本次未运行 Python、训练、validator、ROS、仿真、部署、pip、conda 或任何环境安装命令。
+- **删除文件 1**: `third_party/deco/config/act.yaml`
+  - 删除上游 ACT baseline 的配置入口，避免 copied DECO 副本继续暴露 `model_name: act` 路径。
+- **删除文件 2**: `third_party/deco/config/dp.yaml`
+  - 删除上游 Diffusion Policy baseline 的配置入口，避免 copied DECO 副本继续暴露 `model_name: dp` 路径。
+- **删除文件 3**: `third_party/deco/models/act/ACT.py`
+  - 删除 copied DECO 内部的 ACT 模型主体实现；该文件不是 Kuavo 原生 ACT wrapper 的来源。
+- **删除文件 4**: `third_party/deco/models/act/__init__.py`
+  - 删除 copied DECO 内部 ACT baseline 的包导出入口。
+- **删除文件 5**: `third_party/deco/models/act/train_one_epoch.py`
+  - 删除 copied DECO 内部 ACT baseline 的训练/验证 epoch 逻辑。
+- **删除文件 6**: `third_party/deco/models/dp/diffusion_policy.py`
+  - 删除 copied DECO 内部 Diffusion Policy baseline 的模型主体实现；该文件不是 Kuavo 原生 diffusion wrapper 的来源。
+- **删除文件 7**: `third_party/deco/models/dp/__init__.py`
+  - 删除 copied DECO 内部 Diffusion Policy baseline 的包导出入口。
+- **删除文件 8**: `third_party/deco/models/dp/train_one_epoch.py`
+  - 删除 copied DECO 内部 Diffusion Policy baseline 的训练/验证 epoch 逻辑。
+- **修改文件**: `PLANS.md`
+  - 在阶段二新增 `2.3 third_party/deco baseline 清理`，记录已删除 ACT/DP baseline 配置与模型文件。
+  - 在 Done When 中补充 `third_party/deco` baseline 清理完成项，说明原 Kuavo ACT/DP 工具链、`third_party/deco/models/deco/*` 与 Kuavo-DECO wrapper 路线保持不变。
+- **边界说明**:
+  - 本次没有删除 `DECO/` 原始副本中的 ACT/DP baseline 文件。
+  - 本次没有修改 `kuavo_train/wrapper/policy/act`、`kuavo_train/wrapper/policy/diffusion`、`configs/policy/` 中原 Kuavo ACT/DP 配置或 `third_party/lerobot/`。
+  - 本次保留 `third_party/deco/config/deco.yaml`、`third_party/deco/models/deco/*`、`third_party/deco/train.py`、`third_party/deco/inference.py` 与 `third_party/deco/dataset.py`。
+
+### 收尾整理 DECO Linux pip-only requirements
+- **任务**: 根据用户确认，将 DECO 依赖文件从说明型记录调整为 Linux 主线可直接 `pip install -r requirements_DECO.txt` 的 pip-only requirements，并修正直接照搬 `requirements_total.txt` 会混入不可可靠 pip 安装 ROS 包的问题。本次只做静态文本修改，未运行 Python、pip、conda、训练、validator、ROS、仿真、server、client、部署服务或任何环境变更命令。
+- **修改文件 1**: `requirements_DECO.txt`
+  - 将原先仅记录 DECO 上游 pin 的说明型内容替换为 pip-only 依赖列表，覆盖数据转换、LeRobot 数据集读取、训练、validator、本地部署与 server/client 推理服务中可由 pip 安装的 Python 包。
+  - 在文件头部新增中文说明，明确使用方式为 `pip install -r requirements_DECO.txt`，目标环境为 Linux + Python 3.10，不考虑 Windows 兼容分支。
+  - 明确 ROS Noetic 及其消息包不是 pip requirements 的职责范围；运行 rosbag 数据转换、仿真或实机部署前，系统仍需通过 apt/ROS workspace 提供 `rospy`、`rosbag`、`cv_bridge`、`sensor_msgs`、`std_msgs`、`geometry_msgs`、`std_srvs`、`kuavo_msgs` 等，并 source 对应环境。
+  - 从可安装条目中移除 `requirements_total.txt` 里的 ROS/系统分发包，例如 `actionlib`、`cv-bridge`、`rosbag`、`rospy`、`sensor-msgs`、`tf`、`tf2-ros`、`rviz`、`rqt-*`、`gazebo_ros` 等，避免 `pip install -r` 失败或安装到非 ROS 等价包。
+  - 保留当前 Kuavo/LeRobot 主线 `torch==2.7.1`、`torchvision==0.22.1`、`diffusers==0.34.0`、`huggingface-hub==0.34.3`，避免被 DECO 原生 `torch==2.6.0`、`torchvision==0.21.0`、`diffusers==0.36.0`、`huggingface-hub==0.36.0` 覆盖。
+  - 保留 DECO/LeRobot 依赖对照中需要的 `transformers==4.57.1`、`tokenizers==0.22.1`、`safetensors`、`pyarrow`、`opencv-python-headless`、`pyzmq`、`timm`、`kornia`、`tensorboard`、`wandb`、`kuavo-humanoid-sdk` 等 pip 可安装依赖。
+- **修改文件 2**: `PLANS.md`
+  - 将阶段二 `依赖最小化复查点` 保持为完成，并把说明修正为 Linux pip-only requirements，不再描述为基于 `requirements_total.txt` 的完整环境冻结。
+  - 将 Done When 中 `requirements_DECO.txt` 相关检查项更新为已完成，并记录其不采用 DECO 原生冲突 pin，也不混入不可可靠 pip 安装的 ROS 分发包。
+- **边界说明**:
+  - 按用户要求，本次没有修改 `README_DECO.md`。
+  - 本次没有新增第二份 requirements，也没有删除或重命名现有文件；当前唯一 DECO requirements 入口仍为 `requirements_DECO.txt`。
+
+### 记录 Full Server 作为阶段六部署备选方案
+- **任务**: 根据用户要求，将此前讨论过但不作为当前主路径的 Full Server 方案写入技术决策文档。本次只做静态文本修改，未运行 Python、训练、validator、ROS、仿真、server、client、部署服务、安装或环境变更命令。
+- **修改文件**: `Content/DECO_Technical_Decisions.md`
+  - 在阶段六最终部署规则中，保留当前主路径为 Kuavo ACT 原版 server/client 语义：eval/client 调用侧执行 run-root preprocessor 与 postprocessor，server 只负责已预处理 observation 到未 postprocess action 的 policy 推理。
+  - 新增 Full Server 备选方案说明：client 发送 raw observation，server 内部执行 `raw obs -> run-root preprocessor -> policy.select_action -> run-root postprocessor`，并返回 executable action。
+  - 记录 Full Server 的适用场景：未来需要极简 client、多 client 共用集中推理服务，或希望部署资产、processor 版本与策略权重完全由 server 侧统一管理。
+  - 记录 Full Server 的优点：client 依赖更少，processor 与 policy 权重版本一致性更易集中管理，server 可统一鉴权、监控、限流和错误记录。
+  - 记录 Full Server 的风险：server 职责会明显重于 ACT 原版 server，必须接管 raw observation schema、processor、postprocessor 和 action 输出语义；若 client/eval 侧仍保留 pre/postprocessor，会产生双重归一化或双重反归一化。
+  - 明确若未来启用 Full Server，必须同步修改 eval/client 分支，禁止调用侧再执行 run-root preprocessor/postprocessor，并单独冻结 raw obs schema、server 返回 action schema、错误处理与回退路径。
+
 ### 实施阶段六 DECO Server/Client 的 ACT 原版语义接入
 - **任务**: 根据用户确认，将阶段六 server/client 方案从“可能迁移 pre/postprocessor 到 server”修正为 Kuavo ACT 原版语义：eval/client 调用侧继续负责 run-root preprocessor 与 postprocessor，server 只负责加载 policy，并对已经预处理的 observation 执行 `policy.select_action()`，返回尚未 postprocess 的模型 action。本次只做静态文档与代码修改，未运行 Python、训练、validator、ROS、仿真、server、client、部署服务、安装或环境变更命令。
 - **修改文件 1**: `PLANS.md`

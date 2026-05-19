@@ -151,7 +151,12 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] **2.2 Python 依赖与包路径约定**
   - [x] 采用动态注入法作为后续 wrapper 约定：在 `kuavo_train/wrapper/policy/deco/` 中将 `third_party/deco` 加入 `sys.path`，零侵入兼容 DECO 内部 `from models.xxx` 导入路径。
   - [x] 分析原生 `DECO/requirements.txt`，在根目录 `requirements_DECO.txt` 中记录 DECO 原始依赖与 Kuavo/LeRobot 兼容说明；当前阶段不安装依赖、不执行环境变更。
-  - [ ] **依赖最小化复查点**：不要把 DECO 原始依赖与 Kuavo/LeRobot 全量依赖合并成一个可直接 `pip install -t` 的大一统文件；等阶段三/四明确实际 wrapper 与模型手术的 import 范围后，再生成最小增量依赖清单，避免 `torch/torchvision/diffusers/huggingface-hub/numpy` 等核心库版本互相覆盖。
+  - [x] **依赖最小化复查点**：阶段三/四明确实际 wrapper、模型手术、数据转换、validator 与部署入口后，已将 `requirements_DECO.txt` 从说明型记录改为 Linux pip-only requirements；文件只保留 pip 可安装依赖与本仓库 editable 包，ROS Noetic、rosbag、cv_bridge、sensor_msgs、std_msgs、kuavo_msgs 等由系统 ROS 环境提供，避免把不可可靠 pip 安装的 ROS 分发包混入 requirements。
+- [x] **2.3 third_party/deco baseline 清理**
+  - [x] 删除 `third_party/deco/config/act.yaml` 与 `third_party/deco/config/dp.yaml`，避免 copied DECO 副本继续暴露上游 ACT/DP baseline 配置入口。
+  - [x] 删除 `third_party/deco/models/act/` 与 `third_party/deco/models/dp/` 下的 ACT/DP baseline Python 文件，只保留 `third_party/deco/models/deco/` 作为当前 DECO 主体代码路径。
+  - [x] 保留原 Kuavo 工具链中的 ACT/DP wrapper、配置与 LeRobot 集成内容不变；本次清理范围仅限 `third_party/deco` 内部 copied baseline 文件。
+  - [x] 保留 `third_party/deco/train.py`、`third_party/deco/inference.py`、`third_party/deco/dataset.py`、`third_party/deco/config/deco.yaml` 与 `third_party/deco/models/deco/*`，避免影响原生 DECO 参考链路和 Kuavo-DECO wrapper 链路。
 
 ---
 
@@ -388,6 +393,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [ ] `kuavo_data/validate_deco_lerobot_dataset.py` 完成静态审查，并能在允许执行的环境中验证单 rosbag 转换结果是否符合 RGB-D、30Hz、profile 对应 action/state 维度、可选 30 维 tactile 方案。
 - [x] DECO wrapper 完成静态审查：RGB-D visual frontend 接入 DECO action-token Flow Matching 主干，loss 为 `F.mse_loss(out, noise - action)`。
 - [ ] 先完成关闭触觉的仿真验证，再进入触觉 LoRA 验证；通过 dry-run 与低速限幅检查后才进入实机完整闭环。
-- [x] `requirements_DECO.txt` 记录新增依赖。
-- [ ] 阶段三/四完成实际 DECO import 范围确认后，复查 `requirements_DECO.txt` 并只保留必要的最小增量依赖，避免用 `pip install -t` 引入与 Kuavo/LeRobot 冲突的全量依赖树。
+- [x] `requirements_DECO.txt` 已改为 Linux pip-only requirements，覆盖 DECO 数据转换、训练、validator、本地部署与 server/client 推理服务中 pip 可安装的依赖；ROS/Kuavo 消息环境作为系统前置条件，不再写成 pip 安装条目。
+- [x] 阶段三/四完成实际 DECO import 范围确认后，已复查 `requirements_DECO.txt`：保留 Kuavo/LeRobot 当前版本作为主线，不采用 DECO 原生会冲突的 `torch/torchvision/diffusers/huggingface-hub` pin，也不照搬 `requirements_total.txt` 中不可可靠 pip 安装的 ROS 包。
+- [x] `third_party/deco` 中上游 ACT/DP baseline 配置与模型文件已删除；原 Kuavo ACT/DP 工具链、`third_party/deco/models/deco/*` 与 Kuavo-DECO wrapper 路线保持不变。
 - [x] `AI_Logs.md` 用中文记录每次文档与代码修改。

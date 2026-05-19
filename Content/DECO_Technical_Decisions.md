@@ -752,6 +752,12 @@ Kuavo 配置命名：
   - 该边界可同时服务 ACT、DP 与 DECO，避免 client/server 双重归一化，也避免 server 混入 ROS raw observation 与硬件执行职责。
   - `kuavo_deploy/kuavo_service/server.py` 应通过启动参数或 `KUAVO_DEPLOY_CONFIG` 选择 `configs/deploy/kuavo_deco_env.yaml` 等部署配置，并按 `policy_type` 加载 `act`、`diffusion`、`deco`；DECO 加载阶段必须复用 checkpoint/config 一致性校验。
   - `kuavo_deploy/kuavo_service/client.py` 保持 `PolicyClient.select_action(obs_dict)` 接口不变，仅允许补充 timeout、api_token 和 server error 处理。
+- Full Server 作为后续备选方案保留，但不作为当前阶段六主路径：
+  - 语义：client 发送 raw observation，server 内部执行 `raw obs -> run-root preprocessor -> policy.select_action -> run-root postprocessor`，再向 client 返回 executable action。
+  - 适用场景：未来希望 client 极简化、多个 client 共用同一个集中推理服务，或希望把部署资产、processor 版本和策略权重完全收敛到 server 侧管理。
+  - Pros：client 侧依赖更少；processor 与 policy 权重同处 server，版本一致性更容易集中管理；远端服务可以统一做鉴权、监控、限流和错误记录。
+  - Cons：server 必须接管 raw observation schema、processor、postprocessor 和 action 输出语义，职责明显重于 ACT 原版 server；若 eval/client 侧仍保留 pre/postprocessor，会产生双重归一化或双重反归一化；server 需要理解更多 ROS/硬件观测细节，后续维护和调试成本更高。
+  - 若未来启用 Full Server，必须同步修改 eval/client 分支，明确禁止调用侧再执行 run-root preprocessor/postprocessor，并为 raw obs schema、server 返回 action schema、错误处理和回退路径单独冻结方案。
 - `ObsBuffer` 对 DECO depth 使用 `depth_encoding: compressed_image` 时直接解码 `/cam_h/depth/image_raw/compressed`；旧 `compressedDepth_png` 解码仍保留给兼容 topic。
 - `ObsBuffer` 仅在 `deco.inference_mode=qiangnao_tactile` 时对 `/dexhand/touch_state` 构造 30D `observation.tactile`，顺序为左手 15 + 右手 15，量纲换算保持 normal force `/100`。
 - 部署侧应新增 DECO 映射 helper 集中封装 28D/18D state/action 逻辑，避免把 profile 细节散落在 `KuavoBaseRosEnv` 中。
