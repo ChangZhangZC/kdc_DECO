@@ -86,7 +86,7 @@ class ConfigEnv:
         if self.state_layout == "deco_18d" and self.eef_type not in ["leju_claw", "rq2f85"]:
             raise ValueError("state_layout='deco_18d' requires eef_type='leju_claw' or 'rq2f85'.")
         if not isinstance(self.image_size, list) or len(self.image_size) != 2:
-            raise ValueError("image_size must be a list [height, width]")
+            raise ValueError("image_size must be a list [width, height], matching cv2.resize.")
         # ensure lists lengths for arm bounds
         if not (len(self.limits["joint_q"]["max"]) == len(self.limits["joint_q"]["min"]) == 14):
             raise ValueError("Robot arm_min/arm_max must be lists of length 14")
@@ -207,6 +207,10 @@ class ConfigInference:
     epoch: int = 1
     max_episode_steps: int = 1000
     env_name: str = "Kuavo-Sim"
+    client_host: str = "localhost"
+    client_port: int = 5555
+    client_timeout_ms: int = 15000
+    client_api_token_env: str = ""
 
     def validate(self):
         if self.policy_type not in ["diffusion", "act", "deco", "client"]:
@@ -215,6 +219,30 @@ class ConfigInference:
             raise ValueError(f"Unsupported policy_type '{self.policy_type}'")
         if self.device not in ["cuda", "cpu"]:
             raise ValueError("device must be 'cuda' or 'cpu'")
+        if not isinstance(self.client_host, str) or not self.client_host:
+            raise ValueError("client_host must be a non-empty string.")
+        self.client_port = int(self.client_port)
+        self.client_timeout_ms = int(self.client_timeout_ms)
+        if self.client_port <= 0:
+            raise ValueError("client_port must be a positive integer.")
+        if self.client_timeout_ms <= 0:
+            raise ValueError("client_timeout_ms must be a positive integer.")
+        if self.client_api_token_env is None:
+            self.client_api_token_env = ""
+
+    def client_api_token_value(self) -> Optional[str]:
+        """从环境变量读取 client token，避免把远端推理 token 明文写入部署 YAML。"""
+
+        token_env = str(self.client_api_token_env or "").strip()
+        if not token_env:
+            return None
+        token = os.environ.get(token_env)
+        if not token:
+            raise ValueError(
+                f"inference.client_api_token_env={token_env!r} is set, "
+                "but the environment variable is empty or missing."
+            )
+        return token
 
 
 @dataclass

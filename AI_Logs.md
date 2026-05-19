@@ -1,5 +1,46 @@
 # AI Execution Logs
 
+## 2026-05-20
+
+### 修复 DECO 静态审查遗留的部署与 legacy 命名问题
+- **任务**: 根据用户确认，修复上一轮全盘静态审查中列出的 4 条需处理问题：README server 示例过期、远程 client 配置未接入 YAML、部署 `observation_space` 图像宽高语义不一致、`third_party/deco` 非活动原生旁路仍残留 `img1/img2` 旧命名。本次按用户要求不修改 `PLANS.md`；未运行 Python、训练、validator、ROS、仿真、部署 server/client、pip、conda 或任何环境变更命令，仅执行静态文件读取、文本修改、`rg`/`git diff`/`git diff --check` 检查。
+- **修改文件 1**: `README_DECO.md`
+  - 将 server/client 示例中的 `--host "*"` 改为本机调试默认 `--host 127.0.0.1`，与当前 `server.py` 非本机绑定必须提供 token 的安全策略一致。
+  - 增加远程 server 示例：跨机器访问时使用 `--host 0.0.0.0` 并显式传入 `--api-token "$KUAVO_INFERENCE_API_TOKEN"`。
+  - 增加 client 侧配置说明：`inference.policy_type=client` 时通过 `client_host`、`client_port`、`client_timeout_ms` 和 `client_api_token_env` 连接 server；token 只通过环境变量名引用，不写入 YAML 明文。
+- **修改文件 2**: `configs/deploy/kuavo_deco_env.yaml`
+  - 在 `inference` 段新增 `client_host: "localhost"`、`client_port: 5555`、`client_timeout_ms: 15000`、`client_api_token_env: ""`。
+  - 用中文注释说明默认连接本机 server；跨机器部署时填写 server 地址；若 server 使用 `--api-token`，则 `client_api_token_env` 填写环境变量名而不是 token 明文。
+- **修改文件 3**: `kuavo_deploy/config.py`
+  - 在 `ConfigInference` 中新增 client 连接字段，与部署 YAML 对齐。
+  - 在 `ConfigInference.validate()` 中校验 `client_host` 非空、`client_port` 和 `client_timeout_ms` 为正整数，并把端口和超时转换为 `int`，避免 YAML 字符串传入 ZMQ client。
+  - 新增 `client_api_token_value()`，从 `client_api_token_env` 指定的环境变量读取 token；若变量名已配置但环境变量缺失，则显式报错，避免 client 静默无鉴权连接远端 token server。
+  - 将 `image_size` 校验错误信息修正为 `[width, height]`，与 OpenCV `resize` 语义一致。
+- **修改文件 4**: `kuavo_deploy/src/eval/real_single_test.py`
+  - 将 `setup_policy()` 扩展为可接收 `inference_config`。
+  - 在 `policy_type=client` 分支中从部署配置读取 `client_host`、`client_port`、`client_timeout_ms`，并通过 `client_api_token_value()` 读取 token 后传给 `PolicyClient`。
+  - 保持 `PolicyClient.select_action(obs_dict)` API 和 server/client pre/postprocessor 归属不变：eval/client 侧仍负责 run-root preprocessor 与 postprocessor，server 只执行已预处理 observation 到 raw model action 的推理。
+- **修改文件 5**: `kuavo_deploy/src/eval/sim_auto_test.py`
+  - 与真机入口保持一致，将 `setup_policy()` 扩展为可接收 `inference_config`。
+  - 在仿真自动测试的 `policy_type=client` 分支中接入 `client_host`、`client_port`、`client_timeout_ms` 与环境变量 token。
+- **修改文件 6**: `kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py`
+  - 修复 `_set_observation_space()` 中 `resize_wh` 的宽高解释：`resize_wh` 沿用 OpenCV `(width, height)`，而 `observation_space` 应声明为 channel-first `(C, H, W)`。
+  - 将原来的 `h, w = resize_wh` 改为 `w, h = resize_wh`，避免配置 `[640, 480]` 被错误声明为 `(C, 640, 480)`。
+- **修改文件 7**: `third_party/deco/dataset.py`
+  - 在文件顶部增加中文说明：该文件是上游 DECO legacy 双 RGB dataset 参考路径，Kuavo-DECO 正式数据链路使用 `kuavo_data/CvtRosbag2Lerobot_DECO.py` + LeRobot dataset，不使用这里的双 RGB 读取。
+  - 将旧局部变量 `img1_path/img2_path/img1/img2` 改为 `legacy_left_rgb_path/legacy_right_rgb_path/legacy_left_rgb/legacy_right_rgb`，避免与 Kuavo RGB-D 主链路中的 `rgb/depth` 语义混淆。
+- **修改文件 8**: `third_party/deco/deploy/deploy_h1.py`
+  - 在文件顶部增加中文说明：该文件是上游 H1 双 RGB legacy 部署示例，Kuavo-DECO 正式部署入口在 `kuavo_deploy/`，不作为 Kuavo RGB-D 部署入口。
+  - 将旧局部变量 `img1/img2` 改为 `legacy_left_rgb/legacy_right_rgb`，并在 `predict_action()` 调用处同步使用 legacy 命名，避免误认为该脚本已经是 Kuavo RGB-D 部署路径。
+- **静态检查结果**:
+  - `rg` 检查确认 `kuavo_train`、`kuavo_deploy`、`configs`、`README_DECO.md` 中不再残留 `img1/img2`、`dual_rgb`、`dual_rgb_img_encoding` 等旧双 RGB 接口命名。
+  - `rg` 检查确认 `third_party/deco` 中不再残留独立词边界的 `img1/img2` 或 `dual_rgb` 旧入口命名；剩余 `img` 仅为 DECO transformer 内部 token 变量，不属于旧双 RGB 接口。
+  - `git diff --check` 通过，未发现 trailing whitespace 或 patch 级空白错误。
+- **未修改文件**:
+  - 按用户要求，本次没有修改 `PLANS.md`。
+  - 本次没有修改根目录 `DECO/` 原始上游副本。
+  - 本次没有修改 `third_party/lerobot/`、训练 loss、DECO 模型主体 Flow Matching 逻辑或 P3/P4/P5 相关策略。
+
 ## 2026-05-19
 
 ### 修复 DECO 部署侧 server/client 漏洞并记录技术决策

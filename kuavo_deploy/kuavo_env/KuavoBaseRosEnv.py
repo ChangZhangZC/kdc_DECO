@@ -121,7 +121,8 @@ class KuavoBaseRosEnv(gym.Env):
         obs_spaces = {}
         for key, obs_name in self.obs_key_map.items():
             if any(tag in key for tag in ['cam', 'depth']):
-                h, w = obs_name["handle"]["params"]["resize_wh"]
+                # resize_wh 沿用 OpenCV 语义：(width, height)；observation_space 需要 channel-first (C, H, W)。
+                w, h = obs_name["handle"]["params"]["resize_wh"]
                 if 'depth' in key:
                     low, high = obs_name['handle']['params']['depth_range']
                     obs_spaces[f"observation.{key}"] = gym.spaces.Box(

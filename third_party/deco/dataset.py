@@ -9,6 +9,8 @@ from torch.utils.data import Dataset
 from torchvision.transforms import v2 as transforms
 
 
+# Legacy upstream DECO dataset path. Kuavo-DECO 的正式数据链路使用
+# kuavo_data/CvtRosbag2Lerobot_DECO.py + LeRobot dataset，不使用这里的双 RGB 数据读取。
 class letterbox():
     """
     Resize image by keeping aspect ratio, 
@@ -86,14 +88,14 @@ class my_Dataset(Dataset):
         episode_id, img_name = relat_path.split(os.sep)[0], relat_path.split(os.sep)[-1]
         img_idx = int(img_name.split('_color')[0])
 
-        img1_path = os.path.join(self.root, relat_path)
-        img2_path = img1_path.replace('_0.jpg', '_1.jpg')
+        legacy_left_rgb_path = os.path.join(self.root, relat_path)
+        legacy_right_rgb_path = legacy_left_rgb_path.replace('_0.jpg', '_1.jpg')
 
-        img1 = Image.open(img1_path)
-        img2 = Image.open(img2_path)
+        legacy_left_rgb = Image.open(legacy_left_rgb_path)
+        legacy_right_rgb = Image.open(legacy_right_rgb_path)
 
-        tac1_path = img1_path.replace('_color_0.jpg', '_left_ee_tactile.npy').replace('colors', 'tactiles')
-        tac2_path = img2_path.replace('_color_1.jpg', '_right_ee_tactile.npy').replace('colors', 'tactiles')
+        tac1_path = legacy_left_rgb_path.replace('_color_0.jpg', '_left_ee_tactile.npy').replace('colors', 'tactiles')
+        tac2_path = legacy_right_rgb_path.replace('_color_1.jpg', '_right_ee_tactile.npy').replace('colors', 'tactiles')
 
         tact1 = np.load(tac1_path) / self.tac_left_max
         tact2 = np.load(tac2_path) / self.tac_right_max
@@ -104,9 +106,9 @@ class my_Dataset(Dataset):
         seed = random.randint(0, 1000000000)
         if self.transform is not None: # same transform for both images
             self.seed_all(seed)
-            img1 = self.transform(img1)
+            legacy_left_rgb = self.transform(legacy_left_rgb)
             self.seed_all(seed)
-            img2 = self.transform(img2)
+            legacy_right_rgb = self.transform(legacy_right_rgb)
 
         df_slice = self.label_dict[episode_id].iloc[img_idx:img_idx + self.chunksize]
         obs_state = df_slice.iloc[0]['left_obs'] + df_slice.iloc[0]['right_obs'] + df_slice.iloc[0]['head_obs']
@@ -134,7 +136,7 @@ class my_Dataset(Dataset):
             obs_state = (obs_state - self.obs_mean) / self.obs_std
             action_padd = (action_padd - self.action_mean[None, :]) / self.action_std[None, :]
 
-        return img1, img2, tact1, tact2, obs_state, action_padd, mask, task_idx
+        return legacy_left_rgb, legacy_right_rgb, tact1, tact2, obs_state, action_padd, mask, task_idx
 
     def __len__(self):
         return len(self.img_list)
@@ -161,6 +163,6 @@ if __name__ == "__main__":
     data = my_Dataset(data_dir='/root/toy_datasets/data_0107_6', train=False, transform=test_transform, **config['data'])
     train_loader = torch.utils.data.DataLoader(data, batch_size=8, shuffle=True, num_workers=4, pin_memory=False, drop_last=False)
     from tqdm import tqdm
-    for index, (img1, img2, tac1, tac2, obs, action, mask, task_idx) in tqdm(enumerate(train_loader), total=len(train_loader)):
-        print(img1.shape, img2.shape, tac1.shape, tac2.shape, obs.shape, action.shape, mask.shape, task_idx.shape)
+    for index, (legacy_left_rgb, legacy_right_rgb, tac1, tac2, obs, action, mask, task_idx) in tqdm(enumerate(train_loader), total=len(train_loader)):
+        print(legacy_left_rgb.shape, legacy_right_rgb.shape, tac1.shape, tac2.shape, obs.shape, action.shape, mask.shape, task_idx.shape)
         quit()

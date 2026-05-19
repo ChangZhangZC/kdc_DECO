@@ -76,13 +76,14 @@ stop_flag = threading.Event()
 pause_flag = threading.Event()
 
 
-def setup_policy(pretrained_path, policy_type, device=torch.device("cuda")):
+def setup_policy(pretrained_path, policy_type, device=torch.device("cuda"), inference_config=None):
     """
     Set up and load the policy model.
     
     Args:
         pretrained_path: Path to the checkpoint
         policy_type: Type of policy ('diffusion', 'act', 'deco', or 'client')
+        inference_config: Optional ConfigInference for client host/port/token settings.
         
     Returns:
         Loaded policy model and device
@@ -100,7 +101,17 @@ def setup_policy(pretrained_path, policy_type, device=torch.device("cuda")):
     elif policy_type_key == 'deco':
         policy = CustomDECOPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
     elif policy_type_key == 'client':
-        policy = PolicyClient()
+        if inference_config is None:
+            policy = PolicyClient()
+        else:
+            # token 只从环境变量读取，避免把远端推理服务凭据写入 YAML 或日志。
+            api_token = inference_config.client_api_token_value()
+            policy = PolicyClient(
+                host=inference_config.client_host,
+                port=inference_config.client_port,
+                timeout_ms=inference_config.client_timeout_ms,
+                api_token=api_token,
+            )
     else:
         raise ValueError(f"Unsupported policy type: {policy_type}")
 
@@ -142,7 +153,7 @@ def main(config: KuavoConfig, env: gym.Env):
     # Select your device
     device = torch.device(cfg.device)
 
-    policy = setup_policy(pretrained_path, policy_type, device)
+    policy = setup_policy(pretrained_path, policy_type, device, cfg)
     if policy_type.lower() == 'deco':
         validate_deco_policy_compatibility(policy.config, config.deco, config.env)
     # preprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_preprocessor.json")

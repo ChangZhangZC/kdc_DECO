@@ -14,6 +14,8 @@ import logging_mp
 logger_mp = logging_mp.get_logger(__name__)
 logger_mp.setLevel(logging_mp.INFO)
 
+# Legacy upstream DECO H1 deploy example. Kuavo-DECO 的正式部署入口在
+# kuavo_deploy/；本文件保留为上游双 RGB 参考路径，不作为 Kuavo RGB-D 部署入口。
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -178,9 +180,9 @@ def main(args):
             ## all observations
             states = torch.zeros(28)
 
-            img1 = head_img[:, :camera_config['head_camera']['image_shape'][1]//2]
-            img2 = head_img[:, camera_config['head_camera']['image_shape'][1]//2:]  
-            img_show = cv2.hconcat([img1, img2])
+            legacy_left_rgb = head_img[:, :camera_config['head_camera']['image_shape'][1]//2]
+            legacy_right_rgb = head_img[:, camera_config['head_camera']['image_shape'][1]//2:]
+            img_show = cv2.hconcat([legacy_left_rgb, legacy_right_rgb])
             cv2.imshow("Head Camera", img_show)
             cv2.waitKey(1)
             if index < 10:
@@ -188,11 +190,11 @@ def main(args):
                 time.sleep(max(0, (1 / args.fps) - loop_time))
                 continue
             if record_video:
-                img_record = cv2.resize(img1, (1280, 720))
+                img_record = cv2.resize(legacy_left_rgb, (1280, 720))
                 videowriter.write(img_record)
 
-            img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)
-            img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)
+            legacy_left_rgb = cv2.cvtColor(legacy_left_rgb, cv2.COLOR_BGR2RGB)
+            legacy_right_rgb = cv2.cvtColor(legacy_right_rgb, cv2.COLOR_BGR2RGB)
 
             # states
             with dual_hand_data_lock:
@@ -233,7 +235,17 @@ def main(args):
                 #use policy
                 if len(action_receding) == 0:
                     # action : 28-dim, left arm(7), left hand(6), right arm(7), right hand(6) head_cam(2)
-                    action = predict_action(model, device, yaml_config, img1, img2, obs=states, task_idx=args.task_idx, tac1=left_tac, tac2=right_tac) 
+                    action = predict_action(
+                        model,
+                        device,
+                        yaml_config,
+                        legacy_left_rgb,
+                        legacy_right_rgb,
+                        obs=states,
+                        task_idx=args.task_idx,
+                        tac1=left_tac,
+                        tac2=right_tac,
+                    )
                     if temporal_ensembler_flag:
                         action = temporal_ensembler.update(action.unsqueeze(0))
                         action = action.squeeze(0).numpy()

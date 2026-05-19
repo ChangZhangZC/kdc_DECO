@@ -445,21 +445,35 @@ deco:
 
 ### 4.5 Server / Client 模式
 
-服务端启动示例：
+本机调试时建议只绑定 loopback，避免把推理服务暴露到局域网：
 
 ```bash
 python kuavo_deploy/kuavo_service/server.py \
   --config configs/deploy/kuavo_deco_env.yaml \
-  --host "*" \
+  --host 127.0.0.1 \
   --port 5555
 ```
 
-也可以通过环境变量选择配置：
+也可以通过环境变量选择配置；此时 server 默认仍只绑定本机：
 
 ```bash
 export KUAVO_DEPLOY_CONFIG=configs/deploy/kuavo_deco_env.yaml
 python kuavo_deploy/kuavo_service/server.py --port 5555
 ```
+
+如果确实需要跨机器访问，必须显式提供 token：
+
+```bash
+python kuavo_deploy/kuavo_service/server.py \
+  --config configs/deploy/kuavo_deco_env.yaml \
+  --host 0.0.0.0 \
+  --port 5555 \
+  --api-token "$KUAVO_INFERENCE_API_TOKEN"
+```
+
+client 侧在 `configs/deploy/kuavo_deco_env.yaml` 中设置 `inference.policy_type=client`、
+`client_host`、`client_port`、`client_timeout_ms`；若 server 使用 token，则将
+`client_api_token_env` 设置为环境变量名，例如 `KUAVO_INFERENCE_API_TOKEN`。
 
 当前 server/client 遵守 Kuavo ACT 原版语义：
 

@@ -128,6 +128,13 @@ inference:
   # - deco: 本地加载 Kuavo-DECO policy。
   # - client: eval/client 调用侧连接 kuavo_service/server.py；pre/postprocessor 仍在调用侧。
   policy_type: "deco"
+  # policy_type=client 时使用。默认连接本机 server；跨机器部署时填写 server IP/域名。
+  client_host: "localhost"
+  client_port: 5555
+  client_timeout_ms: 15000
+  # 若 server 使用 --api-token，则这里填写环境变量名，不把 token 明文写入 YAML。
+  # 示例：export KUAVO_INFERENCE_API_TOKEN='your-token'，然后填 KUAVO_INFERENCE_API_TOKEN。
+  client_api_token_env: ""
   eval_episodes: 100
   seed: 42
   start_seed: 42
