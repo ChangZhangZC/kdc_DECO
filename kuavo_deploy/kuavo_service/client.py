@@ -19,7 +19,6 @@ from typing import Any, Callable, Dict
 
 import torch
 import zmq
-import numpy as np
 
 
 class TorchSerializer:
@@ -143,7 +142,13 @@ class BaseInferenceClient:
 
     def _init_socket(self):
         """Initialize or reinitialize the socket with current settings"""
+        if hasattr(self, "socket"):
+            self.socket.close(linger=0)
         self.socket = self.context.socket(zmq.REQ)
+        # timeout_ms 原来只保存在对象上但没有传给 ZeroMQ；这里显式设置收发超时，
+        # 让 ACT/DP/DECO 的远端推理在 server 无响应时能尽早失败，而不是永久阻塞控制循环。
+        self.socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
         self.socket.connect(f"tcp://{self.host}:{self.port}")
 
     def ping(self) -> bool:
@@ -180,13 +185,18 @@ class BaseInferenceClient:
         self.socket.send(TorchSerializer.to_bytes(request))
         message = self.socket.recv()
         response = TorchSerializer.from_bytes(message)
-        
+        if isinstance(response, dict) and "error" in response:
+            # server 端已经捕获到异常时，不把错误字典伪装成 action 继续向下游 postprocessor 传递。
+            raise RuntimeError(f"Inference server error: {response['error']}")
+
         return response
 
     def __del__(self):
         """Cleanup resources on destruction"""
-        self.socket.close()
-        self.context.term()
+        if hasattr(self, "socket"):
+            self.socket.close(linger=0)
+        if hasattr(self, "context"):
+            self.context.term()
 
 
 class ExternalRobotInferenceClient(BaseInferenceClient):
@@ -205,8 +215,15 @@ class ExternalRobotInferenceClient(BaseInferenceClient):
 
 # policy client
 class PolicyClient:
-    def __init__(self, host="localhost", port=5555):
-        self.policy = ExternalRobotInferenceClient(host=host, port=port)
+    def __init__(self, host="localhost", port=5555, timeout_ms=15000, api_token=None):
+        # 保持 Kuavo ACT 原版 API：PolicyClient 只负责把已经 preprocessor 处理过的
+        # observation 发给 server，并返回尚未 postprocessor 的模型 action。
+        self.policy = ExternalRobotInferenceClient(
+            host=host,
+            port=port,
+            timeout_ms=timeout_ms,
+            api_token=api_token,
+        )
 
     def select_action(self, obs_dict):
         self.action = self.policy.select_action(obs_dict)

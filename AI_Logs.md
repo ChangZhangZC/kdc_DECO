@@ -2,6 +2,35 @@
 
 ## 2026-05-19
 
+### 实施阶段六 DECO Server/Client 的 ACT 原版语义接入
+- **任务**: 根据用户确认，将阶段六 server/client 方案从“可能迁移 pre/postprocessor 到 server”修正为 Kuavo ACT 原版语义：eval/client 调用侧继续负责 run-root preprocessor 与 postprocessor，server 只负责加载 policy，并对已经预处理的 observation 执行 `policy.select_action()`，返回尚未 postprocess 的模型 action。本次只做静态文档与代码修改，未运行 Python、训练、validator、ROS、仿真、server、client、部署服务、安装或环境变更命令。
+- **修改文件 1**: `PLANS.md`
+  - 将阶段六 server/client 清单从“第二轮待适配”更新为已静态接入。
+  - 明确 server/client 采用 Kuavo ACT 原版路径：`raw obs -> run-root preprocessor -> PolicyClient.select_action -> server policy.select_action -> run-root postprocessor -> env.step`。
+  - 记录 server 的职责边界：只接收 processed observation，不接管 raw ROS observation、图像 letterbox、normalizer、postprocessor 或硬件下发。
+  - 记录 server 需要通过启动参数或 `KUAVO_DEPLOY_CONFIG` 选择部署配置，并支持 `act`、`diffusion`、`deco` 三类 policy。
+  - 将 Done When 中 DECO server/client 部署链路改为已完成静态接入。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 替换此前“推荐 server 内部执行 preprocessor -> policy -> postprocessor”的旧建议。
+  - 新增 server/client 决策：processor 归 eval/client 调用侧，server 只负责 policy 推理，避免 client/server 双重归一化，也避免 server 混入 ROS raw observation 与硬件执行职责。
+  - 记录 `server.py` 通过 `--config` 或 `KUAVO_DEPLOY_CONFIG` 选择部署配置，并按 `policy_type` 加载 ACT、Diffusion 或 DECO。
+  - 记录 `client.py` 保持 `PolicyClient.select_action(obs_dict)` 接口不变，只允许补充 timeout、api_token 和 server error 处理。
+- **修改文件 3**: `kuavo_deploy/kuavo_service/server.py`
+  - 删除旧的 `configs.deploy.config_inference.load_inference_config` 入口和硬编码 `configs/deploy/kuavo_real_env.yaml` 路径，改用当前统一的 `kuavo_deploy.config.load_kuavo_config()`。
+  - 新增命令行参数 `--config`、`--host`、`--port`、`--api-token`；配置路径优先级为命令行、`KUAVO_DEPLOY_CONFIG`、`load_kuavo_config()` 默认配置。
+  - 新增 `build_pretrained_path()`，沿用 Kuavo run-root 语义定位 `outputs/train/<task>/<method>/<timestamp>/epoch<epoch>`。
+  - 新增 `load_policy_from_config()`，按 `policy_type` 加载 `CustomACTPolicyWrapper`、`CustomDiffusionPolicyWrapper` 或 `CustomDECOPolicyWrapper`。
+  - 在 `policy_type=deco` 时调用 `validate_deco_policy_compatibility()`，复用本地推理入口的 checkpoint/config 一致性校验，确保部署配置不强行覆盖 checkpoint 结构字段。
+  - 保留 `hardware_obses_to_policy_obs_dict()` 为 identity，并新增中文注释说明 server 不做 preprocessor/postprocessor。
+- **修改文件 4**: `kuavo_deploy/kuavo_service/client.py`
+  - 保持 `PolicyClient.select_action(obs_dict)` API 不变，兼容现有 `real_single_test.py` / `sim_auto_test.py` 的 `policy_type=client` 分支。
+  - 让已有 `timeout_ms` 参数真正传入 ZeroMQ 的 `RCVTIMEO` 与 `SNDTIMEO`，避免 server 无响应时永久阻塞。
+  - 增加 server error response 处理：如果响应 dict 中包含 `error`，直接抛出 `RuntimeError`，避免错误字典继续流入 postprocessor 被误当作 action。
+  - `PolicyClient` 新增可选 `timeout_ms` 与 `api_token` 参数，但默认值保持与旧调用兼容。
+- **边界说明**:
+  - 本次没有把 preprocessor/postprocessor 移到 server，也没有修改 `real_single_test.py` 或 `sim_auto_test.py` 的 client 分支。
+  - 本次没有执行任何运行时验证；后续若要实测，需要在允许运行的环境中分别启动 server 与 client 侧 eval 脚本验证 ZMQ 通信和动作闭环。
+
 ### 实施阶段六 DECO 本地部署三模式静态接入
 - **任务**: 根据已冻结的阶段六计划，开始实施 DECO 本地单进程部署推理链路，支持 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式。本次只做静态代码与配置修改，未运行 Python、validator、训练、ROS、仿真、部署、安装或环境变更命令；server/client 推理链路仍按计划留到第二轮。
 - **修改文件 1**: `configs/deploy/kuavo_deco_env.yaml`

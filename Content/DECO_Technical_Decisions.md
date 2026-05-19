@@ -746,7 +746,12 @@ Kuavo 配置命名：
   - `live_joint_q`：从 `/sensors_data_raw.joint_data.joint_q[26:28]` 实时读取头部 yaw/pitch，更贴近机器人当前真实状态，但可能带入传感器微小抖动。
   - `fixed_config`：使用部署配置中的 `head_init` 作为固定头部 state，更稳定，适合头部部署期间保持固定姿态的任务，但必须确认与训练数据头部姿态一致。
 - 第一轮部署实现优先打通本地单进程推理闭环，保持与当前 ACT/DP 主路径一致：`raw obs -> run-root preprocessor -> policy.select_action -> run-root postprocessor -> env.step`。优先覆盖 `real_single_test.py` 与 `sim_auto_test.py`。
-- server/client 推理排到第二轮。当前 ACT/DP 本地路径由 eval 脚本负责 pre/postprocessor；DECO server 方案后续必须明确 processor 归属，避免 client 与 server 双重归一化。推荐服务端内部执行 `preprocessor -> policy.select_action -> postprocessor`，client 只发送 raw obs 并接收可执行 action。
+- server/client 推理采用 Kuavo ACT 原版语义，不把 processor 迁移到 server：
+  - eval/client 调用侧继续执行 `raw obs -> run-root preprocessor -> PolicyClient.select_action -> run-root postprocessor -> env.step`。
+  - server 只接收已经由调用侧预处理过的 observation，执行 `policy.select_action(processed_obs)`，并返回尚未 postprocess 的模型 action。
+  - 该边界可同时服务 ACT、DP 与 DECO，避免 client/server 双重归一化，也避免 server 混入 ROS raw observation 与硬件执行职责。
+  - `kuavo_deploy/kuavo_service/server.py` 应通过启动参数或 `KUAVO_DEPLOY_CONFIG` 选择 `configs/deploy/kuavo_deco_env.yaml` 等部署配置，并按 `policy_type` 加载 `act`、`diffusion`、`deco`；DECO 加载阶段必须复用 checkpoint/config 一致性校验。
+  - `kuavo_deploy/kuavo_service/client.py` 保持 `PolicyClient.select_action(obs_dict)` 接口不变，仅允许补充 timeout、api_token 和 server error 处理。
 - `ObsBuffer` 对 DECO depth 使用 `depth_encoding: compressed_image` 时直接解码 `/cam_h/depth/image_raw/compressed`；旧 `compressedDepth_png` 解码仍保留给兼容 topic。
 - `ObsBuffer` 仅在 `deco.inference_mode=qiangnao_tactile` 时对 `/dexhand/touch_state` 构造 30D `observation.tactile`，顺序为左手 15 + 右手 15，量纲换算保持 normal force `/100`。
 - 部署侧应新增 DECO 映射 helper 集中封装 28D/18D state/action 逻辑，避免把 profile 细节散落在 `KuavoBaseRosEnv` 中。
@@ -787,7 +792,7 @@ Kuavo 配置命名：
 - [x] 在 DECO wrapper/config 中明确最终保存的 policy 权重不依赖外部初始化路径：保存时清空外部初始化路径，加载最终 `.safetensors` 时不再读取第一阶段目录或 `.pth`；完整部署包仍以 run 根目录为单位。
 - [x] 在部署入口中静态注册 `deco` / `DECO` policy 类型，并导入 DECOProcessor 以注册 `deco_rgbd_letterbox_processor`。
 - [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，并明确 DECO 部署资产采用 Kuavo 原有 run 根目录：`outputs/train/<task>/<method>/<timestamp>/`；`epochbest/` 只是权重子目录，不是完整部署包。
-- [x] 在 `kuavo_deploy` 中静态接入 DECO 本地在线部署链路：阶段六第一轮已覆盖本地单进程推理闭环，并同时支持 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式；server/client 推理仍排到第二轮。
+- [x] 在 `kuavo_deploy` 中静态接入 DECO 在线部署链路：阶段六已覆盖本地单进程推理闭环，并同时支持 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式；server/client 按 Kuavo ACT 原版语义完成静态接入，processor 仍归 eval/client 调用侧，server 只负责 policy 推理。
 - [x] 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
 - [x] 新建/扩展 `kuavo_data/validate_deco_lerobot_dataset.py`，检查单 rosbag 转换结果的字段、维度、30Hz 时间轴、RGB-depth 对齐、depth decoder、profile 对应 action 映射与可选 30 维 tactile 量纲。
 - [x] 新建 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`。

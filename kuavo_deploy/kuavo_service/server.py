@@ -12,18 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import lerobot_patches.custom_patches
+import argparse
+import os
+import lerobot_patches.custom_patches  # noqa: F401 - 保持 Kuavo/LeRobot 自定义补丁在 policy 加载前生效
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Any, Callable, Dict
+from typing import Callable, Optional
 from io import BytesIO
-import cv2
-from lerobot.policies.act.modeling_act import ACTPolicy
 import torch
 import zmq
-import numpy as np
-from configs.deploy.config_inference import load_inference_config
-import torch
+
+from kuavo_deploy.config import KuavoConfig, load_kuavo_config
+from kuavo_deploy.utils.deco_obs_action import validate_deco_policy_compatibility
+from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco import DECOProcessor  # noqa: F401 - 注册 DECO processor，保持与本地 eval 入口一致
 from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
 
 class TorchSerializer:
@@ -139,55 +142,103 @@ class RobotInferenceServer(BaseInferenceServer):
         self.register_endpoint("select_action", model.select_action)
 
     @staticmethod
-    def start_server(policy, port: int, api_token: str = None):
-        server = RobotInferenceServer(policy, port=port, api_token=api_token)
+    def start_server(policy, port: int, host: str = "*", api_token: str = None):
+        server = RobotInferenceServer(policy, host=host, port=port, api_token=api_token)
         server.run()
 
 #####################################################################################
 
-# Convert raw observations into the observations required by the model
+# Convert raw observations into the observations required by the model.
 def hardware_obses_to_policy_obs_dict(obs):
+    # ACT 原版 server/client 语义：eval/client 侧已经完成 run-root preprocessor。
+    # 因此 server 只透传已经处理好的 observation，不在这里做归一化或图像预处理。
     obs_dict = obs
     return obs_dict
 
-class Policy():
-    def __init__(self):
-        # load config
-        config_path = 'configs/deploy/kuavo_real_env.yaml'
-        cfg = load_inference_config(config_path)
+def resolve_config_path(config_path: Optional[str]) -> Optional[str]:
+    """解析服务端部署配置路径。
 
-        use_delta = cfg.use_delta
-        eval_episodes = cfg.eval_episodes
-        seed = cfg.seed
-        start_seed = cfg.start_seed
-        policy_type = cfg.policy_type
-        task = cfg.task
-        method = cfg.method
-        timestamp = cfg.timestamp
-        epoch = cfg.epoch
-        env_name = cfg.env_name
-        depth_range = cfg.depth_range
+    优先级保持简单且可追踪：
+    1. 命令行 `--config`
+    2. 环境变量 `KUAVO_DEPLOY_CONFIG`
+    3. `load_kuavo_config()` 的默认 `configs/deploy/kuavo_env.yaml`
+    """
 
-        pretrained_path = Path(f"outputs/train/{task}/{method}/{timestamp}/epoch{epoch}")
+    if config_path:
+        return config_path
+    return os.environ.get("KUAVO_DEPLOY_CONFIG")
 
-        # Select your device
-        device = torch.device(cfg.device)
-        # self.policy = ACTPolicy.from_pretrained(Path(pretrained_path),strict=True)
-        self.policy = CustomDiffusionPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
-        self.policy.eval()
-        self.policy.to(device)
-        self.policy.reset()
+
+def build_pretrained_path(cfg: KuavoConfig) -> Path:
+    """按 Kuavo 原有 run-root 语义定位被服务端加载的 epoch 权重目录。"""
+
+    inference = cfg.inference
+    return Path("outputs") / "train" / inference.task / inference.method / inference.timestamp / f"epoch{inference.epoch}"
+
+
+def load_policy_from_config(cfg: KuavoConfig):
+    """根据部署配置加载 ACT/DP/DECO policy。
+
+    server 只负责 policy 推理，不加载 run-root pre/postprocessor；processor 仍由
+    real_single_test.py / sim_auto_test.py 或其他调用侧在发送请求前后执行。
+    """
+
+    pretrained_path = build_pretrained_path(cfg)
+    policy_type = cfg.inference.policy_type.lower()
+
+    if policy_type == "diffusion":
+        policy = CustomDiffusionPolicyWrapper.from_pretrained(pretrained_path, strict=True)
+    elif policy_type == "act":
+        policy = CustomACTPolicyWrapper.from_pretrained(pretrained_path, strict=True)
+    elif policy_type == "deco":
+        policy = CustomDECOPolicyWrapper.from_pretrained(pretrained_path, strict=True)
+        validate_deco_policy_compatibility(policy.config, cfg.deco, cfg.env)
+    else:
+        raise ValueError(
+            "Server policy_type must be 'diffusion', 'act', or 'deco'. "
+            f"Got '{cfg.inference.policy_type}'."
+        )
+
+    device = torch.device(cfg.inference.device)
+    policy.eval()
+    policy.to(device)
+    if hasattr(policy, "reset"):
+        policy.reset()
+    return policy
+
+
+class Policy:
+    def __init__(self, config_path: Optional[str] = None):
+        # 服务端与本地 eval 共用 `kuavo_deploy.config.load_kuavo_config`，
+        # 避免 server 使用另一套旧 config parser 后出现字段语义分叉。
+        resolved_config_path = resolve_config_path(config_path)
+        self.config = load_kuavo_config(resolved_config_path)
+        self.policy = load_policy_from_config(self.config)
 
     def select_action(self,obs):
         obs = hardware_obses_to_policy_obs_dict(obs)
         return self.policy.select_action(obs)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Kuavo ACT-compatible policy inference server")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="部署配置路径。若省略，则读取 KUAVO_DEPLOY_CONFIG；仍为空时使用 load_kuavo_config 默认配置。",
+    )
+    parser.add_argument("--host", default="*", help="ZeroMQ bind host，默认绑定所有网卡。")
+    parser.add_argument("--port", type=int, default=5555, help="ZeroMQ REP 端口。")
+    parser.add_argument("--api-token", default=None, help="可选 API token；为空时不启用鉴权。")
+    return parser.parse_args()
+
+
 def main():
-    policy = Policy()
+    args = parse_args()
+    policy = Policy(config_path=args.config)
 
     # Start the server
-    server = RobotInferenceServer(policy, port=5555, api_token=None)
+    server = RobotInferenceServer(policy, host=args.host, port=args.port, api_token=args.api_token)
     server.run()
 
 
