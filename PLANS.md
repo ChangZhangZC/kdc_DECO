@@ -318,26 +318,26 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，将 DECO 部署配置从通用 `kuavo_env.yaml` 中拆出，并把 depth topic 固定为当前数据规划的 `/cam_h/depth/image_raw/compressed`。
   - [x] 将 `configs/deploy/kuavo_env.yaml` 还原为 ACT/DP 通用部署配置，不在该文件中承载 DECO 专用 depth/tactile 语义。
   - [x] 文档明确部署资产采用原 Kuavo 三层 run 路径：`outputs/train/<task>/<method>/<timestamp>/`，`epoch` 字段只选择 `epoch<epoch>` 权重子目录；`epochbest/` 单独不是完整部署包。
-  - [ ] 将 `configs/deploy/kuavo_deco_env.yaml` 扩展为 DECO 唯一部署入口，明确三种 `deco.inference_mode`：
+  - [x] 将 `configs/deploy/kuavo_deco_env.yaml` 扩展为 DECO 唯一部署入口，明确三种 `deco.inference_mode`：
     - `qiangnao_tactile`：28D 灵巧手 + 30D tactile，要求加载已保存 `use_tactile=true`、`use_tactile_lora=true` 的二阶段 tactile adapter checkpoint。
     - `qiangnao_no_tactile`：28D 灵巧手，不订阅、不输入 `observation.tactile`，要求加载已保存 `use_tactile=false`、`use_tactile_lora=false` 的视觉主干 checkpoint。
     - `gripper_no_tactile`：18D 二爪夹，不订阅、不输入 `observation.tactile`，支持 `eef_type=leju_claw` 与 `eef_type=rq2f85`，二者共享 18D state/action schema，仅 topic 与下发缩放不同。
-  - [ ] 在 `configs/deploy/kuavo_deco_env.yaml` 中新增并注释 `head_state_source`：
+  - [x] 在 `configs/deploy/kuavo_deco_env.yaml` 中新增并注释 `head_state_source`：
     - `live_joint_q`：从 `/sensors_data_raw.joint_data.joint_q[26:28]` 实时读取头部 yaw/pitch，更贴近机器人当前状态，但可能带入传感器微小抖动。
     - `fixed_config`：使用 `head_init` 作为固定头部 state，更稳定，适合部署期间头部固定的任务，但必须确认与训练数据头部姿态一致。
-  - [ ] `kuavo_deploy/config.py` 支持 `policy_type: deco`、`deco.inference_mode`、`state_layout: deco_28d/deco_18d`、`head_state_source` 与 `depth_encoding: compressed_image/compressedDepth_png`。
-  - [ ] `ObsBuffer` 静态接入 DECO 默认 depth topic `/cam_h/depth/image_raw/compressed`，并通过 `depth_encoding: compressed_image` 区分普通 compressed image 与旧 `compressedDepth_png`。
-  - [ ] `ObsBuffer` 仅在 `deco.inference_mode=qiangnao_tactile` 时静态接入 `/dexhand/touch_state`，按左手 15 + 右手 15 的 normal force 顺序构造 30D `observation.tactile`，并保持 `/100` 牛顿换算。
-  - [ ] 新增部署侧 DECO 映射 helper（建议 `kuavo_deploy/utils/deco_obs_action.py`），集中封装 `build_deco_28d_state`、`build_deco_18d_state`、`decode_deco_28d_action`、`decode_deco_18d_action`，避免把 DECO schema 细节散落在环境类中。
-  - [ ] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_28d`，在线拼接 `left arm 7 + left hand 6 + right arm 7 + right hand 6 + head 2` 的 28D `observation.state`；该 layout 同时支持 `qiangnao_tactile` 与 `qiangnao_no_tactile`。
-  - [ ] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_18d`，在线拼接 `left arm 7 + left gripper 1 + right arm 7 + right gripper 1 + head 2` 的 18D `observation.state`；该 layout 支持 `leju_claw` 与 `rq2f85`。
-  - [ ] `KuavoBaseRosEnv.step()` 静态接入 DECO 28D action 解释与下发：双臂 14D 下发到 arm，双手 12D 还原到 0-100 dexhand 指令，head action 当前保留维度但不下发。
-  - [ ] `KuavoBaseRosEnv.step()` 静态接入 DECO 18D action 解释与下发：双臂 14D 下发到 arm，左右夹爪 2D 按当前工具链既有比例分别下发到 `leju_claw` 或 `rq2f85`，head action 当前保留维度但不下发。
-  - [ ] 本地单进程推理入口先完成 DECO 闭环：`raw obs -> run-root preprocessor -> CustomDECOPolicyWrapper.select_action -> run-root postprocessor -> env.step()`，优先覆盖 `real_single_test.py` 与 `sim_auto_test.py`。
-  - [ ] 本地推理入口增加部署配置与 checkpoint config 的一致性校验：`deco.inference_mode`、`state_layout`、`eef_type`、`use_tactile`、`use_tactile_lora`、`action_dim` 必须与已保存 `config.json` 的结构语义一致；部署配置只做选择与校验，不强行覆盖 checkpoint 的模型结构字段。
+  - [x] `kuavo_deploy/config.py` 支持 `policy_type: deco`、`deco.inference_mode`、`state_layout: deco_28d/deco_18d`、`head_state_source` 与 `depth_encoding: compressed_image/compressedDepth_png`。
+  - [x] `ObsBuffer` 静态接入 DECO 默认 depth topic `/cam_h/depth/image_raw/compressed`，并通过 `depth_encoding: compressed_image` 区分普通 compressed image 与旧 `compressedDepth_png`。
+  - [x] `ObsBuffer` 仅在 `deco.inference_mode=qiangnao_tactile` 时静态接入 `/dexhand/touch_state`，按左手 15 + 右手 15 的 normal force 顺序构造 30D `observation.tactile`，并保持 `/100` 牛顿换算。
+  - [x] 新增部署侧 DECO 映射 helper（建议 `kuavo_deploy/utils/deco_obs_action.py`），集中封装 `build_deco_28d_state`、`build_deco_18d_state`、`decode_deco_28d_action`、`decode_deco_18d_action`，避免把 DECO schema 细节散落在环境类中。
+  - [x] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_28d`，在线拼接 `left arm 7 + left hand 6 + right arm 7 + right hand 6 + head 2` 的 28D `observation.state`；该 layout 同时支持 `qiangnao_tactile` 与 `qiangnao_no_tactile`。
+  - [x] `ConfigEnv` 与 `KuavoBaseRosEnv` 新增 `state_layout: deco_18d`，在线拼接 `left arm 7 + left gripper 1 + right arm 7 + right gripper 1 + head 2` 的 18D `observation.state`；该 layout 支持 `leju_claw` 与 `rq2f85`。
+  - [x] `KuavoBaseRosEnv.step()` 静态接入 DECO 28D action 解释与下发：双臂 14D 下发到 arm，双手 12D 还原到 0-100 dexhand 指令，head action 当前保留维度但不下发。
+  - [x] `KuavoBaseRosEnv.step()` 静态接入 DECO 18D action 解释与下发：双臂 14D 下发到 arm，左右夹爪 2D 按当前工具链既有比例分别下发到 `leju_claw` 或 `rq2f85`，head action 当前保留维度但不下发。
+  - [x] 本地单进程推理入口先完成 DECO 闭环：`raw obs -> run-root preprocessor -> CustomDECOPolicyWrapper.select_action -> run-root postprocessor -> env.step()`，优先覆盖 `real_single_test.py` 与 `sim_auto_test.py`。
+  - [x] 本地推理入口增加部署配置与 checkpoint config 的一致性校验：`deco.inference_mode`、`state_layout`、`eef_type`、`use_tactile`、`use_tactile_lora`、`action_dim` 必须与已保存 `config.json` 的结构语义一致；部署配置只做选择与校验，不强行覆盖 checkpoint 的模型结构字段。
   - [ ] 第二轮再适配 server/client：将 `kuavo_deploy/kuavo_service/server.py` 的部署配置路径改为启动参数或 `KUAVO_DEPLOY_CONFIG` 环境变量，避免服务端只能读取通用 `kuavo_env.yaml`。
   - [ ] 第二轮 server/client 明确 pre/post processor 归属：当前 ACT/DP 本地路径由 eval 脚本负责 pre/postprocessor；DECO server 方案应避免 client 与 server 双重归一化。推荐 server 内部执行 `preprocessor -> policy.select_action -> postprocessor`，client 只发送 raw obs 并接收可执行 action。
-  - [ ] 部署侧观测已静态接入与训练字段一致的 RGB、depth、state，以及仅在 `qiangnao_tactile` 下存在的 tactile；实际 ROS topic、shape 和时序仍需阶段 6.2/6.3 在允许运行的环境中验证。
+  - [x] 部署侧观测已静态接入与训练字段一致的 RGB、depth、state，以及仅在 `qiangnao_tactile` 下存在的 tactile；实际 ROS topic、shape 和时序仍需阶段 6.2/6.3 在允许运行的环境中验证。
 - [ ] **6.2 30Hz 数据 / 10Hz 控制一致性验证**
   - [ ] 检查 `dataset_hz=30` 与 `control_hz=10` 的 stride 关系，避免动作节奏过密或过稀。
   - [ ] 检查 action chunk 长度是否足够覆盖部署控制队列需求。
@@ -377,7 +377,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] `configs/deploy/kuavo_deco_env.yaml` 已新增，`configs/deploy/kuavo_env.yaml` 已还原为通用 ACT/DP 配置。
 - [x] `configs/data/KuavoRosbag2Lerobot_deco.yaml` 与 `kuavo_data/CvtRosbag2Lerobot_DECO.py` 支持 `qiangnao_tactile` 与 `gripper_no_tactile` 两类 end-effector profile。
 - [x] `gripper_no_tactile` 完成静态审查：`leju_claw` 与 `rq2f85` 在数据清洗入口 topic/尺度不同，但进入 DECO 后共享 18D state/action schema，且不写入、不要求、不使用 `observation.tactile`。
-- [ ] DECO 在线部署 obs/action 完成静态接入：`deco_28d` state/action、`compressed_image` depth decoder、30D tactile callback 和 server pre/post processor 已在代码中连通。
+- [x] DECO 本地在线部署 obs/action 完成静态接入：`deco_28d` / `deco_18d` state/action、`compressed_image` depth decoder、按模式启用的 30D tactile callback、本地 run-root pre/post processor 与 checkpoint config 一致性校验已在代码中连通。
+- [ ] DECO server/client 部署链路完成静态接入：server 可通过启动参数或 `KUAVO_DEPLOY_CONFIG` 选择 DECO 配置，并明确 pre/post processor 归属，避免 client/server 双重归一化。
 - [x] `configs/policy/deco_config.yaml` 准确记录 `training_stage`、`use_tactile_lora`、`tactile_lora_rank`、`freeze_pretrained_main`、`base_policy_path`、`adapter_model_path`、`deco_init_pth_path` 等两阶段训练和 tactile adapter 参数。
 - [x] 两阶段训练逻辑完成静态审查：`visual_main` 与 `tactile_adapter` 是两次独立启动；若关闭触觉，第一阶段 run 根目录 + 选定 epoch 权重可直接部署；若开启触觉，第二阶段加载第一阶段 policy 并冻结主干训练 tactile/PI_Adapter。
 - [x] DECO 最终保存的 policy 权重目录完成静态审查：`config.json` 不保留外部初始化路径，迁移时不再依赖第一阶段目录或原生 `.pth` 文件；完整部署包仍必须保留 run 根目录中的 processor 文件。

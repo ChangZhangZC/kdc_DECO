@@ -17,6 +17,15 @@ import torch
 from torchvision.transforms.functional import to_tensor
 from kuavo_deploy.utils.obs_buffer import ObsBuffer
 from kuavo_deploy.utils.signal_controller import ControlSignalManager
+from kuavo_deploy.utils.deco_obs_action import (
+    DECO_18D_LAYOUT,
+    DECO_28D_LAYOUT,
+    build_deco_18d_state,
+    build_deco_28d_state,
+    decode_deco_18d_action,
+    decode_deco_28d_action,
+    is_deco_layout,
+)
 
 
 log_robot = setup_logger("robot")
@@ -26,7 +35,7 @@ class KuavoBaseRosEnv(gym.Env):
     """Kuavo机器人ROS环境基类"""
 
     def __init__(self, config: KuavoConfig):
-        self._set_config(config.env)
+        self._set_config(config.env, config.deco)
         
         # 初始化ROS管理器 Initialise ROS manager
         self.ros_manager = ROSManager()
@@ -43,15 +52,17 @@ class KuavoBaseRosEnv(gym.Env):
         log_robot.info(f"Inializing done!")
         print(f"Inializing done!")
 
-    def _set_config(self, config_kuavo_env):
+    def _set_config(self, config_kuavo_env, config_deco=None):
         """设置配置参数 Set configuration parameters"""
         self.ros_rate = config_kuavo_env.ros_rate
         self.control_mode = config_kuavo_env.control_mode
         self.obs_key_map = config_kuavo_env.obs_key_map
         self.only_arm = config_kuavo_env.only_arm
         self.eef_type = config_kuavo_env.eef_type
+        self.state_layout = config_kuavo_env.state_layout
         self.which_arm = config_kuavo_env.which_arm
         self.qiangnao_dof_needed = config_kuavo_env.qiangnao_dof_needed
+        self.head_state_source = getattr(config_deco, "head_state_source", "live_joint_q")
 
         self.is_binary = config_kuavo_env.is_binary
         self.head_init = config_kuavo_env.head_init
@@ -62,7 +73,7 @@ class KuavoBaseRosEnv(gym.Env):
         self.limits = config_kuavo_env.limits
         self.obs_key_map = config_kuavo_env.obs_key_map
         self.obs_buffer = ObsBuffer(
-            config=config_kuavo_env, 
+            config=config_kuavo_env,
             obs_key_map=self.obs_key_map,
         )
         self.arm_state_keys = config_kuavo_env.arm_state_keys # observation.state key ordering
@@ -82,13 +93,24 @@ class KuavoBaseRosEnv(gym.Env):
             grip_min, grip_max = limits['gripper']['min'], limits['gripper']['max']
         else:
             grip_min, grip_max = [], []
-        if self.which_arm == 'both':
+        head_min = limits.get('head_q', {}).get('min', [-1.0, -1.0])
+        head_max = limits.get('head_q', {}).get('max', [1.0, 1.0])
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            # DECO 灵巧手 state: 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。
+            obs_low.extend(joint_min[:7] + grip_min[:6] + joint_min[7:14] + grip_min[6:12] + head_min[:2])
+            obs_high.extend(joint_max[:7] + grip_max[:6] + joint_max[7:14] + grip_max[6:12] + head_max[:2])
+        elif self.state_layout == DECO_18D_LAYOUT:
+            # DECO 二爪夹 state: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2。
+            obs_low.extend(joint_min[:7] + grip_min[:1] + joint_min[7:14] + grip_min[1:2] + head_min[:2])
+            obs_high.extend(joint_max[:7] + grip_max[:1] + joint_max[7:14] + grip_max[1:2] + head_max[:2])
+        elif self.which_arm == 'both':
             obs_low.extend(joint_min[:7]+grip_min[:1]+joint_min[7:14]+grip_min[1:2])
             obs_high.extend(joint_max[:7]+grip_max[:1]+joint_max[7:14]+grip_max[1:2])
-        if self.which_arm == 'left':
+        elif self.which_arm == 'left':
             obs_low.extend(joint_min[:7]+grip_min[:1])
             obs_high.extend(joint_max[:7]+grip_max[:1])
-        if self.which_arm == 'right':
+        elif self.which_arm == 'right':
             obs_low.extend(joint_min[7:14]+grip_min[1:2])
             obs_high.extend(joint_max[7:14]+grip_max[1:2])
 
@@ -109,6 +131,10 @@ class KuavoBaseRosEnv(gym.Env):
                     obs_spaces[f"observation.images.{key}"] = gym.spaces.Box(
                         low=0, high=255, shape=(3, h, w), dtype=np.uint8
                     )
+            elif key == "tactile":
+                obs_spaces["observation.tactile"] = gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32
+                )
 
         # -------- Adding state space --------
         obs_spaces["observation.state"] = gym.spaces.Box(
@@ -122,6 +148,34 @@ class KuavoBaseRosEnv(gym.Env):
 
     def _set_action_space(self):
         limits = self.limits
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            joint_min, joint_max = limits['joint_q']['min'], limits['joint_q']['max']
+            grip_min, grip_max = limits['gripper']['min'], limits['gripper']['max']
+            head_min = limits.get('head_q', {}).get('min', [-1.0, -1.0])
+            head_max = limits.get('head_q', {}).get('max', [1.0, 1.0])
+            action_low = joint_min[:7] + grip_min[:6] + joint_min[7:14] + grip_min[6:12] + head_min[:2]
+            action_high = joint_max[:7] + grip_max[:6] + joint_max[7:14] + grip_max[6:12] + head_max[:2]
+            self.action_space = gym.spaces.Box(
+                low=np.array(action_low, dtype=np.float64),
+                high=np.array(action_high, dtype=np.float64),
+                dtype=np.float64,
+            )
+            return
+
+        if self.state_layout == DECO_18D_LAYOUT:
+            joint_min, joint_max = limits['joint_q']['min'], limits['joint_q']['max']
+            grip_min, grip_max = limits['gripper']['min'], limits['gripper']['max']
+            head_min = limits.get('head_q', {}).get('min', [-1.0, -1.0])
+            head_max = limits.get('head_q', {}).get('max', [1.0, 1.0])
+            action_low = joint_min[:7] + grip_min[:1] + joint_min[7:14] + grip_min[1:2] + head_min[:2]
+            action_high = joint_max[:7] + grip_max[:1] + joint_max[7:14] + grip_max[1:2] + head_max[:2]
+            self.action_space = gym.spaces.Box(
+                low=np.array(action_low, dtype=np.float64),
+                high=np.array(action_high, dtype=np.float64),
+                dtype=np.float64,
+            )
+            return
 
         # ===============================
         # 辅助函数：构造单臂动作范围 Aux function: Constructing single arm operating range
@@ -353,8 +407,16 @@ class KuavoBaseRosEnv(gym.Env):
 
         # === 4. 执行动作 ===
         t2 = time.time()
-        self.cur_joint_angles_action = np.concatenate((action[:7], action[8:15]), axis=0)
-        self.exec_action(action)
+        if is_deco_layout(self.state_layout):
+            if self.state_layout == DECO_28D_LAYOUT:
+                decoded_action = decode_deco_28d_action(action)
+            else:
+                decoded_action = decode_deco_18d_action(action)
+            self.cur_joint_angles_action = decoded_action.arm_joints
+            self.exec_deco_action(decoded_action)
+        else:
+            self.cur_joint_angles_action = np.concatenate((action[:7], action[8:15]), axis=0)
+            self.exec_action(action)
 
         # === 5. 延时与观测 ===
         
@@ -375,40 +437,65 @@ class KuavoBaseRosEnv(gym.Env):
         self.average_sleep_time += self.sleep_time
         log_robot.info(f"rate.sleep time: {self.sleep_time:.3f}s")
 
+    def _safe_control_arm(self, target_position):
+        try:
+            self.robot.control_arm_joint_positions(target_position)
+        except RuntimeError as e:
+            # 当机器人处于 command_pose_world 状态（底盘移动）时，无法控制手臂
+            if "must be in stance state" in str(e):
+                log_robot.warning(f"⚠️  Cannot send arm commands: Robot's current state does not allow such operation (possibly robot is not in stance state)")
+                log_robot.debug(f"   Details: {e}")
+            else:
+                raise
+
+    def exec_deco_action(self, decoded_action):
+        """执行 DECO 28D/18D action。
+
+        头部 action 当前只记录不下发，避免把训练阶段的补零维度误解释为真实头部控制。
+        """
+        self._safe_control_arm(decoded_action.arm_joints)
+        log_robot.debug(f"DECO head action retained but not executed: {decoded_action.head_action}")
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            if self.eef_type != "qiangnao":
+                raise KeyError("deco_28d action requires eef_type='qiangnao'.")
+            if decoded_action.left_hand is None or decoded_action.right_hand is None:
+                raise ValueError("deco_28d action requires left_hand and right_hand fields.")
+            target_positions = np.concatenate((decoded_action.left_hand, decoded_action.right_hand), axis=0) * 100.0
+            target_positions = np.clip(target_positions, 0.0, 100.0)
+            self.qiangnao.control(target_positions=target_positions, target_velocities=None, target_torques=None)
+            return
+
+        if self.state_layout == DECO_18D_LAYOUT:
+            if decoded_action.left_gripper is None or decoded_action.right_gripper is None:
+                raise ValueError("deco_18d action requires left_gripper and right_gripper fields.")
+            self._control_eef(decoded_action.left_gripper, decoded_action.right_gripper)
+            return
+
+        raise KeyError(f"Unsupported DECO state_layout: {self.state_layout}")
+
     def exec_action(self, action):
         """执行机械臂与末端执行器动作 Execute arm and end-effector motion"""
         # if not self.only_arm:
         #     return
 
-        def safe_control_arm(target_position):
-            try:
-                self.robot.control_arm_joint_positions(target_position)
-            except RuntimeError as e:
-                # 当机器人处于 command_pose_world 状态（底盘移动）时，无法控制手臂
-                if "must be in stance state" in str(e):
-                    log_robot.warning(f"⚠️  Cannot send arm commands: Robot's current state does not allow such operation (possibly robot is not in stance state)")
-                    log_robot.debug(f"   Details: {e}")
-                else:
-                    raise
-
-
         if self.which_arm == 'both':
             left_joints, left_eef = action[:7], action[7]
             right_joints, right_eef = action[8:15], action[15]
             target_position = np.concatenate((left_joints, right_joints), axis=0)
-            safe_control_arm(target_position)
+            self._safe_control_arm(target_position)
             self._control_eef(left_eef, right_eef)
 
         elif self.which_arm == 'left':
             left_joints, left_eef = action[:7], action[7]
             target_position = np.concatenate((left_joints, self.arm_init[7:14]), axis=0)
-            safe_control_arm(target_position)
+            self._safe_control_arm(target_position)
             self._control_eef(left_eef, 0)
 
         elif self.which_arm == 'right':
             right_joints, right_eef = action[:7], action[7]
             target_position = np.concatenate((self.arm_init[:7], right_joints), axis=0)
-            safe_control_arm(target_position)
+            self._safe_control_arm(target_position)
             self._control_eef(0, right_eef)
         else:
             raise KeyError(f"Unsupported which_arm: {self.which_arm}")
@@ -467,11 +554,37 @@ class KuavoBaseRosEnv(gym.Env):
                 obs[f"observation.{k}"] = v
             elif 'cam' in k:
                 obs[f"observation.images.{k}"] = v
+            elif k == "tactile":
+                obs["observation.tactile"] = torch.from_numpy(np.asarray(v, dtype=np.float32)).float().unsqueeze(0)
             else:
                 self.arm_state[f"{k}"] = v
 
         if self.is_binary:
             self.arm_state['gripper'] = np.where(self.arm_state['gripper']>0.5, 1, 0)
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            state = build_deco_28d_state(
+                arm_joints=self.arm_state.get("joint_q"),
+                dexhand_state=self.arm_state.get("gripper"),
+                live_head_q=self.arm_state.get("head_q"),
+                head_init=self.head_init,
+                head_state_source=self.head_state_source,
+            )
+            obs["observation.state"] = torch.from_numpy(state).float().unsqueeze(0)
+            log_robot.info(f"DECO 28D STATE: {obs['observation.state']}")
+            return obs
+
+        if self.state_layout == DECO_18D_LAYOUT:
+            state = build_deco_18d_state(
+                arm_joints=self.arm_state.get("joint_q"),
+                gripper_state=self.arm_state.get("gripper"),
+                live_head_q=self.arm_state.get("head_q"),
+                head_init=self.head_init,
+                head_state_source=self.head_state_source,
+            )
+            obs["observation.state"] = torch.from_numpy(state).float().unsqueeze(0)
+            log_robot.info(f"DECO 18D STATE: {obs['observation.state']}")
+            return obs
 
         assert len(self.arm_state.keys()) >= 2, f"arm_state must have exactly 2 elements, but got {len(self.arm_state.keys())}"
 

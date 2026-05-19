@@ -2,6 +2,51 @@
 
 ## 2026-05-19
 
+### 实施阶段六 DECO 本地部署三模式静态接入
+- **任务**: 根据已冻结的阶段六计划，开始实施 DECO 本地单进程部署推理链路，支持 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式。本次只做静态代码与配置修改，未运行 Python、validator、训练、ROS、仿真、部署、安装或环境变更命令；server/client 推理链路仍按计划留到第二轮。
+- **修改文件 1**: `configs/deploy/kuavo_deco_env.yaml`
+  - 新增 `deco` 配置段，明确 `inference_mode` 三个可选值及语义：
+    - `qiangnao_tactile`：28D 灵巧手 + 30D `observation.tactile`，对应二阶段 tactile adapter checkpoint。
+    - `qiangnao_no_tactile`：28D 灵巧手，不订阅、不输入 tactile，对应视觉主干 checkpoint。
+    - `gripper_no_tactile`：18D 二爪夹，不使用 tactile，同时支持 `leju_claw` 与 `rq2f85`。
+  - 新增 `runtime_mode` 注释，说明第一轮优先 `local_real` / `local_sim`，`server` 留到第二轮。
+  - 新增 `head_state_source` 注释，说明 `live_joint_q` 与 `fixed_config` 分别表示实时读取头部关节与使用 `head_init` 固定头部 state。
+  - 将 `obs_key_map` 补充为可覆盖灵巧手与二爪夹的 topic 模板，实际启用项由 `eef_type` 与 `deco.inference_mode` 在配置解析阶段筛选。
+- **修改文件 2**: `kuavo_deploy/config.py`
+  - 新增 `ConfigDeco`，保存 `inference_mode`、`runtime_mode`、`head_state_source`，并在 `policy_type=deco` 时校验其与 `env.eef_type`、`env.state_layout`、`qiangnao_dof_needed` 的一致性。
+  - `ConfigInference.validate()` 增加 `deco` 与 `client` 作为合法 policy type。
+  - `ConfigEnv` 新增 `state_layout`，支持 `standard`、`deco_28d`、`deco_18d`；DECO layout 要求 `which_arm=both` 且 `only_arm=true`。
+  - `ConfigEnv.gripper_slice` 支持 `qiangnao_dof_needed=6`，使部署侧可以读取左右灵巧手各 6 维状态。
+  - `build_obs_key_map()` 增加 DECO 专用筛选逻辑：只启用当前 `eef_type` 对应的末端 topic；只有 `qiangnao_tactile` 才启用 tactile topic；depth feature 支持 `depth_encoding` 参数。
+- **新增文件**: `kuavo_deploy/utils/deco_obs_action.py`
+  - 新增 `build_deco_28d_state()` 与 `build_deco_18d_state()`，集中构造在线 `observation.state`，顺序分别为 28D 灵巧手与 18D 二爪夹 schema。
+  - 新增 `decode_deco_28d_action()` 与 `decode_deco_18d_action()`，集中反解模型输出 action，并保留 head action 但不下发。
+  - 新增 `validate_deco_policy_compatibility()`，在本地推理入口校验部署配置与 checkpoint config 的 `inference_mode/state_layout/eef_type/action_dim/use_tactile/use_tactile_lora` 是否一致，避免部署配置强行覆盖模型结构。
+- **修改文件 3**: `kuavo_deploy/utils/obs_buffer.py`
+  - 新增 `/cam_h/depth/image_raw/compressed` depth topic callback 支持。
+  - `depth_callback()` 支持 `compressed_image`、`compressedDepth_png` 与 `auto` 三种 decoder 语义；`compressed_image` 直接对 `CompressedImage.data` 解码，`compressedDepth_png` 保留旧 PNG magic header 定位逻辑。
+  - 新增 `dexhandTouchState` 消息类型与 `/dexhand/touch_state` callback，按左手 15 + 右手 15 normal force 顺序构造 30D tactile，并保持 `/100` 牛顿量纲换算。
+  - `rq2f85State_callback()` 兼容单值对称夹爪状态，按数据转换侧语义复制成左右两个夹爪值。
+- **修改文件 4**: `kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py`
+  - 接入 DECO helper，在 `state_layout=deco_28d` 时构造 28D 灵巧手 state，在 `state_layout=deco_18d` 时构造 18D 二爪夹 state。
+  - observation space 与 action space 增加 DECO 28D/18D 分支，并在带触觉模式下暴露 `observation.tactile`。
+  - `step()` 增加 DECO action 分支：28D action 下发双臂 14D 和双手 12D；18D action 下发双臂 14D 和左右夹爪 2D；两种模式的 head action 都只记录不下发。
+  - 抽出 `_safe_control_arm()`，复用原有机械臂下发异常处理逻辑。
+- **修改文件 5**: `kuavo_deploy/src/eval/real_single_test.py`
+  - 本地真机推理入口在 `policy_type=deco` 时调用 `validate_deco_policy_compatibility()` 做部署配置与 checkpoint config 一致性校验。
+  - 修正日志读取 `policy.config.n_obs_steps` 的方式，避免 DECO config 没有该字段时因日志访问失败。
+- **修改文件 6**: `kuavo_deploy/src/eval/sim_auto_test.py`
+  - 本地仿真推理入口同样增加 DECO checkpoint/config 一致性校验。
+  - 修正 `policy.config.n_obs_steps` 日志访问逻辑，兼容 DECO config。
+- **修改文件 7**: `PLANS.md`
+  - 将阶段六第一轮本地部署相关条目标记为已完成，包括 DECO 专用部署配置、config parser、ObsBuffer depth/tactile、DECO helper、28D/18D state/action、本地 pre/postprocessor 推理路径和 checkpoint 一致性校验。
+  - 将 Done When 中 DECO 在线部署项拆分为“本地在线部署已静态接入”和“server/client 部署仍待第二轮”。
+- **修改文件 8**: `Content/DECO_Technical_Decisions.md`
+  - 将待实现清单中的 `kuavo_deploy` 本地在线部署链路标记为已完成，并保留 server/client 为后续第二轮。
+- **边界说明**:
+  - 本次没有执行任何运行时验证；所有检查仅限静态阅读、代码结构推导与 diff 审查。
+  - `kuavo_deploy/kuavo_service/server.py` 与 `kuavo_deploy/kuavo_service/client.py` 未修改，避免在本轮引入 processor 归属变化。
+
 ### 冻结阶段六 DECO 部署三模式计划
 - **任务**: 根据用户确认，将阶段六部署计划聚焦到 DECO 推理与本地闭环，明确同时支持灵巧手带触觉、灵巧手无触觉、二爪夹无触觉三种部署模式。本次只修改文本记录文件，未修改任何 Python/YAML 运行逻辑，未运行 Python、validator、训练、ROS、仿真、部署、安装或环境变更命令，也未执行静态代码检查。
 - **修改文件 1**: `PLANS.md`

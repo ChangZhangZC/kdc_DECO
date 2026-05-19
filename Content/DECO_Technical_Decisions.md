@@ -787,7 +787,7 @@ Kuavo 配置命名：
 - [x] 在 DECO wrapper/config 中明确最终保存的 policy 权重不依赖外部初始化路径：保存时清空外部初始化路径，加载最终 `.safetensors` 时不再读取第一阶段目录或 `.pth`；完整部署包仍以 run 根目录为单位。
 - [x] 在部署入口中静态注册 `deco` / `DECO` policy 类型，并导入 DECOProcessor 以注册 `deco_rgbd_letterbox_processor`。
 - [x] 新建 `configs/deploy/kuavo_deco_env.yaml`，并明确 DECO 部署资产采用 Kuavo 原有 run 根目录：`outputs/train/<task>/<method>/<timestamp>/`；`epochbest/` 只是权重子目录，不是完整部署包。
-- [ ] 在 `kuavo_deploy` 中静态接入 DECO 在线部署链路：阶段六第一轮应先覆盖本地单进程推理闭环，并同时支持 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式；server/client 推理排到第二轮。
+- [x] 在 `kuavo_deploy` 中静态接入 DECO 本地在线部署链路：阶段六第一轮已覆盖本地单进程推理闭环，并同时支持 `qiangnao_tactile`、`qiangnao_no_tactile`、`gripper_no_tactile` 三种模式；server/client 推理仍排到第二轮。
 - [x] 新建 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
 - [x] 新建/扩展 `kuavo_data/validate_deco_lerobot_dataset.py`，检查单 rosbag 转换结果的字段、维度、30Hz 时间轴、RGB-depth 对齐、depth decoder、profile 对应 action 映射与可选 30 维 tactile 量纲。
 - [x] 新建 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`。

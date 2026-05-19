@@ -11,7 +11,11 @@ import sys
 from kuavo_deploy.config import KuavoConfig
 from sensor_msgs.msg import CompressedImage, JointState
 from torchvision.transforms.functional import to_tensor
-from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import sensorsData,lejuClawState
+from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import sensorsData, lejuClawState
+try:
+    from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import dexhandTouchState
+except ImportError:
+    dexhandTouchState = None
 from kuavo_deploy.utils.signal_controller import ControlSignalManager
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.utils.ros_manager import ROSManager
@@ -62,11 +66,13 @@ class ObsBuffer:
             '/cam_h/color/image_raw/compressed': self.rgb_callback,
             '/cam_l/color/image_raw/compressed': self.rgb_callback,
             '/cam_r/color/image_raw/compressed': self.rgb_callback,
+            '/cam_h/depth/image_raw/compressed': self.depth_callback,
             '/cam_h/depth/image_raw/compressedDepth': self.depth_callback,
             '/cam_l/depth/image_rect_raw/compressedDepth': self.depth_callback,
             '/cam_r/depth/image_rect_raw/compressedDepth': self.depth_callback,
             '/sensors_data_raw': self.sensorsData_callback,
             '/dexhand/state': self.qiangnaoState_callback,
+            '/dexhand/touch_state': self.tactile_callback,
             '/leju_claw_state': self.lejuClawState_callback,
             '/gripper/state': self.rq2f85State_callback,
         }
@@ -82,6 +88,8 @@ class ObsBuffer:
                          "sensorsData":sensorsData,
                          "JointState":JointState,
                          "lejuClawState":lejuClawState}
+        if dexhandTouchState is not None:
+            msg_type_dict["dexhandTouchState"] = dexhandTouchState
         for topic_key, info in self.subscribe_keys.items():
             topic_name = info["topic"]
             assert info["msg_type"] in msg_type_dict, f"msg_type '{info['msg_type']}' is not supported; valid keys: {list(msg_type_dict.keys())}"
@@ -125,20 +133,43 @@ class ObsBuffer:
         self._append_data(key, data, msg.header.stamp.to_sec())
 
     def depth_callback(self, msg: CompressedImage, key: str, handle: dict):
-        png_magic = bytes([137, 80, 78, 71, 13, 10, 26, 10])
-        idx = msg.data.find(png_magic)
-        if idx == -1:
-            raise ValueError("Invalid depth message, PNG header not found")
-        np_arr = np.frombuffer(msg.data[idx:], np.uint8)
-        image = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+        depth_encoding = handle.get("params", {}).get("depth_encoding", "compressedDepth_png")
+        image = self._decode_depth_image(msg, depth_encoding)
         if image is None:
             return
         resize_wh = handle.get("params", {}).get("resize_wh", None)
         if resize_wh:
             image = cv2.resize(image, resize_wh)
+        if image.ndim == 3:
+            # DECO 第一版只消费单通道 depth；若 ROS 封装返回多通道图像，则取第一通道保持语义稳定。
+            image = image[..., 0]
         image = image[np.newaxis, ...]
         data = self.depth_preprocess(image, depth_range=handle.get("params", {}).get("depth_range", [0, 1500]))
         self._append_data(key, data, msg.header.stamp.to_sec())
+
+    def _decode_depth_image(self, msg: CompressedImage, depth_encoding: str):
+        """按配置解码 depth。
+
+        compressed_image: 普通 sensor_msgs/CompressedImage，data 直接是可 imdecode 的图像 payload。
+        compressedDepth_png: ROS compressedDepth 风格，data 前面带 header，需要定位 PNG magic。
+        """
+        payload = bytes(msg.data)
+        if depth_encoding == "compressed_image":
+            np_arr = np.frombuffer(payload, np.uint8)
+            return cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+        if depth_encoding == "compressedDepth_png":
+            png_magic = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+            idx = payload.find(png_magic)
+            if idx == -1:
+                raise ValueError("Invalid compressedDepth message, PNG header not found")
+            np_arr = np.frombuffer(payload[idx:], np.uint8)
+            return cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+        if depth_encoding == "auto":
+            image = self._decode_depth_image(msg, "compressed_image")
+            if image is not None:
+                return image
+            return self._decode_depth_image(msg, "compressedDepth_png")
+        raise ValueError(f"Unsupported depth_encoding: {depth_encoding}")
 
     def sensorsData_callback(self, msg: sensorsData, key: str, handle = dict):
         # Float64Array ()
@@ -176,8 +207,31 @@ class ObsBuffer:
         joint = [figure / 0.8 for figure in joint]
         slice_value = handle.get("params", {}).get("slice", None)
         joint = [x for slc in slice_value for x in joint[slc[0]:slc[1]]]
+        if len(joint) == 1 and len(slice_value) == 2:
+            # 与 DECO 数据转换保持一致：单值 rq2f85 视为左右夹爪对称状态。
+            joint = [joint[0], joint[0]]
         # joint = torch.tensor(joint, dtype=torch.float32, device=self.device)
         self._append_data(key, joint, msg.header.stamp.to_sec())
+
+    def tactile_callback(self, msg: Any, key: str, handle = dict):
+        """解析 Kuavo 双手 tactile normal force，输出 30D 牛顿量纲向量。
+
+        顺序与 DECO 数据转换一致：左手 5 指 × 3 normal_force，再右手 5 指 × 3 normal_force。
+        """
+        force_scale = float(handle.get("params", {}).get("force_scale", 100.0))
+        tactile_values = []
+        for hand_name in ("left_hand", "right_hand"):
+            if not hasattr(msg, hand_name):
+                raise ValueError(f"dexhandTouchState missing field: {hand_name}")
+            fingers = list(getattr(msg, hand_name))
+            if len(fingers) < 5:
+                raise ValueError(f"dexhandTouchState.{hand_name} must contain at least 5 fingers.")
+            for finger in fingers[:5]:
+                for force_name in ("normal_force1", "normal_force2", "normal_force3"):
+                    if not hasattr(finger, force_name):
+                        raise ValueError(f"dexhandTouchState.{hand_name} missing field: {force_name}")
+                    tactile_values.append(float(getattr(finger, force_name)) / force_scale)
+        self._append_data(key, np.asarray(tactile_values, dtype=np.float32), msg.header.stamp.to_sec())
 
     # ===== 公共方法 Public Methods =====
     def _append_data(self, key, data, timestamp):

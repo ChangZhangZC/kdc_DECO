@@ -53,6 +53,7 @@ import threading
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.kuavo_service.client import PolicyClient
+from kuavo_deploy.utils.deco_obs_action import validate_deco_policy_compatibility
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 from lerobot.policies.factory import make_pre_post_processors
 
@@ -111,7 +112,7 @@ def setup_policy(pretrained_path, policy_type, device=torch.device("cuda")):
     # Log model info
     log_model.info(f"Model loaded from {pretrained_path}")
     if hasattr(policy, "config"):
-        log_model.info(f"Model n_obs_steps: {policy.config.n_obs_steps}")
+        log_model.info(f"Model n_obs_steps: {getattr(policy.config, 'n_obs_steps', 'N/A')}")
     log_model.info(f"Model device: {device}")
     
     return policy
@@ -142,6 +143,8 @@ def main(config: KuavoConfig, env: gym.Env):
     device = torch.device(cfg.device)
 
     policy = setup_policy(pretrained_path, policy_type, device)
+    if policy_type.lower() == 'deco':
+        validate_deco_policy_compatibility(policy.config, config.deco, config.env)
     # preprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_preprocessor.json")
     # postprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_postprocessor.json")
     preprocessor, postprocessor = make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
