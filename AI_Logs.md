@@ -1,5 +1,18 @@
 # AI Execution Logs
 
+## 2026-05-21
+
+### 重构 README_DECO 第四章部署说明
+- **任务**: 根据用户要求，重构 `README_DECO.md` 第四章“部署”部分；保留 `4.1 部署配置入口` 不动，删除原有 `4.2`、`4.3`、`4.4`、`4.5` 的三种部署模式、本地真机或 dry-run、仿真自动测试入口、Server / Client 详细说明，并改为与 `README_ZH.md` 仿真部署风格一致的两段式说明。
+- **修改文件 1**: `README_DECO.md`
+  - 新增 `4.2 模拟部署`，说明模拟部署流程为另一仓库启动 Kuavo Mujoco 仿真器，本仓库执行 `python kuavo_deploy/eval_kuavo.py`，在交互菜单中选择 `3. Task Selection Menu`、输入 `configs/deploy/kuavo_deco_env.yaml`、再选择 `8. auto_test`。
+  - 在 `4.2` 中分别列出二夹爪无触觉模型、强脑无触觉模型、强脑触觉 Adapter 三种仿真模式下需要修改的 `env.env_name`、`env.eef_type`、`env.state_layout`、`deco.inference_mode`、`deco.runtime_mode`、`inference.policy_type`、`task/method/timestamp/epoch` 等 YAML 字段。
+  - 新增 `4.3 实际部署`，说明实际部署复用同一份 `configs/deploy/kuavo_deco_env.yaml`，核心切换为 `env.env_name: Kuavo-Real` 与 `deco.runtime_mode: local_real`，并按三种模式分别列出真机侧配置模板。
+  - 删除第四章中的 dry-run 入口描述，清理“当前验证边界”中残留的 dry-run 表述。
+  - 将 Server / Client 模式压缩为一句说明：可用于边侧机推理，机器人侧作为 client 采集观测并执行动作，边侧机或 GPU 机器作为 server 运行 DECO policy。
+- **未修改文件**:
+  - 本次仅做 README 文档重构，未修改训练、数据转换、部署代码或 YAML 配置文件。
+
 ## 2026-05-20
 
 ### 为 DECO 清洗脚本补充当前 rosbag 加粗黄色进度提示

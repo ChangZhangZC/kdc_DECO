@@ -82,14 +82,22 @@ deco:
   rgb_key: head_cam_h
   rgb_topic: /cam_h/color/image_raw/compressed
   depth_key: depth_h
-  # depth_topic/depth_encoding 是优先候选；转换脚本会自动追加
-  # /cam_h/depth/image_raw/compressedDepth + compressedDepth_png，用于兼容官方模拟数据或实采数据的 topic 差异。
+  # depth_topic/depth_encoding 表示首选 depth 候选，而不是唯一候选。
+  # 脚本会自动补充 /compressed 与 /compressedDepth 的成对 fallback：
+  # - 若首选是 /cam_h/depth/image_raw/compressed，
+  #   会额外尝试 /cam_h/depth/image_raw/compressedDepth + compressedDepth_png。
+  # - 若首选是 /cam_h/depth/image_raw/compressedDepth，
+  #   会额外尝试 /cam_h/depth/image_raw/compressed + compressed_image。
+  # - 同名 topic 会去重，最终按候选顺序选择当前 bag 中第一个存在的 depth topic。
   depth_topic: /cam_h/depth/image_raw/compressed
+  # depth_encoding 只描述首选 depth_topic 的解码方式；它不等于 topic fallback 开关。
   # 可选值：
   # - compressed_image: 普通 sensor_msgs/CompressedImage，data 可直接 cv2.imdecode；当前默认。
   # - compressedDepth_png: ROS compressedDepth 封装，data 前缀有配置头，需要定位 PNG payload 后解码。
-  # - auto: 先按 compressed_image 尝试，再按 compressedDepth_png 尝试；适合只知道 topic、不确定封装格式时使用。
-  # - raw_16uc1: raw depth fallback，只有 allow_raw_depth_fallback=true 且对应 topic 存在时才应使用。
+  # - auto: 对同一个 topic 先尝试 compressed_image，失败后再尝试 compressedDepth_png。
+  # - raw_16uc1: raw depth fallback；只有 allow_raw_depth_fallback=true 且对应 topic 存在时才应使用。
+  # 注意：如果首选 topic 存在但 depth_encoding 写错，脚本不会因为解码失败自动切到下一个 topic；
+  # 不确定封装格式时应使用 depth_encoding: auto。
   depth_encoding: compressed_image
 
   # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
@@ -127,6 +135,3 @@ deco:
   # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
   arm_traj_gap_threshold_s: null
 
-  # 转换完成后的 validator 需要人工单独运行；当前转换脚本不会自动消费 validation 配置段。
-  # 推荐检查项：30Hz、observation.images.head_cam_h、observation.depth_h、profile 对应 state/action 维度、
-  # qiangnao_tactile 的 30D tactile、gripper_no_tactile 不含 tactile，以及 head action 全零。

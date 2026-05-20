@@ -18,7 +18,8 @@
    - Step 2: Feedback Loop: You must explicitly ask the user: "Does this logic align with your expectations, or should I refine the approach?"
    - Step 3: Refinement: If the user provides feedback, you must update the proposal and repeat Step 1 until a final consensus is reached.
    - Step 4: Final Approval: Only proceed to code implementation after receiving an explicit "Approved" or "Proceed" from the user.
-3. No-Runtime Execution: Perform only static code modifications and logical checks; execution of Python scripts or environment alteration commands (e.g., `brew install some-package`, `pip install some-package`, `conda install some-package`) is strictly prohibited. 
+3. No-Runtime Execution: Perform only static code modifications and logical checks; execution of Python scripts or environment alteration commands (e.g., `brew install some-package`, `pip install some-package`, `conda install some-package`) is strictly prohibited.
+   - Static Review Scope: When applying this No-Runtime rule to static code review, if the current task does not involve source-code, script, configuration, or pipeline behavior changes and is limited to Markdown/documentation/text-only edits, do not perform a global code review. Limit inspection to the directly affected text scope.
 4. Action Logging: Immediately upon task completion, record the details of the changes in `AI_Logs.md` chronologically by date using Chinese.
 5. Post-Task Synthesis: Upon completion, provide a comprehensive breakdown in the chat interface detailing the implementation logic, specific code modifications, and the functional purpose of each change.
 

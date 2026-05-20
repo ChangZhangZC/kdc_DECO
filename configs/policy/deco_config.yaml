@@ -11,6 +11,8 @@ timestamp: ${now:%Y%m%d_%H%M%S}
 repoid: "lerobot/${task}"
 root: "/your/path/to/your/lerobotdata_deco/lerobot"
 
+policy_name: deco  # 固定值：当前文件只用于 Kuavo-DECO policy；ACT/DP 请使用各自配置文件。
+
 training:
   output_directory: "outputs/train/${task}/${method}"
   seed: 42
@@ -99,7 +101,7 @@ training:
           kernel_size: 5
           sigma: [0.1, 2.0]
 
-policy_name: deco  # 固定值：当前文件只用于 Kuavo-DECO policy；ACT/DP 请使用各自配置文件。
+
 
 policy:
   _target_: kuavo_train.wrapper.policy.deco.DECOConfigWrapper.CustomDECOConfigWrapper
@@ -181,9 +183,9 @@ policy:
   tactile_lora_rank: 32
   # true 表示加载第一阶段/外部权重后冻结已匹配主干，只训练 tactile/PI_Adapter 等新分支。
   freeze_pretrained_main: true
-  # tactile_left/right_max 单位是 Kuavo normal_force / 100 后的牛顿；use_tactile=true 时必须填写正数。
-  tactile_left_max: null
-  tactile_right_max: null
+  # tactile_left/right_max 单位是 Kuavo normal_force / 100 后的牛顿；use_tactile=true 时必须填写正数，可以来自训练集最大值、分位数上限、人工审定安全上限和灵巧手自身量程
+  tactile_left_max: 25
+  tactile_right_max: 25
   clip_tactile_to_unit: true
 
   # 二夹爪 gripper_no_tactile override 示例：
@@ -195,7 +197,7 @@ policy:
   # load_external_init_weights: false
 
   # 外部初始化路径只在训练构造时读取；保存最终 policy 时会清空，保证 `.safetensors` 自包含。
-  load_external_init_weights: true
+  load_external_init_weights: false
 
   # 三类权重入口含义：
   # - base_policy_path: 第一阶段 visual_main 保存出的 LeRobot `.safetensors` policy 目录。
