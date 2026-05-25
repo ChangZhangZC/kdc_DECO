@@ -52,6 +52,7 @@ env:
     # - compressedDepth_png: ROS compressedDepth，需要定位 PNG payload。
     # - auto: 先尝试 compressed_image，再尝试 compressedDepth_png。
     depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
+    # depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_image"] for sim
     joint_q: ["/sensors_data_raw", "sensorsData", 500]
     head_q: ["/sensors_data_raw", "sensorsData", 500]
     qiangnao: ["/dexhand/state", "JointState", 500]

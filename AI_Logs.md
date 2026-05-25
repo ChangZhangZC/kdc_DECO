@@ -2,6 +2,23 @@
 
 ## 2026-05-21
 
+### 修复 DECO RGB-D preprocessor 部署反序列化缺参问题
+- **任务**: 根据用户部署截图中的 `DECORGBDLetterboxProcessorStep.__init__() missing 2 required positional arguments: 'rgb_keys' and 'depth_keys'` 报错，修复 DECO 自定义 RGB-D letterbox processor 保存配置为空 `{}` 导致部署阶段无法从 `policy_preprocessor.json` 还原的问题；同时修复用户放入 `outputs/` 的当前训练 run。
+- **根因**:
+  - `DECORGBDLetterboxProcessorStep` 训练时通过 `config.rgb_key`、`config.depth_key` 等参数正确构造，因此训练可以运行。
+  - LeRobot 保存 processor pipeline 时会调用每个 step 的 `get_config()`；该 DECO 自定义 step 之前没有实现 `get_config()`，继承了 `ProcessorStep` 基类返回空字典 `{}` 的默认行为。
+  - 部署时 `make_pre_post_processors(None, run_root)` 从 `policy_preprocessor.json` 反序列化 `deco_rgbd_letterbox_processor`，只能拿到空配置 `{}`，因此缺少必填的 `rgb_keys` 和 `depth_keys`。
+- **修改文件 1**: `kuavo_train/wrapper/policy/deco/DECOProcessor.py`
+  - 在 `DECORGBDLetterboxProcessorStep` 中新增 `get_config()`。
+  - 保存 `rgb_keys`、`depth_keys`、`resize_shape`、`use_letterbox`、`letterbox_fill_rgb`、`letterbox_fill_depth`，保证后续新训练 run 的 `policy_preprocessor.json` 可以完整记录 DECO RGB-D letterbox step 的构造参数。
+  - 该修改只影响 processor 配置序列化，不改变模型结构、权重、forward、loss 或训练数据语义，因此不要求重新训练模型。
+- **修改文件 2**: `outputs/train/deco_test/sim_no_tactile/run_20260521_043214/policy_preprocessor.json`
+  - 将已有训练 run 中 `deco_rgbd_letterbox_processor` 的空配置 `{}` 补齐为当前 run 的 `config.json` 中记录的参数。
+  - 补充内容为 `rgb_keys: ["observation.images.head_cam_h"]`、`depth_keys: ["observation.depth_h"]`、`resize_shape: [256, 256]`、`use_letterbox: true`、`letterbox_fill_rgb: 0.5019607843`、`letterbox_fill_depth: 0.0`。
+- **未修改文件**:
+  - 本次未修改训练循环、DECO 模型主体、部署 eval 逻辑、YAML 配置、LeRobot 第三方源码或权重 `.safetensors` 文件。
+  - 本次未执行 Python、训练、仿真、ROS、部署或环境变更命令；仅做静态检索与文本修复。
+
 ### 重构 README_DECO 第四章部署说明
 - **任务**: 根据用户要求，重构 `README_DECO.md` 第四章“部署”部分；保留 `4.1 部署配置入口` 不动，删除原有 `4.2`、`4.3`、`4.4`、`4.5` 的三种部署模式、本地真机或 dry-run、仿真自动测试入口、Server / Client 详细说明，并改为与 `README_ZH.md` 仿真部署风格一致的两段式说明。
 - **修改文件 1**: `README_DECO.md`

@@ -105,6 +105,17 @@ class DECORGBDLetterboxProcessorStep(ProcessorStep):
             kwargs["align_corners"] = False
         return F.interpolate(tensor, **kwargs)
 
+    def get_config(self) -> dict[str, Any]:
+        """保存 DECO RGB-D letterbox 构造参数，供部署阶段从 JSON 中完整还原。"""
+        return {
+            "rgb_keys": list(self.rgb_keys),
+            "depth_keys": list(self.depth_keys),
+            "resize_shape": list(self.resize_shape),
+            "use_letterbox": self.use_letterbox,
+            "letterbox_fill_rgb": self.letterbox_fill_rgb,
+            "letterbox_fill_depth": self.letterbox_fill_depth,
+        }
+
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:

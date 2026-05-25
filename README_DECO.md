@@ -423,6 +423,7 @@ env:
   state_layout: deco_18d
   which_arm: both
   only_arm: true
+  depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_png"]
 
 deco:
   inference_mode: gripper_no_tactile
@@ -446,6 +447,7 @@ env:
   which_arm: both
   only_arm: true
   qiangnao_dof_needed: 6
+  depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_png"]
 
 deco:
   inference_mode: qiangnao_no_tactile
@@ -469,6 +471,7 @@ env:
   which_arm: both
   only_arm: true
   qiangnao_dof_needed: 6
+  depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_png"]
 
 deco:
   inference_mode: qiangnao_tactile
@@ -519,6 +522,7 @@ env:
   state_layout: deco_18d
   which_arm: both
   only_arm: true
+  depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
 
 deco:
   inference_mode: gripper_no_tactile
@@ -543,6 +547,7 @@ env:
   which_arm: both
   only_arm: true
   qiangnao_dof_needed: 6
+  depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
 
 deco:
   inference_mode: qiangnao_no_tactile
@@ -567,6 +572,7 @@ env:
   which_arm: both
   only_arm: true
   qiangnao_dof_needed: 6
+  depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
 
 deco:
   inference_mode: qiangnao_tactile
