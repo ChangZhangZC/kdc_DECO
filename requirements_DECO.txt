@@ -9,10 +9,11 @@
 # - 不考虑 Windows，不从 `requirements_total.txt` 复制完整环境 freeze。
 #
 # 重要边界：
-# - ROS Noetic 及其消息包不是 pip requirements 的职责范围。
-# - 运行 rosbag 数据转换、仿真或实机部署前，系统仍需要通过 apt/ROS workspace
-#   提供 rospy、rosbag、cv_bridge、sensor_msgs、std_msgs、geometry_msgs、std_srvs、
-#   kuavo_msgs 等 ROS 包，并 source 对应 setup.bash。
+# - 本文件纳入 rosbag 数据清洗所需的 pure-Python ROS 读取依赖。
+# - cv_bridge、std_msgs、geometry_msgs、std_srvs、kuavo_msgs 等运行期消息/桥接包
+#   仍建议由系统 ROS 或 Kuavo ROS workspace 提供，并在运行前 source 对应 setup.bash。
+# - 若实机数据清洗报缺少标准消息包，可再按报错补充对应 rospypi 包；本轮不加入
+#   validator/数据检查专用依赖。
 # - 若 `kuavo-humanoid-sdk` 无法从当前 pip 源安装，请按 Kuavo 官方 SDK/ROS
 #   workspace 安装方式提供该包；它被部署侧 `kuavo_deploy` 直接导入。
 #
@@ -49,6 +50,19 @@ opencv-python-headless==4.12.0.88
 av==15.0.0
 imageio==2.37.0
 imageio-ffmpeg==0.6.0
+
+# Data cleaning and rosbag conversion
+# rospypi 用于解析 rospy/rosbag/genpy/roslz4 等 ROS Noetic Python 包。
+--extra-index-url https://rospypi.github.io/simple/
+catkin-pkg==1.0.0
+gnupg==2.3.1
+genpy==0.6.18
+rospkg==1.6.0
+roslz4==1.17.4
+rosbag==1.17.4
+rospy==1.17.4
+termcolor==3.1.0
+Pympler==1.1
 
 # Model components and visual augmentation
 einops==0.8.1
