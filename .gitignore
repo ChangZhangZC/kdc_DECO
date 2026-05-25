@@ -227,3 +227,4 @@ third_party/.DS_Store
 # files for dev
 data_example/
 kuavo_data/inspect_outputs/
+DECO/

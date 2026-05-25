@@ -24,22 +24,22 @@ cd /path/to/kuavo_data_challenge
 
 与 DECO 相关的主要路径如下：
 
-| 路径 | 用途 |
-| --- | --- |
-| `requirements_DECO.txt` | Linux pip-only 依赖入口。 |
-| `configs/data/KuavoRosbag2Lerobot_deco.yaml` | DECO 数据清洗配置。 |
-| `kuavo_data/CvtRosbag2Lerobot_DECO.py` | DECO rosbag 到 LeRobot 数据集转换脚本。 |
-| `configs/policy/deco_config.yaml` | DECO 训练配置。 |
-| `kuavo_train/train_policy.py` | Kuavo 单机训练入口。 |
-| `configs/deploy/kuavo_deco_env.yaml` | DECO 唯一部署配置入口。 |
-| `third_party/deco/` | 已收编的 DECO 源码副本，当前只保留 DECO 主链路。 |
+| 路径                                         | 用途                                             |
+| -------------------------------------------- | ------------------------------------------------ |
+| `requirements_DECO.txt`                      | Linux pip-only 依赖入口。                        |
+| `configs/data/KuavoRosbag2Lerobot_deco.yaml` | DECO 数据清洗配置。                              |
+| `kuavo_data/CvtRosbag2Lerobot_DECO.py`       | DECO rosbag 到 LeRobot 数据集转换脚本。          |
+| `configs/policy/deco_config.yaml`            | DECO 训练配置。                                  |
+| `kuavo_train/train_policy.py`                | Kuavo 单机训练入口。                             |
+| `configs/deploy/kuavo_deco_env.yaml`         | DECO 唯一部署配置入口。                          |
+| `third_party/deco/`                          | 已收编的 DECO 源码副本，当前只保留 DECO 主链路。 |
 
 ### 1.2 Python 依赖
 
 环境初始化:
 ```bash
-conda create -n deco python=3.12 -y
-conda activate deco
+conda create -n kuavo_deco python=3.10 -y
+conda activate kuavo_deco
 conda install -c conda-forge "ffmpeg=7.*" libstdcxx-ng -y
 
 # DECO 环境安装只使用一份 requirements：
@@ -91,16 +91,16 @@ configs/data/KuavoRosbag2Lerobot_deco.yaml
 
 ### 2.2 必须人工调整的参数
 
-| 字段 | 参数含义 | 说明 |
-| --- | --- | --- |
-| `rosbag.rosbag_dir` | rosbag 输入目录 | 目录内应包含一个或多个 `.bag` 文件 |
-| `rosbag.num_used` | 转录 rosbag 数目 | `null` 表示使用目录下全部 bag |
-| `rosbag.lerobot_dir` | rosbag 输出目录 | 推荐写最终 LeRobot dataset root，例如 `/data/task_x_deco/lerobot` |
-| `dataset.task_description` | 任务名称描述 | 写入 LeRobot task metadata |
-| `dataset.eef_type` | 末端执行器类型 | 可填 `qiangnao`、`leju_claw`、`rq2f85`。 |
-| `deco.end_effector_profile` | 一般保持 `auto` | 手动指定时必须与 `dataset.eef_type` 匹配 |
-| `deco.write_tactile` | 是否转录触觉信息的开关 | `qiangnao_tactile` 可写入 tactile；二夹爪 profile 会强制忽略 tactile |
-| `deco.overwrite` | 覆盖已有输出目录 | 默认 `false`，避免误删或覆盖已有数据 |
+| 字段                        | 参数含义               | 说明                                                                 |
+| --------------------------- | ---------------------- | -------------------------------------------------------------------- |
+| `rosbag.rosbag_dir`         | rosbag 输入目录        | 目录内应包含一个或多个 `.bag` 文件                                   |
+| `rosbag.num_used`           | 转录 rosbag 数目       | `null` 表示使用目录下全部 bag                                        |
+| `rosbag.lerobot_dir`        | rosbag 输出目录        | 推荐写最终 LeRobot dataset root，例如 `/data/task_x_deco/lerobot`    |
+| `dataset.task_description`  | 任务名称描述           | 写入 LeRobot task metadata                                           |
+| `dataset.eef_type`          | 末端执行器类型         | 可填 `qiangnao`、`leju_claw`、`rq2f85`。                             |
+| `deco.end_effector_profile` | 一般保持 `auto`        | 手动指定时必须与 `dataset.eef_type` 匹配                             |
+| `deco.write_tactile`        | 是否转录触觉信息的开关 | `qiangnao_tactile` 可写入 tactile；二夹爪 profile 会强制忽略 tactile |
+| `deco.overwrite`            | 覆盖已有输出目录       | 默认 `false`，避免误删或覆盖已有数据                                 |
 
 ### 2.3 末端执行器选项
 
@@ -205,35 +205,35 @@ outputs/train/<task>/<method>/run_<timestamp>/
 
 - save path & training 参数:
 
-| 字段 | 说明 |
-| --- | --- |
-| `task` | 任务名称，会进入 `outputs/train/<task>/...`。 |
-| `method` | 方法名称，建议区分 `deco_visual_main`、`deco_tactile_adapter`、`deco_gripper` 等训练分支 |
-| `root` | 数据清洗输出的 LeRobot dataset root，必须与 `rosbag.lerobot_dir` 对齐 |
-| `policy_name` | 固定值，默认`deco`，也兼容大写，即 `DECO`  |
-| `training.max_epoch` | 训练 epoch 数 |
-| `training.save_freq_epoch` | 每隔多少个 epoch 保存一次额外 checkpoint |
-| `training.batch_size` | 根据显存调整 |
-| `training.num_workers` | DataLoader 的 worker 数量 |
-| `training.resume` | 是否启用恢复训练逻辑，默认false，表示从头开始训练 |
-| `training.resume_timestamp` | 仅当`resume=true`时生效，指向续接训练的权重|
-| `training.RGB_Augmenter` | 调整图像增强的算法池和权重|
+| 字段                        | 说明                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| `task`                      | 任务名称，会进入 `outputs/train/<task>/...`。                                            |
+| `method`                    | 方法名称，建议区分 `deco_visual_main`、`deco_tactile_adapter`、`deco_gripper` 等训练分支 |
+| `root`                      | 数据清洗输出的 LeRobot dataset root，必须与 `rosbag.lerobot_dir` 对齐                    |
+| `policy_name`               | 固定值，默认`deco`，也兼容大写，即 `DECO`                                                |
+| `training.max_epoch`        | 训练 epoch 数                                                                            |
+| `training.save_freq_epoch`  | 每隔多少个 epoch 保存一次额外 checkpoint                                                 |
+| `training.batch_size`       | 根据显存调整                                                                             |
+| `training.num_workers`      | DataLoader 的 worker 数量                                                                |
+| `training.resume`           | 是否启用恢复训练逻辑，默认false，表示从头开始训练                                        |
+| `training.resume_timestamp` | 仅当`resume=true`时生效，指向续接训练的权重                                              |
+| `training.RGB_Augmenter`    | 调整图像增强的算法池和权重                                                               |
 
 - policy 参数:
 
-| 字段 | 说明 |
-| --- | --- |
-| `policy.training_stage` | 训练阶段。visual_main 是第一阶段 RGB-D + state 主干训练；tactile_adapter 是第二阶段触觉 adapter 微调|
-| `policy.use_tactile` | 是否把 tactile 输入模型。`false` 时即使数据集有 tactile，模型 forward 也不会读|
-| `policy.use_tactile_lora` | 是否启用 DECO 自实现的 tactile PI_Adapter/plugin |
-| `policy.end_effector_profile` | 数据 schema 类型。选填 `qiangnao_tactile` ；`gripper_no_tactile` |
-| `policy.chunk_size` | 预测多少步未来 action |
-| `policy.action_dim` | action 的维度。`qiangnao_tactile` 必须是 28；`gripper_no_tactile` 必须是 18|
-| `policy.vision_backbone` | RGB 分支 backbone，选填 `resnet34`(default)；`resnet18` |
-| `policy.depth_backbone` | Depth 分支 backbone。选填 `resnet34`(default)；`resnet18` |
-| `policy.normalization_mapping` | 各模态正则化选项|
-| `policy.tactile_left_max` | 左手 tactile 归一化最大值，匹配灵巧手触觉量程(单位:N) |
-| `policy.tactile_right_max` | 右手 tactile 归一化最大值，匹配灵巧手触觉量程(单位:N) |
+| 字段                           | 说明                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `policy.training_stage`        | 训练阶段。visual_main 是第一阶段 RGB-D + state 主干训练；tactile_adapter 是第二阶段触觉 adapter 微调 |
+| `policy.use_tactile`           | 是否把 tactile 输入模型。`false` 时即使数据集有 tactile，模型 forward 也不会读                       |
+| `policy.use_tactile_lora`      | 是否启用 DECO 自实现的 tactile PI_Adapter/plugin                                                     |
+| `policy.end_effector_profile`  | 数据 schema 类型。选填 `qiangnao_tactile` ；`gripper_no_tactile`                                     |
+| `policy.chunk_size`            | 预测多少步未来 action                                                                                |
+| `policy.action_dim`            | action 的维度。`qiangnao_tactile` 必须是 28；`gripper_no_tactile` 必须是 18                          |
+| `policy.vision_backbone`       | RGB 分支 backbone，选填 `resnet34`(default)；`resnet18`                                              |
+| `policy.depth_backbone`        | Depth 分支 backbone。选填 `resnet34`(default)；`resnet18`                                            |
+| `policy.normalization_mapping` | 各模态正则化选项                                                                                     |
+| `policy.tactile_left_max`      | 左手 tactile 归一化最大值，匹配灵巧手触觉量程(单位:N)                                                |
+| `policy.tactile_right_max`     | 右手 tactile 归一化最大值，匹配灵巧手触觉量程(单位:N)                                                |
 
 `policy.load_external_init_weights=false` 和其之后的三个参数，提供外部初始化权重入口，允许外部 `.pth` 格式权重进来作为训练初始化，但它不是唯一入口，也不是推荐主路径。
 
@@ -352,10 +352,10 @@ policy:
 
 ### 3.6 不同 profile 的训练配置对齐
 
-| 数据 profile | 训练 profile | `action_dim` | tactile | 是否有第二阶段 |
-| --- | --- | --- | --- | --- |
-| `qiangnao_tactile` | `qiangnao_tactile` | 28 | 第一阶段关闭，第二阶段可开启 | 可选 |
-| `gripper_no_tactile` | `gripper_no_tactile` | 18 | 必须关闭 | 不允许 |
+| 数据 profile         | 训练 profile         | `action_dim` | tactile                      | 是否有第二阶段 |
+| -------------------- | -------------------- | ------------ | ---------------------------- | -------------- |
+| `qiangnao_tactile`   | `qiangnao_tactile`   | 28           | 第一阶段关闭，第二阶段可开启 | 可选           |
+| `gripper_no_tactile` | `gripper_no_tactile` | 18           | 必须关闭                     | 不允许         |
 
 如果数据集是二夹爪 18D，但训练仍使用默认 `action_dim=28`，wrapper 应报错；如果强行绕过这类检查，state/action normalizer、模型输入输出层和部署 action 解码都会不一致。
 
@@ -373,19 +373,23 @@ configs/deploy/kuavo_deco_env.yaml
 
 必须人工调整的字段：
 
-| 字段 | 说明 |
-| --- | --- |
-| `env.eef_type` | `qiangnao`、`leju_claw` 或 `rq2f85`，必须与训练数据和 checkpoint 语义一致。 |
-| `env.state_layout` | `deco_28d` 用于强脑灵巧手，`deco_18d` 用于二夹爪。 |
-| `deco.inference_mode` | `qiangnao_tactile`、`qiangnao_no_tactile` 或 `gripper_no_tactile`。 |
-| `deco.head_state_source` | `live_joint_q` 或 `fixed_config`。 |
-| `inference.policy_type` | 本地推理填 `deco`；server/client 调用侧填 `client`。 |
-| `inference.task` | 对应 `outputs/train/<task>/`。 |
-| `inference.method` | 对应 `outputs/train/<task>/<method>/`。 |
-| `inference.timestamp` | 对应 run 目录名，例如 `run_20260518_120000`。 |
-| `inference.epoch` | 选择 `epoch<epoch>`，例如 `best`、`50`、`100`。 |
-| `inference.device` | `cuda` 或 `cpu`。 |
-| `obs_key_map.depth_h` | 在线 depth topic 或 encoding 与训练/数据配置不一致时才改。 |
+| 字段                     | 说明                                                                      |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `env.eef_type`           | `qiangnao`、`leju_claw` 或 `rq2f85`，必须与训练数据和 checkpoint 语义一致 |
+| `env.state_layout`       | `deco_28d` 用于强脑灵巧手，`deco_18d` 用于二夹爪                          |
+| `env.depth_h`            | `compressedDepth` 用于模拟，`compressed` 用用于实机部署                   |
+| `deco.inference_mode`    | `qiangnao_tactile`、`qiangnao_no_tactile` 或 `gripper_no_tactile`         |
+| `deco.runtime_mode`      | `local_real`、`local_sim`、`server` 或 `dry_run`                          |
+| `deco.head_state_source` | `live_joint_q` 或 `fixed_config` ，固定头部自由度时，默认`fixed_config`   |
+| `inference.policy_type`  | 本地推理填 `deco`；server/client 调用侧填 `client`                        |
+| `inference.task`         | 对应 `outputs/train/<task>/`                                              |
+| `inference.method`       | 对应 `outputs/train/<task>/<method>/`                                     |
+| `inference.timestamp`    | 对应 run 目录名，例如 `run_20260518_120000`                               |
+| `inference.epoch`        | 选择 `epoch<epoch>`，例如 `best`、`50`、`100`                             |
+| `inference.device`       | `cuda` 或 `cpu`                                                           |
+
+
+
 
 ### 4.2 模拟部署
 
@@ -400,9 +404,17 @@ Mujoco simulator / ROS topics
   -> KuavoSimEnv.step 下发仿真动作
 ```
 
-启动方式与原 Kuavo 仿真测试一致：
-
 ```bash
+# to unset realworld kuavo setup in . bashrc
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://127.0.0.1:11311
+export ROS_IP=127.0.0.1
+unset ROS_HOSTNAME
+
+cd kuavo_data_challenge
+conda activate kuavo_deco
+
+#启动方式与原 Kuavo 仿真测试一致：
 python kuavo_deploy/eval_kuavo.py
 ```
 
@@ -672,12 +684,3 @@ inference:
 - 不要把 `train_hz=30` 改成部署频率；部署 10Hz 由 `control_hz=10` 和 `action_stride=3` 处理。
 - 不要让 server/client 两侧都执行 preprocessor 或 postprocessor。
 
-## 7. 当前验证边界
-
-本仓库中的 DECO 数据、训练、部署代码已经完成静态接入与文档同步。实际项目落地时仍应在目标 Linux/ROS 环境中补做：
-
-- rosbag 转换后的 validator 检查。
-- 第一阶段 `visual_main` 的训练与 checkpoint 保存检查。
-- 无触觉仿真闭环。
-- 若使用触觉，再进行第二阶段 tactile adapter 训练与低风险部署验证。
-- 上实机前的 action 范围、左右映射、10Hz 控制节奏、RGB-depth 对齐和 tactile 非零/饱和检查。
