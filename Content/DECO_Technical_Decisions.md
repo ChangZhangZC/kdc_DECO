@@ -78,6 +78,63 @@ Kuavo RGB + depth + state + action + optional tactile rosbag
 
 ---
 
+## 2A. 版本 2.0 修正决策：RGB-D 视觉融合消融
+
+> **记录日期**：2026-06-02  
+> **状态**：技术决策已记录，尚未实施代码修改。  
+> **边界**：本章节作为后续 v2.0 修正决策独立存在，不回填修改 2.1 中记录的当前第一版冻结路线。
+
+### 2A.1 决策背景
+
+用户在 MuJoCo 中使用当前 Kuavo-DECO 进行模仿学习闭环验证：数据来自 MuJoCo，训练后的模型也回到 MuJoCo 中部署。当前现象是动作形态看起来合理，但视觉和动作没有稳定对齐，表现为空抓，成功率为零。
+
+该现象优先被解释为 RGB-D 视觉 grounding 或动作触发空间定位问题，而不是简单的 action decoder 完全失效。当前重点怀疑点之一是 RGB/depth 在 ResNet 后、RoPE 与 stream embedding 前执行的 early cross attention 是否产生了副作用。
+
+### 2A.2 当前 cross attention 的潜在副作用
+
+当前 Kuavo-DECO 第一版视觉前端为：
+
+```text
+RGB -> RGB ResNet -> rgb_tokens
+depth -> 1-channel Depth ResNet -> depth_tokens
+rgb_tokens/depth_tokens -> 双向 cross attention -> fused_rgb/fused_depth
+fused_rgb/fused_depth -> stream embedding + RoPE -> DECO MMAttention
+```
+
+该设计复用了 Kuavo ACT custom wrapper 中的 RGB-depth cross-modal fusion 思路，但在 DECO 上存在一个需要消融验证的理论风险：cross attention 发生时，token 尚未获得显式二维 RoPE 与 stream embedding。RGB token 可以全局 attend 到任意 depth token，理论上能够学习跨模态补充信息，但也可能在低数据量、弱视觉监督或 RGB-D 轻微错位时扰乱原本的空间对应关系。
+
+对于抓取任务，目标位置、末端接近点和 depth 几何关系非常关键。如果 early cross attention 学到错误跨模态关联，后续 action token 在 DECO 主干中看到的视觉 token 可能已经被污染，从而造成“动作合理但空抓”的表现。
+
+### 2A.3 stream embedding 与 RoPE 的冻结解释
+
+- `RoPE` 负责表达二维空间位置。RGB token 和 depth token 使用同一套空间坐标，因为二者来自对齐 RGB-D 输入。
+- `stream embedding` 负责表达视觉流来源。`stream_id=0` 表示 RGB，`stream_id=1` 表示 depth，作用类似 BERT 的 segment embedding。
+- 若采用 v2.0 `direct_tokens` 路线，RGB/depth 在进入 DECO 主干前不发生内容交汇；它们只被 concat 为 `[RGB tokens, depth tokens]`，再分别加 stream embedding。
+- `MMAttention` 内部仍会把 RGB、depth 和 action token 拼接后执行 joint attention，因此 v2.0 不是彻底隔离 RGB 与 depth，而是把交汇点从 ResNet 后、RoPE 前推迟到 DECO 主干内部。
+
+### 2A.4 v2.0 决策
+
+后续应新增 `visual_fusion_mode` 配置项，用于在不删除现有 cross attention 代码的前提下支持视觉融合消融：
+
+| 模式 | 语义 | 用途 |
+| ---- | ---- | ---- |
+| `cross_attention` | 保持当前实现：RGB/depth ResNet token 先经过双向 cross attention，再以 `fused_rgb/fused_depth` 两路 token 进入 DECO 主干。 | 当前 baseline |
+| `direct_tokens` | 跳过 early cross attention：RGB/depth ResNet token 直接进入 `pack_visual_token_sequences()`，加 stream embedding 与 RoPE 后进入 DECO 主干。 | v2.0 空抓问题优先 ablation |
+
+默认值必须保持 `cross_attention`，避免已有配置和已有实验语义被静默改变。`direct_tokens` 作为显式 ablation 模式启用。
+
+### 2A.5 实验与判断标准
+
+- Baseline A：`visual_fusion_mode=cross_attention`。
+- Ablation B：`visual_fusion_mode=direct_tokens`。
+- 两组实验应尽量保持相同数据、相同训练参数、相同部署配置和相同 MuJoCo 任务设置。
+- `direct_tokens` 应优先从头训练，不建议直接严格加载 cross-attention checkpoint 续训。
+- 判断指标应包括 MuJoCo 成功率、空抓比例、末端是否朝目标收敛、抓取触发时目标与末端的空间关系、动作平滑性，而不是只看训练 loss。
+- 若 `direct_tokens` 明显改善空抓，说明 early cross attention 至少存在可疑副作用；后续可研究 RoPE 后局部 cross attention、主干内融合或带位置约束的 cross attention。
+- 若 `direct_tokens` 无改善，应优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
+
+---
+
 ## 3. 阶段一：RGB-D 数据引擎技术决策
 
 ### 3.1 目标输出字段

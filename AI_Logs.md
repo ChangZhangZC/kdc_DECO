@@ -1,5 +1,26 @@
 # AI Execution Logs
 
+## 2026-06-02
+
+### 记录 DECO RGB-D 视觉融合 v2.0 消融修正计划
+- **任务**: 根据用户要求，将关于 MuJoCo 模仿学习空抓问题、RGB-D early cross attention 潜在副作用、以及后续 `visual_fusion_mode` 可选消融方案写入项目计划与技术决策记录。本次只修改 Markdown 文档，不修改任何 Python、YAML、训练、部署或数据转换代码。
+- **背景**:
+  - 用户反馈当前 Kuavo-DECO 在 MuJoCo 中训练并部署后，动作形态看起来合理，但视觉与动作没有稳定对齐，表现为空抓，成功率为零。
+  - 当前讨论形成的核心怀疑点是：DECO 视觉前端在 RGB/depth 各自 ResNet 后、显式 RoPE 与 stream embedding 前执行 RGB-depth 双向 cross attention，可能在低数据量或弱视觉监督下扰乱 RGB-D 空间对应关系。
+  - 讨论中明确：`stream embedding` 用于标记 token 来源，`stream_id=0` 表示 RGB，`stream_id=1` 表示 depth；`RoPE` 用于表达二维空间位置。去除 early cross attention 后，RGB/depth 在进入 DECO 主干前不发生内容交汇，但会在 DECO `MMAttention` 内与 action token 一起做 joint attention。
+- **修改文件 1**: `PLANS.md`
+  - 新增独立章节 `版本 2.0 修正计划：RGB-D 视觉融合消融与空抓问题排查`，没有回填修改前文已完成阶段。
+  - 记录 MuJoCo 空抓现象、当前 early cross attention 的理论风险、stream embedding 与 RoPE 的语义边界。
+  - 记录后续待实现计划：新增 `policy.visual_fusion_mode`，默认 `cross_attention` 保持当前行为，同时新增 `direct_tokens` 路径，使 RGB/depth ResNet token 跳过 early cross attention，直接进入 `pack_visual_token_sequences()`，再加 stream embedding、RoPE 并进入 DECO 主干。
+  - 记录后续实验设计：以 `cross_attention` 作为 baseline，以 `direct_tokens` 作为优先 ablation；对比 MuJoCo 成功率、空抓比例、末端与目标空间关系、轨迹收敛和动作平滑性。
+- **修改文件 2**: `Content/DECO_Technical_Decisions.md`
+  - 新增独立章节 `2A. 版本 2.0 修正决策：RGB-D 视觉融合消融`，保留原 `2.1 当前冻结的总体技术路线` 不动。
+  - 记录 v2.0 技术决策：后续通过 `visual_fusion_mode` 在 `cross_attention` 与 `direct_tokens` 两种视觉融合方式之间显式选择。
+  - 明确 `cross_attention` 是当前 baseline，`direct_tokens` 是针对空抓问题的优先消融路线；默认值必须保持 `cross_attention`，避免已有配置和实验语义被静默改变。
+- **未修改文件**:
+  - 本次没有修改 `configs/policy/deco_config.yaml`、`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`、`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`、`third_party/deco/models/deco/deco.py` 或任何运行逻辑。
+  - 本次没有执行 Python、训练、validator、MuJoCo、ROS、部署、pip、conda 或环境变更命令。
+
 ## 2026-05-21
 
 ### 修复 DECO RGB-D preprocessor 部署反序列化缺参问题

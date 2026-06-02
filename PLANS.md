@@ -70,6 +70,50 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 
 ---
 
+## 版本 2.0 修正计划：RGB-D 视觉融合消融与空抓问题排查
+
+> **记录日期**：2026-06-02  
+> **状态**：方案已讨论并冻结，尚未实施代码修改。  
+> **边界**：本章节独立记录后续 v2.0 修正计划，不回填修改前文已完成阶段的历史记录。
+
+### 背景现象
+
+当前 Kuavo-DECO 在 MuJoCo 模仿学习闭环中出现“动作形态合理，但视觉与动作没有稳定对齐”的现象，具体表现为空抓、任务成功率为零。初步判断动作先验并非完全错误，优先怀疑 RGB-D 视觉 grounding、动作触发位置或训练/部署视觉语义存在偏移。
+
+### 当前风险假设
+
+- 当前 DECO 视觉前端在 RGB/depth 各自 ResNet 后、进入 `pack_visual_token_sequences()` 之前执行 RGB-depth 双向 cross attention。
+- 这一步发生在显式二维 RoPE 与 stream embedding 之前，因此 RGB token 可以全局 attend 到任意 depth token；在低数据量或弱视觉监督下，它可能提前扰乱 RGB-D 原本的空间对应关系。
+- 对抓取任务而言，RGB 提供纹理、边界和语义，depth 提供几何距离和空间结构。如果 early cross attention 学到错误跨模态关联，后续 action token 看到的视觉 token 可能已经被污染，从而表现为空抓或目标定位偏移。
+
+### stream embedding 与 RoPE 语义
+
+- `RoPE` 负责表达二维空间位置：RGB token 与 depth token 共享同一套空间坐标，因为二者来自对齐 RGB-D 输入。
+- `stream embedding` 负责表达 token 来源：`stream_id=0` 表示 RGB，`stream_id=1` 表示 depth，作用类似 BERT 的 segment embedding。
+- 若去除 early cross attention，RGB/depth 在进入 DECO 主干前不发生内容交汇；它们只会被 concat 成 `[RGB tokens, depth tokens]`，分别加 stream embedding，并在 `MMAttention` 中分别施加同一套二维 RoPE。
+- RGB/depth/action 的真正信息交互推迟到 DECO 主干 `MMAttention` 内部完成，因此该方案不是彻底隔离 RGB 与 depth，而是把交汇点从 ResNet 后、RoPE 前推迟到 RoPE/stream embedding 之后。
+
+### v2.0 计划
+
+- [ ] 在 `configs/policy/deco_config.yaml` 中新增 `policy.visual_fusion_mode`，默认保持 `cross_attention`，避免静默改变既有训练语义。
+- [ ] 支持 `visual_fusion_mode: cross_attention`：沿用当前 RGB/depth ResNet token 先经过双向 cross attention，再以 `fused_rgb/fused_depth` 两路 token 进入 DECO 主干。
+- [ ] 支持 `visual_fusion_mode: direct_tokens`：RGB/depth ResNet token 不做 early cross attention，直接进入 `pack_visual_token_sequences()`，再加 stream embedding、RoPE，并进入 DECO 主干。
+- [ ] 在 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py` 中注册并校验 `visual_fusion_mode`，只允许 `cross_attention` 与 `direct_tokens`。
+- [ ] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中向 `DECO(...)` 透传 `visual_fusion_mode`，不改变 batch 输入字段、loss、action queue、tactile 逻辑或 pre/postprocessor 顺序。
+- [ ] 在 `third_party/deco/models/deco/deco.py` 中保留 `RGBDepthCrossAttentionFusion` 类和当前 cross attention 路径，同时新增 `direct_tokens` 分支：`rgb_tokens/depth_tokens -> pack_visual_token_sequences(...)`。
+- [ ] 静态确认两种模式输出 shape 均为 `[B, 2L, dim]`，保证 `MMAttention` 中 `feat_len = total_img_len / 2` 的假设继续成立。
+
+### 后续实验设计
+
+- [ ] Baseline A：`visual_fusion_mode=cross_attention`，保持当前实现作为对照。
+- [ ] Ablation B：`visual_fusion_mode=direct_tokens`，除视觉融合模式外保持相同数据、相同超参数、相同训练轮数和相同部署配置。
+- [ ] `direct_tokens` 优先从头训练，不建议直接严格加载 `cross_attention` checkpoint 续训。
+- [ ] 对比指标重点记录 MuJoCo 成功率、空抓比例、抓取触发时目标与末端的空间关系、末端轨迹是否朝目标收敛、动作是否平滑。
+- [ ] 若 `direct_tokens` 明显改善空抓，后续再评估更温和的融合方式，例如 RoPE 后局部 cross attention、只在主干中融合，或保留 cross attention 但加入局部窗口/位置约束。
+- [ ] 若 `direct_tokens` 无明显改善，则优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
+
+---
+
 ## 阶段一：RGB-D 数据引擎阶段 (Data Engine Phase)
 
 **核心目标**：新建 DECO 专用 rosbag 转 LeRobot 数据链路，保留 Kuavo 工具链的数据组织方式，但输出适配 DECO 的 profile 化字段：30Hz RGB-D、多模态 state/action、可选 tactile、灵巧手 28 维或二夹爪 18 维动作空间。
