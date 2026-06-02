@@ -8,6 +8,11 @@ from models.deco.denoise_schedular import get_schedule
 from models.deco.rope import apply_rotary_emb, RotaryPosEmbed
 
 
+CROSS_ATTENTION_FUSION = "cross_attention"
+DIRECT_TOKEN_FUSION = "direct_tokens"
+SUPPORTED_VISUAL_FUSION_MODES = {CROSS_ATTENTION_FUSION, DIRECT_TOKEN_FUSION}
+
+
 class RGBDepthCrossAttentionFusion(nn.Module):
     """ACT 风格 RGB-depth 双向 cross attention。
 
@@ -63,8 +68,14 @@ class DECO(nn.Module):
         rope_axes_dim=[256, 256],
         vision_backbone="resnet34",
         depth_backbone="resnet34",
+        visual_fusion_mode=CROSS_ATTENTION_FUSION,
     ):
         super().__init__()
+        if visual_fusion_mode not in SUPPORTED_VISUAL_FUSION_MODES:
+            raise ValueError(
+                "visual_fusion_mode must be 'cross_attention' or 'direct_tokens', "
+                f"got {visual_fusion_mode!r}"
+            )
         head_dim = dim // heads
         self.head_dim = head_dim
         self.chunk_size = chunk_size
@@ -72,6 +83,7 @@ class DECO(nn.Module):
         self.obs_state = obs_state
         self.use_tactile = use_tactile
         self.use_task_condition = use_task_condition
+        self.visual_fusion_mode = visual_fusion_mode
         self.inference_step = inf_step
         self.rope = RotaryPosEmbed(head_dim, rope_axes_dim)  # initial mrope embedding
         self.img_encoder = build_resnet_backbone(vision_backbone, in_channels=3)  # RGB encoder
@@ -213,7 +225,16 @@ class DECO(nn.Module):
 
         rgb_tokens = einops.rearrange(rgb_feat, 'b c h w -> b (h w) c')
         depth_tokens = einops.rearrange(depth_feat, 'b c h w -> b (h w) c')
-        fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
+        if self.visual_fusion_mode == CROSS_ATTENTION_FUSION:
+            fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
+        elif self.visual_fusion_mode == DIRECT_TOKEN_FUSION:
+            # v2.0 消融路线：RGB/depth 在进入 DECO 主干前不做内容交汇。
+            # 二者仍会在 pack_visual_token_sequences 中获得 stream embedding，
+            # 并在 MMAttention 中分别施加同一套二维 RoPE 后再与 action token 做 joint attention。
+            fused_rgb_tokens, fused_depth_tokens = rgb_tokens, depth_tokens
+        else:
+            raise ValueError(f"Unsupported visual_fusion_mode: {self.visual_fusion_mode!r}")
+
         return self.pack_visual_token_sequences(
             fused_rgb_tokens,
             fused_depth_tokens,

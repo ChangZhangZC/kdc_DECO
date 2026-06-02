@@ -73,7 +73,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 ## 版本 2.0 修正计划：RGB-D 视觉融合消融与空抓问题排查
 
 > **记录日期**：2026-06-02  
-> **状态**：方案已讨论并冻结，尚未实施代码修改。  
+> **状态**：代码接入已完成，尚待用户在允许运行的环境中执行 MuJoCo 训练/部署 ablation。
 > **边界**：本章节独立记录后续 v2.0 修正计划，不回填修改前文已完成阶段的历史记录。
 
 ### 背景现象
@@ -95,13 +95,13 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 
 ### v2.0 计划
 
-- [ ] 在 `configs/policy/deco_config.yaml` 中新增 `policy.visual_fusion_mode`，默认保持 `cross_attention`，避免静默改变既有训练语义。
-- [ ] 支持 `visual_fusion_mode: cross_attention`：沿用当前 RGB/depth ResNet token 先经过双向 cross attention，再以 `fused_rgb/fused_depth` 两路 token 进入 DECO 主干。
-- [ ] 支持 `visual_fusion_mode: direct_tokens`：RGB/depth ResNet token 不做 early cross attention，直接进入 `pack_visual_token_sequences()`，再加 stream embedding、RoPE，并进入 DECO 主干。
-- [ ] 在 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py` 中注册并校验 `visual_fusion_mode`，只允许 `cross_attention` 与 `direct_tokens`。
-- [ ] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中向 `DECO(...)` 透传 `visual_fusion_mode`，不改变 batch 输入字段、loss、action queue、tactile 逻辑或 pre/postprocessor 顺序。
-- [ ] 在 `third_party/deco/models/deco/deco.py` 中保留 `RGBDepthCrossAttentionFusion` 类和当前 cross attention 路径，同时新增 `direct_tokens` 分支：`rgb_tokens/depth_tokens -> pack_visual_token_sequences(...)`。
-- [ ] 静态确认两种模式输出 shape 均为 `[B, 2L, dim]`，保证 `MMAttention` 中 `feat_len = total_img_len / 2` 的假设继续成立。
+- [x] 在 `configs/policy/deco_config.yaml` 中新增 `policy.visual_fusion_mode`，默认保持 `cross_attention`，避免静默改变既有训练语义。
+- [x] 支持 `visual_fusion_mode: cross_attention`：沿用当前 RGB/depth ResNet token 先经过双向 cross attention，再以 `fused_rgb/fused_depth` 两路 token 进入 DECO 主干。
+- [x] 支持 `visual_fusion_mode: direct_tokens`：RGB/depth ResNet token 不做 early cross attention，直接进入 `pack_visual_token_sequences()`，再加 stream embedding、RoPE，并进入 DECO 主干。
+- [x] 在 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py` 中注册并校验 `visual_fusion_mode`，只允许 `cross_attention` 与 `direct_tokens`。
+- [x] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中向 `DECO(...)` 透传 `visual_fusion_mode`，不改变 batch 输入字段、loss、action queue、tactile 逻辑或 pre/postprocessor 顺序。
+- [x] 在 `third_party/deco/models/deco/deco.py` 中保留 `RGBDepthCrossAttentionFusion` 类和当前 cross attention 路径，同时新增 `direct_tokens` 分支：`rgb_tokens/depth_tokens -> pack_visual_token_sequences(...)`。
+- [x] 静态确认两种模式输出 shape 均为 `[B, 2L, dim]`，保证 `MMAttention` 中 `feat_len = total_img_len / 2` 的假设继续成立。
 
 ### 后续实验设计
 

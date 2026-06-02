@@ -53,6 +53,7 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             rope_axes_dim=config.rope_axes_dim,
             vision_backbone=config.vision_backbone,
             depth_backbone=config.depth_backbone,
+            visual_fusion_mode=config.visual_fusion_mode,
         )
         self._action_queue: deque[Tensor] = deque()
         self._weight_load_reports: list[dict[str, int | str]] = []

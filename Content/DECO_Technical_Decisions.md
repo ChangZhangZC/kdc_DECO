@@ -1,6 +1,6 @@
 # DECO 技术决策记录
 
-> 最后更新：2026-05-19
+> 最后更新：2026-06-02
 > 用途：记录 Kuavo-DECO 集成过程中已经确认、仍待验证、以及被放弃的关键技术方案。本文档应与 `PLANS.md` 保持一致；若二者冲突，以最新 `PLANS.md` 和本文档中标注的“当前冻结方案”为准。
 
 ---
@@ -81,7 +81,7 @@ Kuavo RGB + depth + state + action + optional tactile rosbag
 ## 2A. 版本 2.0 修正决策：RGB-D 视觉融合消融
 
 > **记录日期**：2026-06-02  
-> **状态**：技术决策已记录，尚未实施代码修改。  
+> **状态**：代码接入已完成，尚待 MuJoCo 训练/部署 ablation 验证。
 > **边界**：本章节作为后续 v2.0 修正决策独立存在，不回填修改 2.1 中记录的当前第一版冻结路线。
 
 ### 2A.1 决策背景
@@ -114,7 +114,7 @@ fused_rgb/fused_depth -> stream embedding + RoPE -> DECO MMAttention
 
 ### 2A.4 v2.0 决策
 
-后续应新增 `visual_fusion_mode` 配置项，用于在不删除现有 cross attention 代码的前提下支持视觉融合消融：
+当前已新增 `visual_fusion_mode` 配置项，用于在不删除现有 cross attention 代码的前提下支持视觉融合消融：
 
 | 模式 | 语义 | 用途 |
 | ---- | ---- | ---- |

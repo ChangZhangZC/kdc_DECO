@@ -21,6 +21,38 @@
   - 本次没有修改 `configs/policy/deco_config.yaml`、`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`、`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`、`third_party/deco/models/deco/deco.py` 或任何运行逻辑。
   - 本次没有执行 Python、训练、validator、MuJoCo、ROS、部署、pip、conda 或环境变更命令。
 
+### 接入 DECO visual_fusion_mode 与 direct_tokens 消融路径
+- **任务**: 根据已讨论并冻结的 v2.0 方案，在保留当前 RGB-D cross attention baseline 的前提下，新增可通过 YAML 选择的 `direct_tokens` 视觉融合路径，用于后续 MuJoCo 空抓问题消融实验。
+- **背景**:
+  - 当前 Kuavo-DECO 第一版在 RGB/depth 各自 ResNet 后、RoPE 与 stream embedding 前执行 RGB-depth 双向 cross attention。
+  - 用户计划评估该 early cross attention 是否在 MuJoCo 模仿学习中造成视觉 grounding 偏移，因此需要保留现有路径，同时新增不做 early cross attention 的对照路径。
+- **修改文件 1**: `configs/policy/deco_config.yaml`
+  - 在 `policy` 段新增 `visual_fusion_mode: cross_attention`，默认保持当前行为，避免已有训练配置和实验语义被静默改变。
+  - 增加中文注释说明两个可选值：`cross_attention` 表示 RGB/depth ResNet token 先做双向 cross attention；`direct_tokens` 表示 RGB/depth token 跳过 early cross attention，直接进入 stream embedding / RoPE / DECO 主干。
+- **修改文件 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增 `CROSS_ATTENTION_FUSION`、`DIRECT_TOKEN_FUSION` 和 `SUPPORTED_VISUAL_FUSION_MODES` 常量。
+  - 在 `CustomDECOConfigWrapper` 中新增 `visual_fusion_mode` 字段，默认值为 `cross_attention`。
+  - 新增 `_validate_visual_fusion_mode()`，在 `__post_init__()` 中校验配置只允许 `cross_attention` 或 `direct_tokens`，避免 YAML 拼写错误进入训练流程。
+- **修改文件 3**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 在构造 `DECO(...)` 时透传 `config.visual_fusion_mode`。
+  - 本次不改变 batch 输入字段、preprocessor、postprocessor、loss、action queue、tactile 分支或权重加载逻辑。
+- **修改文件 4**: `third_party/deco/models/deco/deco.py`
+  - 新增与配置层一致的 `visual_fusion_mode` 常量、构造参数和取值校验。
+  - 保留 `RGBDepthCrossAttentionFusion` 类以及 `cross_attention` 默认分支。
+  - 在 `rgbd_img_encoding()` 中新增 `direct_tokens` 分支：RGB/depth 经独立 ResNet 后得到的 `rgb_tokens` 与 `depth_tokens` 不做 early cross attention，直接传入 `pack_visual_token_sequences()`，随后仍会添加 stream embedding、二维 RoPE，并在 `MMAttention` 中与 action token 做 joint attention。
+- **修改文件 5**: `PLANS.md`
+  - 将 v2.0 章节状态更新为代码接入已完成，后续等待用户在允许运行的环境中执行 MuJoCo 训练/部署 ablation。
+  - 将 `visual_fusion_mode` 配置、`cross_attention` 默认路径、`direct_tokens` 消融路径、wrapper 透传、DECO 主干分支和静态 shape 检查对应任务标记为完成；后续实验设计仍保持未完成。
+- **修改文件 6**: `Content/DECO_Technical_Decisions.md`
+  - 同步 v2.0 技术决策章节状态，记录代码接入已完成，但 MuJoCo ablation 尚未执行。
+- **静态检查结果**:
+  - 通过 `rg` 静态确认 `visual_fusion_mode` 已在 YAML、config wrapper、policy wrapper、DECO 模型和文档记录中出现，配置流向完整。
+  - 静态检查两种模式的视觉 token 输出均保持两路 token 进入 `pack_visual_token_sequences()`：`cross_attention` 使用 `fused_rgb_tokens/fused_depth_tokens`，`direct_tokens` 使用原始 `rgb_tokens/depth_tokens`，因此 concat 后仍为 `[B, 2L, dim]`。
+  - `git diff --check` 检查通过，未发现 patch 级空白错误。
+- **未执行内容**:
+  - 本次没有运行 Python、训练、validator、MuJoCo、ROS、部署、pip、conda 或任何环境变更命令。
+  - 后续 `cross_attention` 与 `direct_tokens` 的成功率、空抓比例和轨迹对齐效果需要用户在允许运行的仿真/训练环境中实测。
+
 ## 2026-05-21
 
 ### 修复 DECO RGB-D preprocessor 部署反序列化缺参问题
