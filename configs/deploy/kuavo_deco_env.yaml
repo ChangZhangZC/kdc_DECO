@@ -29,14 +29,14 @@ env:
   # - qiangnao: 强脑灵巧手；必须搭配 state_layout=deco_28d 和 qiangnao_dof_needed=6。
   # - leju_claw: Leju 二指夹爪；必须搭配 deco.inference_mode=gripper_no_tactile 和 state_layout=deco_18d。
   # - rq2f85: Robotiq/RQ2F85 二指夹爪或仿真夹爪；必须搭配 deco.inference_mode=gripper_no_tactile 和 state_layout=deco_18d。
-  eef_type: qiangnao
+  eef_type: rq2f85
   # 固定约束：DECO 28D/18D 在线 schema 当前都要求双臂。
   which_arm: both
   # 可选值：
   # - deco_28d: 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2，用于 qiangnao_tactile / qiangnao_no_tactile。
   # - deco_18d: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2，用于 gripper_no_tactile。
-  state_layout: deco_28d
-  head_init: [0, 0.209]
+  state_layout: deco_18d
+  head_init: [-0.000115, 0.262111]
   ros_rate: 10  # DECO 数据为 30Hz，部署控制为 10Hz；降频由 wrapper 的 action_stride=3 处理。
 
   # 固定约束：DECO 部署不下发下肢/base action。
@@ -51,8 +51,8 @@ env:
     # - compressed_image: 普通 CompressedImage 直解；当前默认。
     # - compressedDepth_png: ROS compressedDepth，需要定位 PNG payload。
     # - auto: 先尝试 compressed_image，再尝试 compressedDepth_png。
-    depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
-    # depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_image"] for sim
+    # depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
+    depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
     joint_q: ["/sensors_data_raw", "sensorsData", 500]
     head_q: ["/sensors_data_raw", "sensorsData", 500]
     qiangnao: ["/dexhand/state", "JointState", 500]
@@ -101,7 +101,7 @@ deco:
   # - gripper_no_tactile:
   #   18D 二爪夹，不订阅、不输入 observation.tactile。env.eef_type 可选择
   #   leju_claw 或 rq2f85，二者共享 18D state/action schema，仅 topic 与下发缩放不同。
-  inference_mode: qiangnao_no_tactile
+  inference_mode: gripper_no_tactile
 
   # 可选值：
   # - local_real: 本地单进程真机推理，沿用 real_single_test.py 的 pre/postprocessor 路径。
@@ -109,7 +109,7 @@ deco:
   # - server: server/client 模式；server 只负责 processed observation -> raw policy action。
   # - dry_run: 真实传感器输入，策略输出只记录不下发。
   # 注意：runtime_mode 是部署意图记录字段，不会自动选择脚本入口；实际入口仍由用户运行的 eval/server 脚本决定。
-  runtime_mode: local_real
+  runtime_mode: local_sim
 
   # 可选值：
   # - live_joint_q:
@@ -117,7 +117,7 @@ deco:
   #   优点是贴近机器人当前状态；缺点是可能带入传感器微小抖动。
   # - fixed_config:
   #   使用 env.head_init 作为固定头部 state。优点是稳定；缺点是必须确认与训练数据头部姿态一致。
-  head_state_source: live_joint_q
+  head_state_source: fixed_config
 
 
 # =====================================================

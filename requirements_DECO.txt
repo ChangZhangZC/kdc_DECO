@@ -55,14 +55,16 @@ imageio-ffmpeg==0.6.0
 # rospypi 用于解析 rospy/rosbag/genpy/roslz4 等 ROS Noetic Python 包。
 --extra-index-url https://rospypi.github.io/simple/
 catkin-pkg==1.0.0
-gnupg==2.3.1
-genpy==0.6.18
+genpy==0.6.14
 rospkg==1.6.0
 roslz4==1.17.4
 rosbag==1.17.4
 rospy==1.17.4
 termcolor==3.1.0
 Pympler==1.1
+# python-gnupg 提供 `import gnupg` 模块；`gnupg==2.3.1` 在 Python 3.10
+# 环境中会被 pip 解析为不兼容版本。
+python-gnupg==0.5.6
 
 # Model components and visual augmentation
 einops==0.8.1
