@@ -155,6 +155,11 @@ policy:
   dataset_hz: 30
   control_hz: 10
   action_stride: 3
+  # 每次 DECO 推理后，实际放入执行队列的 10Hz action 数量。
+  # null 表示默认行为：完整消费按 action_stride 降频后的 action chunk。
+  # 例如 chunk_size=32、action_stride=3 时，完整队列为 11 个 10Hz action；
+  # n_action_steps=4 表示只执行前 4 个 10Hz action，约 0.4s 后重新推理。
+  n_action_steps: null
 
   # NormalizationMode 可选值：
   # - MEAN_STD: 使用 dataset stats 做均值方差归一化，适合 RGB/state/action。

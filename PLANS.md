@@ -85,6 +85,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - 当前 DECO 视觉前端在 RGB/depth 各自 ResNet 后、进入 `pack_visual_token_sequences()` 之前执行 RGB-depth 双向 cross attention。
 - 这一步发生在显式二维 RoPE 与 stream embedding 之前，因此 RGB token 可以全局 attend 到任意 depth token；在低数据量或弱视觉监督下，它可能提前扰乱 RGB-D 原本的空间对应关系。
 - 对抓取任务而言，RGB 提供纹理、边界和语义，depth 提供几何距离和空间结构。如果 early cross attention 学到错误跨模态关联，后续 action token 看到的视觉 token 可能已经被污染，从而表现为空抓或目标定位偏移。
+- 当前 DECO 部署 wrapper 会先从 30Hz 语义 action chunk 中按 `action_stride=3` 取出 10Hz action，再把完整 strided chunk 放入执行队列。`chunk_size=32` 时队列长度为 11，约 1.1s 后才重新推理。
+- 对抓取后放置这类接触敏感阶段，1.1s 开环执行可能导致策略无法及时根据 toy 已被夹起、物体滑动、篮筐碰撞或末端偏移做闭环修正，从而表现为放置阶段轻微抽搐或“被弹回”。
 
 ### stream embedding 与 RoPE 语义
 
@@ -102,6 +104,9 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中向 `DECO(...)` 透传 `visual_fusion_mode`，不改变 batch 输入字段、loss、action queue、tactile 逻辑或 pre/postprocessor 顺序。
 - [x] 在 `third_party/deco/models/deco/deco.py` 中保留 `RGBDepthCrossAttentionFusion` 类和当前 cross attention 路径，同时新增 `direct_tokens` 分支：`rgb_tokens/depth_tokens -> pack_visual_token_sequences(...)`。
 - [x] 静态确认两种模式输出 shape 均为 `[B, 2L, dim]`，保证 `MMAttention` 中 `feat_len = total_img_len / 2` 的假设继续成立。
+- [x] 在 `configs/policy/deco_config.yaml` 中新增 `policy.n_action_steps: null`，用于控制每次推理后实际放入执行队列的 10Hz action 数量；`null` 表示保持旧行为，完整消费 strided chunk。
+- [x] 在 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py` 中注册并校验 `n_action_steps`，确保其为正数或 `null`，且不超过 `ceil(chunk_size / action_stride)` 得到的 strided action 数量。
+- [x] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中将 `n_action_steps` 应用于 `strided_actions` 入队前截断；该参数只影响推理队列刷新频率，不改变模型结构、训练 loss、`chunk_size`、`action_delta_indices` 或权重 shape。
 
 ### 后续实验设计
 
@@ -109,6 +114,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [ ] Ablation B：`visual_fusion_mode=direct_tokens`，除视觉融合模式外保持相同数据、相同超参数、相同训练轮数和相同部署配置。
 - [ ] `direct_tokens` 优先从头训练，不建议直接严格加载 `cross_attention` checkpoint 续训。
 - [ ] 对比指标重点记录 MuJoCo 成功率、空抓比例、抓取触发时目标与末端的空间关系、末端轨迹是否朝目标收敛、动作是否平滑。
+- [ ] Receding horizon 队列消融：保持当前 checkpoint 与 `chunk_size=32/action_stride=3/control_hz=10` 不变，对比 `n_action_steps=null`（完整 11 步，约 1.1s）、`8`、`4`、`2`、`1`。重点记录模型真实推理频率、动作 jerk、action clip 比例、放置阶段 target-current joint error 和 MuJoCo 成功率。
+- [ ] `n_action_steps` 消融建议优先搭配 `inf_step=5/10/20` 做小网格测试；若 `n_action_steps=1/2` 造成推理耗时超过 10Hz 控制周期，应优先回退到 `4` 或降低 `inf_step`。
 - [ ] 若 `direct_tokens` 明显改善空抓，后续再评估更温和的融合方式，例如 RoPE 后局部 cross attention、只在主干中融合，或保留 cross attention 但加入局部窗口/位置约束。
 - [ ] 若 `direct_tokens` 无明显改善，则优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
 

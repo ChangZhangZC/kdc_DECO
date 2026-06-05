@@ -1,5 +1,48 @@
 # AI Execution Logs
 
+## 2026-06-05
+
+### 创建本地 Git 版本标签 v2.0
+- **任务**: 根据用户要求，将当前 Git 仓库状态打上 `v2.0` 标签。
+- **执行内容**:
+  - 读取 `PLANS.md` 与 `AI_Logs.md`，同步当前项目计划与历史执行记录。
+  - 通过只读 Git 状态检查确认当前分支为 `deco`，工作区在打标签前无未提交变更。
+  - 确认本地不存在同名标签 `v2.0`。
+  - 在当前 `HEAD` 提交 `774487f5919035da934875387332adc58da8e80c` 上创建 annotated tag `v2.0`，标签说明为 `v2.0`。
+  - 通过只读 Git 检查确认 `v2.0` 指向提交 `774487f5919035da934875387332adc58da8e80c`。
+- **边界说明**:
+  - 本次未修改 Python、YAML、训练、部署、数据转换或模型逻辑文件。
+  - 本次未运行 Python、训练、validator、MuJoCo、ROS、部署、pip、conda 或任何环境变更命令。
+  - 本日志是在标签创建完成后按仓库规约补充，因此 `v2.0` 标签本身指向补充本日志之前的原始 `HEAD`。
+
+### 为 DECO 推理队列新增 n_action_steps 消融参数
+- **任务**: 根据用户确认的 v2.0 推理侧消融计划，在 DECO 工具链中新增 `policy.n_action_steps` 参数，并将默认值设为 `null`，用于不重新训练 checkpoint 的前提下控制每次推理后实际放入执行队列的 10Hz action 数量。
+- **背景**:
+  - 当前 DECO wrapper 的推理逻辑是先预测 `chunk_size=32` 个 30Hz 语义 action，再通过 `action_stride=3` 取原始 index `0, 3, 6, ..., 30`，最终得到 11 个 10Hz action 并完整入队。
+  - 在 `control_hz=10` 下，完整消费 11 个 action 约等于 1.1s 后才重新推理；该行为可能让抓取后放置阶段的闭环重规划过慢，放大接触误差、仿真接触反弹或关节抽搐问题。
+- **修改文件 1**: `configs/policy/deco_config.yaml`
+  - 新增 `n_action_steps: null`。
+  - 添加中文注释说明：`null` 表示保持旧行为，完整消费按 `action_stride` 降频后的 action chunk；正整数表示每次推理后只执行前 N 个 10Hz action，例如 `n_action_steps=4` 约 0.4s 后重新推理。
+- **修改文件 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 在 `CustomDECOConfigWrapper` 中新增 `n_action_steps: int | None = None` 字段。
+  - 在频率校验逻辑中新增 `n_action_steps` 静态校验：只允许 `null` 或正整数，并限制其不能超过 `ceil(chunk_size / action_stride)` 得到的 strided action 数量。
+  - 保持 `None` 不被改写为具体整数，确保配置序列化与实验记录中仍能明确表达默认旧行为。
+- **修改文件 3**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 在 `select_action()` 中对 `action_chunk[0, :: action_stride]` 得到的 `strided_actions` 做可选截断。
+  - 当 `n_action_steps` 为 `null` 时，保持旧逻辑：完整 strided chunk 入队；当为正整数时，只将前 N 个 strided action 放入执行队列。
+  - 该参数作用在 `action_stride` 之后；例如当前 `chunk_size=32/action_stride=3` 时，`n_action_steps=4` 执行原始 action index `0, 3, 6, 9`，不是执行 `0, 1, 2, 3`。
+- **修改文件 4**: `PLANS.md`
+  - 在 v2.0 计划中补充当前推理队列过长的风险假设。
+  - 将 `n_action_steps` YAML 暴露、wrapper 注册校验、推理队列截断三项标记为完成。
+  - 新增后续实验计划：对比 `n_action_steps=null/8/4/2/1`，并搭配 `inf_step=5/10/20` 观察真实推理频率、action jerk、clip 比例、关节误差与 MuJoCo 成功率。
+- **修改文件 5**: `Content/DECO_Technical_Decisions.md`
+  - 新增 `2A.5 推理队列 n_action_steps 决策` 小节。
+  - 记录当前 32 步预测、stride 后 11 步执行队列、约 1.1s 重规划周期的计算逻辑。
+  - 明确 `n_action_steps` 不改变模型结构、训练 loss、`chunk_size`、`action_delta_indices` 或 checkpoint 权重 shape，因此可直接使用当前权重做模拟消融。
+- **验证方式**:
+  - 本次按仓库 No-Runtime 规约仅做静态逻辑检查与文本检索。
+  - 本次未运行 Python、训练、validator、MuJoCo、ROS、部署、pip、conda 或任何环境变更命令。
+
 ## 2026-06-02
 
 ### 记录 DECO RGB-D 视觉融合 v2.0 消融修正计划

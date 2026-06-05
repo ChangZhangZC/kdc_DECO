@@ -123,11 +123,39 @@ fused_rgb/fused_depth -> stream embedding + RoPE -> DECO MMAttention
 
 默认值必须保持 `cross_attention`，避免已有配置和已有实验语义被静默改变。`direct_tokens` 作为显式 ablation 模式启用。
 
-### 2A.5 实验与判断标准
+### 2A.5 推理队列 n_action_steps 决策
+
+当前 Kuavo-DECO 部署 wrapper 的 action 队列逻辑为：
+
+```text
+DECO 当前观测 -> 预测 32 个 30Hz 语义 action
+action_stride=3 -> 取 index 0, 3, 6, ..., 30
+完整 strided chunk 入队 -> 11 个 10Hz action，约 1.1s 后重新推理
+```
+
+该行为与原生 DECO 的默认 `chunk_size=32 / fps=30 / select_action=32` 在“重新推理间隔”上接近，都是约 1.07s。但 Kuavo-DECO 会把 30Hz action 降频到 10Hz 执行，因此单个控制目标之间的时间间隔更大；在抓取后放置阶段，较长开环队列可能放大物体滑动、篮筐碰撞、末端偏移和低层控制限幅带来的反馈滞后。
+
+因此 v2.0 新增 `policy.n_action_steps` 作为推理侧 receding horizon 消融参数：
+
+| 取值 | 语义 |
+| ---- | ---- |
+| `null` | 默认行为：完整消费按 `action_stride` 降频后的 action chunk，当前为 11 个 10Hz action。 |
+| 正整数 | 每次推理后只把前 N 个 strided action 放入执行队列，队列耗尽后重新读取当前 observation 并重新推理。 |
+
+设计边界：
+
+- `n_action_steps` 不改变 `chunk_size`，不改变模型输出 shape，不改变 `action_delta_indices`，不改变训练 loss，也不要求重新训练当前 checkpoint。
+- `n_action_steps` 作用在 `action_stride` 之后；例如当前 `chunk_size=32/action_stride=3` 时，`n_action_steps=4` 表示执行原始 action index `0, 3, 6, 9`，不是执行原始 index `0, 1, 2, 3`。
+- 配置层保持 `null` 默认值，避免旧实验和旧 checkpoint 的部署行为被静默改变。
+- 校验层要求 `n_action_steps` 为正数或 `null`，且不能超过 strided action 数量 `ceil(chunk_size / action_stride)`。
+
+### 2A.6 实验与判断标准
 
 - Baseline A：`visual_fusion_mode=cross_attention`。
 - Ablation B：`visual_fusion_mode=direct_tokens`。
 - 两组实验应尽量保持相同数据、相同训练参数、相同部署配置和相同 MuJoCo 任务设置。
+- Receding horizon 消融：保持当前 checkpoint 与 `chunk_size=32/action_stride=3/control_hz=10` 不变，对比 `n_action_steps=null`、`8`、`4`、`2`、`1`。
+- `n_action_steps` 消融应记录真实模型推理频率、action queue 长度、postprocessor 后 action、clip 后 action、实际关节反馈、放置阶段 action jerk 和 MuJoCo 成功率。
 - `direct_tokens` 应优先从头训练，不建议直接严格加载 cross-attention checkpoint 续训。
 - 判断指标应包括 MuJoCo 成功率、空抓比例、末端是否朝目标收敛、抓取触发时目标与末端的空间关系、动作平滑性，而不是只看训练 loss。
 - 若 `direct_tokens` 明显改善空抓，说明 early cross attention 至少存在可疑副作用；后续可研究 RoPE 后局部 cross attention、主干内融合或带位置约束的 cross attention。

@@ -285,6 +285,9 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             action_chunk = self.predict_action_chunk(batch, **kwargs)
             # DECO chunk 是 30Hz 语义动作；部署 10Hz 时按 action_stride 降频进入执行队列。
             strided_actions = action_chunk[0, :: self.config.action_stride]
+            # n_action_steps 只限制降频后的执行队列长度；None 表示完整消费 strided chunk。
+            if self.config.n_action_steps is not None:
+                strided_actions = strided_actions[: self.config.n_action_steps]
             self._action_queue.extend(strided_actions)
         return self._action_queue.popleft()
 
