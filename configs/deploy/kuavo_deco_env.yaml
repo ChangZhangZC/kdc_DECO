@@ -119,6 +119,12 @@ deco:
   #   使用 env.head_init 作为固定头部 state。优点是稳定；缺点是必须确认与训练数据头部姿态一致。
   head_state_source: fixed_config
 
+  # 部署期覆盖 DECO policy.n_action_steps，用于旧 checkpoint 直接做 receding horizon 消融。
+  # null 表示使用 checkpoint 保存的默认值；正整数表示每次推理后只执行前 N 个 10Hz action。
+  # 例如当前 chunk_size=32、action_stride=3 时，n_action_steps=4 表示约 0.4s 后重新推理。
+  # server/client 模式下，该字段必须写在 server 加载 policy 时使用的配置中。
+  n_action_steps: null
+
 
 # =====================================================
 # inference config: DECO policy selection and run-root path

@@ -39,6 +39,22 @@
   - 新增 `2A.5 推理队列 n_action_steps 决策` 小节。
   - 记录当前 32 步预测、stride 后 11 步执行队列、约 1.1s 重规划周期的计算逻辑。
   - 明确 `n_action_steps` 不改变模型结构、训练 loss、`chunk_size`、`action_delta_indices` 或 checkpoint 权重 shape，因此可直接使用当前权重做模拟消融。
+- **补充修改文件 6**: `configs/deploy/kuavo_deco_env.yaml`
+  - 在 `deco` 段新增 `n_action_steps: null`，作为旧 checkpoint 直接部署消融的 runtime override 入口。
+  - 中文注释说明：`null` 表示使用 checkpoint 保存的默认值；正整数表示每次推理后只执行前 N 个 10Hz action，例如当前 `chunk_size=32/action_stride=3` 下 `n_action_steps=4` 约 0.4s 后重新推理。
+  - 补充说明 server/client 模式下该字段必须写在 server 加载 policy 时使用的配置中，client 侧不会覆盖远端 policy queue。
+- **补充修改文件 7**: `kuavo_deploy/config.py`
+  - 在 `ConfigDeco` 中新增 `n_action_steps: Optional[int] = None` 字段。
+  - 在部署配置校验中限制该字段只能为 `null` 或正整数，避免布尔值、字符串或非正数进入部署流程。
+- **补充修改文件 8**: `kuavo_deploy/utils/deco_obs_action.py`
+  - 新增 `apply_deco_runtime_overrides()`，集中处理 DECO 部署期可覆盖的 runtime 参数。
+  - 对 `deco.n_action_steps` 进行 checkpoint 侧上限校验，确保其不超过 `ceil(policy.chunk_size / policy.action_stride)`。
+  - 该函数只写回 `policy.config.n_action_steps`，不改变模型结构、权重 shape、forward、loss 或 pre/postprocessor。
+- **补充修改文件 9**: `kuavo_deploy/src/eval/sim_auto_test.py`、`kuavo_deploy/src/eval/real_single_test.py`、`kuavo_deploy/kuavo_service/server.py`
+  - 在本地仿真、本地真机和服务端 DECO policy 加载后调用 `apply_deco_runtime_overrides()`。
+  - 本地仿真与真机入口会记录 `DECO effective n_action_steps`，便于确认当前 rollout 实际采用的队列长度。
+- **补充修改文件 10**: `PLANS.md`
+  - 在 v2.0 checklist 中补充并勾选 deploy runtime override 接入项，明确旧 checkpoint 可通过部署 YAML 直接做 `null/8/4/2/1` 队列长度消融。
 - **验证方式**:
   - 本次按仓库 No-Runtime 规约仅做静态逻辑检查与文本检索。
   - 本次未运行 Python、训练、validator、MuJoCo、ROS、部署、pip、conda 或任何环境变更命令。

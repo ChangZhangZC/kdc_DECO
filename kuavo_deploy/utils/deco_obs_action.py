@@ -217,6 +217,44 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
     _assert_equal("policy.use_tactile_lora", policy_config.use_tactile_lora, expected["use_tactile_lora"])
 
 
+def apply_deco_runtime_overrides(policy_config: Any, deploy_config: Any) -> None:
+    """应用 DECO 部署期 runtime override。
+
+    该函数只允许覆盖不会改变权重 shape 的推理参数。`n_action_steps` 用于当前
+    checkpoint 的 receding horizon 消融：None 保持 checkpoint 原值，正整数在
+    `select_action()` 中限制 strided action queue 的入队长度。
+    """
+
+    if policy_config is None:
+        raise ValueError("DECO policy has no config; cannot apply runtime overrides.")
+
+    n_action_steps = getattr(deploy_config, "n_action_steps", None)
+    if n_action_steps is None:
+        return
+    if isinstance(n_action_steps, bool) or not isinstance(n_action_steps, int) or n_action_steps <= 0:
+        raise ValueError("deco.n_action_steps must be a positive integer or null.")
+
+    chunk_size = getattr(policy_config, "chunk_size", None)
+    action_stride = getattr(policy_config, "action_stride", None)
+    if chunk_size is None or action_stride is None:
+        raise ValueError("DECO policy config must define chunk_size and action_stride for n_action_steps override.")
+    chunk_size = int(chunk_size)
+    action_stride = int(action_stride)
+    if chunk_size <= 0 or action_stride <= 0:
+        raise ValueError("DECO policy config chunk_size and action_stride must be positive.")
+
+    max_strided_actions = (chunk_size + action_stride - 1) // action_stride
+    if n_action_steps > max_strided_actions:
+        raise ValueError(
+            "deco.n_action_steps cannot exceed the number of strided actions "
+            f"({max_strided_actions}) for checkpoint chunk_size={chunk_size} "
+            f"and action_stride={action_stride}."
+        )
+
+    # 只覆盖部署期执行队列长度；模型 forward/loss/权重 shape 均不受影响。
+    policy_config.n_action_steps = n_action_steps
+
+
 def _assert_equal(name: str, actual: Any, expected: Any) -> None:
     if actual != expected:
         raise ValueError(f"{name} must be {expected!r} for DECO deployment, got {actual!r}.")

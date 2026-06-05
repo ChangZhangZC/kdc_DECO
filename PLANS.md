@@ -107,6 +107,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 在 `configs/policy/deco_config.yaml` 中新增 `policy.n_action_steps: null`，用于控制每次推理后实际放入执行队列的 10Hz action 数量；`null` 表示保持旧行为，完整消费 strided chunk。
 - [x] 在 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py` 中注册并校验 `n_action_steps`，确保其为正数或 `null`，且不超过 `ceil(chunk_size / action_stride)` 得到的 strided action 数量。
 - [x] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中将 `n_action_steps` 应用于 `strided_actions` 入队前截断；该参数只影响推理队列刷新频率，不改变模型结构、训练 loss、`chunk_size`、`action_delta_indices` 或权重 shape。
+- [x] 在 `configs/deploy/kuavo_deco_env.yaml` 与 DECO 部署加载入口中新增 `deco.n_action_steps` runtime override，使旧 checkpoint 可在不重新训练的情况下直接做 `null/8/4/2/1` 队列长度消融。
 
 ### 后续实验设计
 

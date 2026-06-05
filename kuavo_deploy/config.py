@@ -256,6 +256,9 @@ class ConfigDeco:
     inference_mode: str = "qiangnao_no_tactile"
     runtime_mode: str = "local_real"
     head_state_source: str = "live_joint_q"
+    # 部署期 runtime override：None 表示使用 checkpoint 中保存的 policy.n_action_steps。
+    # 正整数只改变 select_action() 的执行队列截断，不改变模型结构或权重。
+    n_action_steps: Optional[int] = None
 
     def validate(self, env: ConfigEnv, inference: ConfigInference):
         deco_policy = inference.policy_type == "deco"
@@ -272,6 +275,11 @@ class ConfigDeco:
             raise ValueError("deco.runtime_mode must be 'local_real', 'local_sim', 'server', or 'dry_run'.")
         if self.head_state_source not in ["live_joint_q", "fixed_config"]:
             raise ValueError("deco.head_state_source must be 'live_joint_q' or 'fixed_config'.")
+        if self.n_action_steps is not None:
+            if isinstance(self.n_action_steps, bool) or not isinstance(self.n_action_steps, int):
+                raise ValueError("deco.n_action_steps must be a positive integer or null.")
+            if self.n_action_steps <= 0:
+                raise ValueError("deco.n_action_steps must be a positive integer or null.")
 
         if self.inference_mode in ["qiangnao_tactile", "qiangnao_no_tactile"]:
             if env.eef_type != "qiangnao" or env.state_layout != "deco_28d":
