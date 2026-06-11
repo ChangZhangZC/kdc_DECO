@@ -140,7 +140,7 @@ policy:
   # RGB-D 视觉融合模式：
   # - cross_attention: 当前默认路线，RGB/depth ResNet token 先做双向 cross attention，再以两路 token 入 DECO 主干。
   # - direct_tokens: v2.0 空抓问题消融路线，RGB/depth ResNet token 跳过 early cross attention，直接加 stream embedding / RoPE 后入 DECO 主干。
-  visual_fusion_mode: cross_attention
+  visual_fusion_mode: direct_tokens
 
   # DECO 专用 RGB-D preprocessor：raw RGB-D -> letterbox -> RGB augmentation -> normalizer。
   rgb_key: observation.images.head_cam_h

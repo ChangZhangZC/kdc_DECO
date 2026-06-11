@@ -103,6 +103,9 @@ deco:
   #   leju_claw 或 rq2f85，二者共享 18D state/action schema，仅 topic 与下发缩放不同。
   inference_mode: gripper_no_tactile
 
+  # null 表示使用 checkpoint 保存值；正整数表示部署期覆盖 denoising steps
+  inf_step: null  
+
   # 可选值：
   # - local_real: 本地单进程真机推理，沿用 real_single_test.py 的 pre/postprocessor 路径。
   # - local_sim: 本地单进程仿真推理，沿用 sim_auto_test.py 的 pre/postprocessor 路径。

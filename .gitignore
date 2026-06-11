@@ -219,10 +219,9 @@ ana.py
 error.txt
 obs.png
 
-# Mac specific
+# macOS 系统元数据文件（匹配所有层级目录）
 .DS_Store
-DECO/.DS_Store
-third_party/.DS_Store
+._*
 
 # files for dev
 data_example/
