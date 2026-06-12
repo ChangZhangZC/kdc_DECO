@@ -2,6 +2,17 @@
 
 ## 2026-06-12
 
+### 合并 dispatcher 源文件遗漏修复到 `deco/fix/action-state`
+
+- **任务**: 将 `codex/actionstate-chrunk-size` 合并到 `deco/fix/action-state`，解决部署机器缺少 `kuavo_train.wrapper.policy.deco.action_dispatch` 的问题。
+- **根因**: 原 `.gitignore` 使用 `DECO/`。在 macOS 默认大小写不敏感文件系统上，该规则会误匹配路径中的小写 `deco/`，导致新建的 `kuavo_train/wrapper/policy/deco/action_dispatch.py` 未进入此前提交；已有被跟踪文件不受影响，因此问题直到干净部署 checkout 才暴露。
+- **合并处理**:
+  - 保留目标分支中完整的 `configure_deco_runtime()`、`inf_step` 来源日志以及本地仿真、真机、server 三条统一配置路径。
+  - 纳入缺失的 `action_dispatch.py`，提供 Receding Horizon、Temporal Ensembling 和 Stride Action 实现。
+  - 将 ignore 规则改为 `/DECO/`，只忽略仓库根目录的原始 DECO 开发副本，避免再次漏掉 Python package 中的新增文件。
+  - 保留完整部署配置回归测试和 action dispatcher 单元测试定义。
+- **验证边界**: 仅执行 Git index、冲突标记、静态引用和 diff 格式检查；按仓库规则未执行 Python、pytest、MuJoCo 或 ROS。
+
 ### 修复 DECO `inf_step` 部署配置未完整接入导致的启动错误
 
 - **问题根因**: `configs/deploy/kuavo_deco_env.yaml` 已暴露 `deco.inf_step`，但 `kuavo_deploy/config.py` 的 `ConfigDeco` 未声明该字段，因此 YAML loader 在构造 dataclass 时抛出 `TypeError: ConfigDeco.__init__() got an unexpected keyword argument 'inf_step'`。同时，原实现也没有在 checkpoint 加载后把部署覆盖值同步到模型真实读取的 `policy.model.inference_step`。

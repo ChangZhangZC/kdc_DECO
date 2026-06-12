@@ -37,6 +37,7 @@
 ## Task 4: Static Tests And Documentation
 
 - [x] 添加 dispatcher 与部署配置测试，覆盖默认模式、连续索引、stride 索引、ensemble 公式、reset 和非法配置。
+- [x] 将 `action_dispatch.py` 纳入 Git 跟踪，并把根目录开发副本 ignore 规则锚定为 `/DECO/`，避免 macOS 大小写不敏感匹配导致模块遗漏。
 - [x] 更新 `PLANS.md`、技术决策、deploy/policy YAML 和 `AI_Logs.md`。
 - [ ] 在允许运行的环境中执行单元测试。
 - [ ] 在 MuJoCo 中按 Receding Horizon、Temporal Ensembling、Stride baseline 顺序完成对照验证。
@@ -47,4 +48,5 @@
 - [x] 三种模式具有独立参数和互斥校验。
 - [x] 部署时间诊断能够区分队列动作与新模型推理动作。
 - [x] `deco.inf_step` 不再触发未知配置字段错误，且不会改变模型权重、chunk size 或动作执行步数。
+- [x] 干净 checkout 包含 `kuavo_train/wrapper/policy/deco/action_dispatch.py`。
 - [ ] 30Hz Receding Horizon 的实际指令周期 P95 接近 33.3ms；未达到时必须根据诊断报告记录实时性失败。

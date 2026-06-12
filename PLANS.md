@@ -145,6 +145,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 完整接入部署期 `deco.inf_step`：`null`/缺失保持 checkpoint 值，正整数覆盖 config 与模型真实 Flow Matching 推理步数。
 - [x] 增加控制链路时间诊断，记录 preprocess、模型推理、postprocess、动作 clipping、指令发送、ROS sleep、观测读取和完整控制周期。
 - [x] 增加 dispatcher/config 静态单元测试文件；受 No-Runtime 规则限制，本机未执行测试。
+- [x] 将遗漏的 `action_dispatch.py` 合并并纳入 Git 跟踪；将 `DECO/` ignore 规则锚定为 `/DECO/`，防止大小写不敏感文件系统误伤小写 Python package。
 - [ ] 在允许运行的环境中验证默认 30Hz Receding Horizon 的实际指令周期 P95 是否接近 33.3ms。
 - [ ] 依次完成 Receding Horizon `null/8/4/2/1`、Temporal Ensembling `0.01/0.1` 和显式 Stride baseline 的 MuJoCo 对照实验。
 - [ ] 根据 `deco_timing_trace.jsonl` 与 `deco_timing_summary.json` 判断同步推理是否需要升级为异步推理/双缓冲。
