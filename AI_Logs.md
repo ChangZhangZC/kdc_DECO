@@ -31,6 +31,10 @@
   - 扩展 `tests/test_deco_deploy_action_dispatch_config.py`，覆盖默认 `None`、YAML `null`、旧 YAML 缺失字段、非法值拒绝、checkpoint 值保留、正整数同时覆盖 config/model，以及 chunk size 和 dispatcher 语义不变。
   - 按仓库 No-Runtime 规则，本机未执行 Python、pytest、MuJoCo 或 ROS；仅完成静态代码与 diff 检查。允许运行的环境应执行 `pytest tests/test_deco_deploy_action_dispatch_config.py -v`。
 
+### 删除冗余本地分支 codex/actionstate-chrunk-size
+- **任务**: 根据用户要求，彻底删除已不需要的本地分支 `codex/actionstate-chrunk-size`。
+- **动作**: 运行 `git branch -D codex/actionstate-chrunk-size` 强制删除本地分支。经过检查，该分支没有远程追踪分支，已安全清理。
+
 ### 将 DECO 部署默认动作分发改为 Receding Horizon 并增加三模式与时间诊断
 - **任务**: 按用户批准的 `deco/fix/action-state` 分支计划，将部署默认行为从隐式 Stride Action 改为原始 30Hz 连续动作的 Receding Horizon；保留 Temporal Ensembling 与 Stride Action 作为显式可选模式，并增加动作抽搐/越界排查所需的控制链路时间诊断。
 - **动作分发实现**:
