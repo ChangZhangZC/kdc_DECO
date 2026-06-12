@@ -1,5 +1,81 @@
 # AI Execution Logs
 
+## 2026-06-12
+
+### 修复 DECO `inf_step` 部署配置未完整接入导致的启动错误
+
+- **问题根因**: `configs/deploy/kuavo_deco_env.yaml` 已暴露 `deco.inf_step`，但 `kuavo_deploy/config.py` 的 `ConfigDeco` 未声明该字段，因此 YAML loader 在构造 dataclass 时抛出 `TypeError: ConfigDeco.__init__() got an unexpected keyword argument 'inf_step'`。同时，原实现也没有在 checkpoint 加载后把部署覆盖值同步到模型真实读取的 `policy.model.inference_step`。
+- **配置修复**:
+  - 在 `ConfigDeco` 增加 `inf_step: Optional[int] = None`；`null` 或字段缺失表示沿用 checkpoint，正整数表示部署期覆盖。
+  - 在部署配置结构校验中拒绝布尔值、非整数、零和负数，避免 YAML `true` 被 Python 当成整数 `1`。
+  - 更新 `configs/deploy/kuavo_deco_env.yaml` 注释，明确覆盖会同时修改 policy config 元数据与模型真实 denoising step。
+- **运行时修复**:
+  - 在 `kuavo_deploy/utils/deco_obs_action.py` 新增 `configure_deco_runtime()`，固定执行顺序为 checkpoint 构造 policy/model、校验部署参数、应用 `inf_step`、配置 action dispatcher。
+  - `inf_step=null` 时检查并保留 checkpoint 的 `policy.config.inf_step` 和 `policy.model.inference_step`；正整数时同步更新两处，避免只改 metadata 而实际推理循环不变。
+  - 返回统一 runtime info，包含最终 `inf_step`、来源 `checkpoint/deploy_override` 和 dispatcher 状态。
+- **部署入口统一**:
+  - 修改本地真机 `real_single_test.py`、本地仿真 `sim_auto_test.py` 和 inference server `server.py`，统一调用 `configure_deco_runtime()`。
+  - 启动日志现在明确记录 `inf_step=<value> source=<source>` 以及 action dispatcher 详情；client 调用侧不持有模型，因此由 server 应用覆盖。
+- **静态回归测试**:
+  - 扩展 `tests/test_deco_deploy_action_dispatch_config.py`，覆盖默认 `None`、YAML `null`、旧 YAML 缺失字段、非法值拒绝、checkpoint 值保留、正整数同时覆盖 config/model，以及 chunk size 和 dispatcher 语义不变。
+  - 按仓库 No-Runtime 规则，本机未执行 Python、pytest、MuJoCo 或 ROS；仅完成静态代码与 diff 检查。允许运行的环境应执行 `pytest tests/test_deco_deploy_action_dispatch_config.py -v`。
+
+### 将 DECO 部署默认动作分发改为 Receding Horizon 并增加三模式与时间诊断
+- **任务**: 按用户批准的 `deco/fix/action-state` 分支计划，将部署默认行为从隐式 Stride Action 改为原始 30Hz 连续动作的 Receding Horizon；保留 Temporal Ensembling 与 Stride Action 作为显式可选模式，并增加动作抽搐/越界排查所需的控制链路时间诊断。
+- **动作分发实现**:
+  - 新增 `kuavo_train/wrapper/policy/deco/action_dispatch.py`，定义统一 `ActionDispatcher` 接口及 `RecedingHorizonDispatcher`、`TemporalEnsemblingDispatcher`、`StrideActionDispatcher`。
+  - Receding Horizon 连续执行原始 chunk 的 `action[0:N]`；`n_action_steps=null` 表示完整执行 `chunk_size`，当前默认 32 步。
+  - Temporal Ensembling 复用 DECO 原生 `ACTTemporalEnsembler` 的在线指数加权公式，每个控制周期重新预测完整 chunk，只输出当前时刻融合动作。
+  - Stride Action 仅在用户显式选择 `mode=stride_action` 时启用，按 `dataset_hz / target_hz` 计算整数 stride；旧 checkpoint 的 `action_stride=3` 不会再自动启动降频。
+  - 修改 `DECOPolicyWrapper.py`，使 `select_action()` 只委托当前 dispatcher；新增 `configure_action_dispatch()` 与 `get_dispatch_info()`；`reset()` 会清空队列、Temporal Ensembling 历史、chunk ID 和动作索引。
+- **部署配置与兼容**:
+  - 修改 `kuavo_deploy/config.py`，新增 Receding Horizon、Temporal Ensembling、Stride Action、统一 action dispatch 和 timing diagnostics 嵌套 dataclass。
+  - 新增结构及时间语义校验：Receding Horizon/Temporal Ensembling 要求 `env.ros_rate == checkpoint.dataset_hz`；Stride Action 要求频率整除且 `env.ros_rate == target_hz`；N 步、queue steps 和 coefficient 均执行早失败校验。
+  - 旧部署 YAML 缺少 `deco.action_dispatch` 时迁移到 Receding Horizon 并输出提示，不再回退到 Stride Action；旧 checkpoint 的 `control_hz/action_stride` 字段仍可反序列化。
+  - 修改 `configs/deploy/kuavo_deco_env.yaml`，默认设置 `env.ros_rate=30` 与 `deco.action_dispatch.mode=receding_horizon`，并暴露三种模式各自参数。
+  - 修改本地仿真、本地真机与 inference server 加载路径，统一调用 `configure_deco_action_dispatch()`；server 端持有并 reset 真实 dispatcher 状态。
+  - DECO server 会随 raw action 返回轻量 `dispatch_info`；更新后的 client 只解包元数据并继续把未 postprocess action 交给原有后处理，避免为了记录 chunk 边界额外增加一次网络请求。
+- **时间诊断与动作越界证据**:
+  - 新增 `kuavo_deploy/utils/deco_timing.py`，批量写出 `deco_timing_trace.jsonl` 与 `deco_timing_summary.json`。
+  - 修改 `KuavoBaseRosEnv.py`，记录 clipping 前后动作、越界维度数量、arm/eef 指令发送时间、ROS sleep 和 observation 获取耗时。
+  - 修改仿真与真机 eval 入口，记录 preprocess、policy call、dispatcher 内真实模型推理、postprocess、env step、完整控制周期、chunk ID、动作索引、队列长度与 ensemble count。
+  - Summary 会计算平均值、P50/P95/P99、实际动作发送 Hz、deadline miss 比例、clip 比例和 chunk 边界控制周期。
+- **测试与文档**:
+  - 新增 `tests/test_deco_action_dispatch.py` 和 `tests/test_deco_deploy_action_dispatch_config.py`，静态覆盖连续索引、N 步重规划、30Hz 到 10Hz stride、原生 ensemble 公式、reset、默认模式和非法配置。
+  - 在 `PLANS.md` 新增 Active Branch Plans 和 v2.1 checklist；创建 `docs/plans/2026-06-12-deco-action-dispatch.md`；同步更新 `Content/DECO_Technical_Decisions.md`。
+  - 同步更新 `README_DECO.md` 与 `Content/Kuavo_Deco_Flow_Explanation.md`，移除“部署默认 10Hz stride”的过时说明。
+  - 更新 `configs/policy/deco_config.yaml` 与 `DECOConfigWrapper.py` 中 `n_action_steps` 的当前语义：它只表示 Receding Horizon 连续原始动作数量，上限为 `chunk_size`。
+- **验证边界**:
+  - 根据仓库 No-Runtime 规则，本次只进行了代码阅读、Git diff、文本检索和人工静态逻辑检查。
+  - 本次未运行 Python、pytest、MuJoCo、ROS、训练、部署、validator、pip、conda 或环境变更命令。
+  - 30Hz P95 接近 33.3ms、Temporal Ensembling 实时性和任务成功率仍需在允许运行的 MuJoCo/ROS 环境中验证。
+
+## 2026-06-11
+
+### 调整本地与远程 Git 分支结构以支持 DECO 多分支开发规范
+- **任务**: 根据用户要求，整理并重构本地与远程的分支结构，建立明确的主线（`deco/main`）、开发线（`deco/dev`）和修复线（`deco/fix/action-state`），并将分支状态同步到云端。
+- **执行内容**:
+  - **创建 `deco/main` 分支**: 在 `v2.0` 的 tag 提交 `774487f5919035da934875387332adc58da8e80c` 上创建了本地分支 `deco/main`。
+  - **重命名当前开发分支**: 将当前的分支 `deco` 重命名为 `deco/dev`，该分支目前指向最新提交 `744fba1`（包含 macOS 相关的 `.gitignore` 更新等），工作区当前没有未提交的变更。
+  - **创建 `deco/fix/action-state` 分支**: 在已提交好的 `deco/dev` 的最新状态 `744fba1` 上创建了分支 `deco/fix/action-state`。
+  - **云端同步**:
+    - 由于云端存在原生的 `deco` 分支冲突，阻碍了 `deco/*` 格式的文件夹型分支推送（Git 目录-文件冲突），经用户明确授权，在云端（`origin`）安全删除了旧的 `deco` 分支（历史已完整保存在本地 `deco/dev` 中，无丢失风险）。
+    - 成功将本地的 `deco/dev`、`deco/main` 以及 `deco/fix/action-state` 三个新分支推送并同步到云端，并正确设置了上游追踪关系。
+- **验证方式**:
+  - 运行 `git branch -a -vv` 静态检查，确认本地与远程分支结构完全一致，且追踪关系正确：
+    - `deco/dev` 追踪 `origin/deco/dev` (commit `744fba1`)
+    - `deco/main` 追踪 `origin/deco/main` (commit `774487f`)
+    - `deco/fix/action-state` 追踪 `origin/deco/fix/action-state` (commit `744fba1`)
+  - 本次未运行任何 Python 脚本、训练任务、仿真程序或环境变更命令。
+
+### 创建并推送特性开发分支
+- **任务**: 基于稳定开发分支 `deco/dev`（`744fba1`）创建并推送两个新特性分支 `deco/feature/muti-visual` 与 `deco/feature/optimal-depth`。
+- **执行内容**:
+  - 从本地 `deco/dev` 分支分别切出特性开发分支 `deco/feature/muti-visual` 和 `deco/feature/optimal-depth`。
+  - 将这两个新特性分支推送到云端仓库（`origin`），并设置本地追踪关系为对应的 `origin/deco/feature/muti-visual` 和 `origin/deco/feature/optimal-depth`。
+- **验证方式**:
+  - 运行 `git branch -a -vv` 静态检查，确认两个新特性分支均已成功创建且与云端正确关联。
+
 ## 2026-06-05
 
 ### 创建本地 Git 版本标签 v2.0

@@ -152,7 +152,7 @@ deco:
 - `dataset.only_arm: true`：DECO 当前只训练上半身操作。
 - `dataset.which_arm: both`：DECO 28D/18D schema 都是双臂。
 - `dataset.use_depth: true`：Kuavo-DECO 当前是 RGB-D 路线，不是纯 RGB 路线。
-- `dataset.train_hz: 30`：训练数据统一为 30Hz；部署 10Hz 由 wrapper/action queue 处理。
+- `dataset.train_hz: 30`：训练数据统一为 30Hz；默认 Receding Horizon/Temporal Ensembling 也按 30Hz 连续执行，只有显式 Stride Action 才降频。
 - `dataset.dex_dof_needed: 6`：强脑灵巧手使用左右手各 6 DoF，不沿用 ACT/DP 单维开合量。
 - `dataset.delta_action: false`、`dataset.relative_start: false`：当前 DECO 输出绝对 joint/action schema。
 
@@ -381,6 +381,9 @@ configs/deploy/kuavo_deco_env.yaml
 | `deco.inference_mode`    | `qiangnao_tactile`、`qiangnao_no_tactile` 或 `gripper_no_tactile`         |
 | `deco.runtime_mode`      | `local_real`、`local_sim`、`server` 或 `dry_run`                          |
 | `deco.head_state_source` | `live_joint_q` 或 `fixed_config` ，固定头部自由度时，默认`fixed_config`   |
+| `deco.action_dispatch.mode` | 默认 `receding_horizon`；也可显式选择 `temporal_ensemble` 或 `stride_action` |
+| `deco.action_dispatch.receding_horizon.n_action_steps` | 连续执行前 N 个原始 action；`null` 表示完整 chunk |
+| `env.ros_rate` | Receding Horizon/Temporal Ensembling 必须等于 checkpoint `dataset_hz`；Stride 模式必须等于 `target_hz` |
 | `inference.policy_type`  | 本地推理填 `deco`；server/client 调用侧填 `client`                        |
 | `inference.task`         | 对应 `outputs/train/<task>/`                                              |
 | `inference.method`       | 对应 `outputs/train/<task>/<method>/`                                     |
@@ -681,6 +684,5 @@ inference:
 - 不要在 `tactile_left_max/right_max` 仍为 `null` 或没有量纲确认时开启 `use_tactile=true`。
 - 不要只拷贝 `epochbest/` 做部署；完整部署资产是整个 `run_<timestamp>/` 目录。
 - 不要把部署 `deco.inference_mode` 当作脚本选择器；实际入口仍由运行的 `script.py`、`script_auto_test.py` 或 `server.py` 决定。
-- 不要把 `train_hz=30` 改成部署频率；部署 10Hz 由 `control_hz=10` 和 `action_stride=3` 处理。
+- 不要依赖 checkpoint 的 `action_stride=3` 自动降频；部署默认使用 30Hz Receding Horizon，只有显式选择 `stride_action` 才按 `target_hz` 降采样。
 - 不要让 server/client 两侧都执行 preprocessor 或 postprocessor。
-

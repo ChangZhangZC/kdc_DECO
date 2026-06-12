@@ -383,10 +383,15 @@ class KuavoBaseRosEnv(gym.Env):
 
 
     def step(self, action):
+        step_start_ns = time.perf_counter_ns()
+        raw_action = np.asarray(action, dtype=np.float32).copy()
+        self._command_timestamps_ns = {}
         t0 = time.time()
         log_robot.info(f"action: {action}")
         # check clip action in action space
         action = self.check_action(action, mode='default')
+        clipped_action = np.asarray(action, dtype=np.float32).copy()
+        clipped_dimensions = int(np.count_nonzero(~np.isclose(raw_action, clipped_action)))
         t1 = time.time()
         log_robot.info(f"clip action: {action}, check time: {t1 - t0:.3f}s")
 
@@ -421,12 +426,29 @@ class KuavoBaseRosEnv(gym.Env):
 
         # === 5. 延时与观测 ===
         
+        sleep_start_ns = time.perf_counter_ns()
         self.rate.sleep()
+        sleep_end_ns = time.perf_counter_ns()
         self._record_sleep_time(t2)
         t3 = time.time()
+        observation_start_ns = time.perf_counter_ns()
         obs = self.get_obs()
+        observation_end_ns = time.perf_counter_ns()
         t4 = time.time()
         log_robot.info(f"get obs time: {t4 - t3:.3f}s")
+
+        # 只保存本控制步的可序列化诊断信息；JSONL 写盘由 eval 入口批量完成，避免阻塞 ROS 控制。
+        self.last_step_diagnostics = {
+            "step_time_ns": time.perf_counter_ns() - step_start_ns,
+            "ros_sleep_time_ns": sleep_end_ns - sleep_start_ns,
+            "observation_time_ns": observation_end_ns - observation_start_ns,
+            "command_send_wall_ns": self._command_timestamps_ns.get("arm_wall_ns"),
+            "arm_command_send_wall_ns": self._command_timestamps_ns.get("arm_wall_ns"),
+            "eef_command_send_wall_ns": self._command_timestamps_ns.get("eef_wall_ns"),
+            "raw_action": raw_action.tolist(),
+            "clipped_action": clipped_action.tolist(),
+            "clipped_dimensions": clipped_dimensions,
+        }
 
         # === 6. 奖励与返回 ===
         reward = self.compute_reward()
@@ -440,6 +462,7 @@ class KuavoBaseRosEnv(gym.Env):
 
     def _safe_control_arm(self, target_position):
         try:
+            self._command_timestamps_ns["arm_wall_ns"] = time.time_ns()
             self.robot.control_arm_joint_positions(target_position)
         except RuntimeError as e:
             # 当机器人处于 command_pose_world 状态（底盘移动）时，无法控制手臂
@@ -464,12 +487,14 @@ class KuavoBaseRosEnv(gym.Env):
                 raise ValueError("deco_28d action requires left_hand and right_hand fields.")
             target_positions = np.concatenate((decoded_action.left_hand, decoded_action.right_hand), axis=0) * 100.0
             target_positions = np.clip(target_positions, 0.0, 100.0)
+            self._command_timestamps_ns["eef_wall_ns"] = time.time_ns()
             self.qiangnao.control(target_positions=target_positions, target_velocities=None, target_torques=None)
             return
 
         if self.state_layout == DECO_18D_LAYOUT:
             if decoded_action.left_gripper is None or decoded_action.right_gripper is None:
                 raise ValueError("deco_18d action requires left_gripper and right_gripper fields.")
+            self._command_timestamps_ns["eef_wall_ns"] = time.time_ns()
             self._control_eef(decoded_action.left_gripper, decoded_action.right_gripper)
             return
 

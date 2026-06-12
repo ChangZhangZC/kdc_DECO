@@ -281,13 +281,25 @@ class PolicyClient:
         )
 
     def select_action(self, obs_dict):
-        self.action = self.policy.select_action(obs_dict)
+        response = self.policy.select_action(obs_dict)
+        if isinstance(response, dict) and "action" in response:
+            self.action = response["action"]
+            self._dispatch_info = response.get("dispatch_info", {})
+        else:
+            self.action = response
+            self._dispatch_info = {}
         return self.action
+
+    def get_dispatch_info(self) -> Dict[str, Any]:
+        """返回服务端随 DECO action 附带的轻量调度元数据。"""
+
+        return dict(getattr(self, "_dispatch_info", {}))
 
     def reset(self) -> None:
         """保持本地 policy API 一致；真实 reset 通过 server endpoint 执行。"""
 
         self.policy.reset()
+        self._dispatch_info = {}
 
 
 # # convert hardware observations to policy's observation dict
