@@ -87,7 +87,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     dataset_hz: int = 30
     control_hz: int = 10
     action_stride: int = 3
-    # 推理侧执行队列长度限制；None 表示完整消费 strided chunk，保持旧 checkpoint 行为。
+    # Receding Horizon 连续执行步数；None 表示完整消费原始 chunk。
+    # action_stride/control_hz 仅为旧 checkpoint 与显式 Stride Action 模式保留。
     n_action_steps: int | None = None
 
     # Normalizer 只负责 LeRobot 统计归一化；tactile 在这里显式保持 IDENTITY。
@@ -226,15 +227,13 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         expected_stride = self.dataset_hz // self.control_hz
         if self.action_stride != expected_stride:
             raise ValueError(f"action_stride must be {expected_stride} for dataset_hz/control_hz.")
-        max_strided_actions = (self.chunk_size + self.action_stride - 1) // self.action_stride
         if self.n_action_steps is not None:
             if self.n_action_steps <= 0:
                 raise ValueError("n_action_steps must be positive or null.")
-            if self.n_action_steps > max_strided_actions:
+            if self.n_action_steps > self.chunk_size:
                 raise ValueError(
-                    "n_action_steps cannot exceed the number of strided actions "
-                    f"({max_strided_actions}) for chunk_size={self.chunk_size} "
-                    f"and action_stride={self.action_stride}."
+                    "n_action_steps cannot exceed the original DECO chunk_size "
+                    f"({self.chunk_size})."
                 )
 
     @property

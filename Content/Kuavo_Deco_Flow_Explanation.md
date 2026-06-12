@@ -72,7 +72,7 @@ flowchart TD
   M --> L1["训练目标<br/>Flow Matching<br/>MSE(out, noise - action)"]
   M --> I1["推理去噪<br/>从随机 action noise 开始<br/>inf_step 多步更新"]
   I1 --> I2["action chunk 输出<br/>28D qiangnao<br/>或 18D gripper"]
-  I2 --> I3["部署动作队列<br/>stride / queue<br/>按 10Hz 控制频率消费"]
+  I2 --> I3["部署动作分发<br/>Receding Horizon 默认<br/>Temporal / Stride 可选"]
 ```
 
 这条流程里有两个频率概念必须分开：
@@ -761,7 +761,7 @@ server 侧:
 
 不要让 client 和 server 两边重复执行 preprocessor 或 postprocessor。
 
-### 12.3 action queue 和 10Hz 控制
+### 12.3 action dispatcher 和控制频率
 
 DECO 推理一次输出一个 action chunk：
 
@@ -769,13 +769,13 @@ DECO 推理一次输出一个 action chunk：
 (chunk_size, action_dim)
 ```
 
-部署 wrapper 会把这个 action chunk 放入动作队列。机器人控制循环按 `control_hz=10` 消费队列中的动作。
+部署 wrapper 通过 `deco.action_dispatch.mode` 选择唯一策略。默认 Receding Horizon 按 30Hz 连续消费原始 action；Temporal Ensembling 同样按 30Hz 每周期重推理；只有显式 Stride Action 才按 `target_hz` 降采样。
 
 因此：
 
 - `chunk_size` 决定一次推理预测多少未来动作。
 - `inf_step` 决定一次推理内部做多少步去噪。
-- `control_hz` 决定机器人多快消费动作。
+- `env.ros_rate` 决定机器人实际消费动作的目标频率，并必须与当前 dispatcher 的时间语义一致。
 
 三者是不同概念。
 
@@ -879,7 +879,7 @@ Kuavo rosbag
   -> RGB backbone + depth backbone + cross attention
   -> DECO action-token Flow Matching transformer
   -> action chunk
-  -> 部署动作队列按 10Hz 消费
+  -> 默认 30Hz Receding Horizon 连续消费；Temporal Ensembling / Stride Action 可显式选择
 ```
 
 其中真正从原生 DECO 保留下来的核心是：

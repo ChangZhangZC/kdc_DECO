@@ -56,8 +56,9 @@ import traceback
 from geometry_msgs.msg import PoseStamped
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.logging_utils import setup_logger
+from kuavo_deploy.utils.deco_timing import DecoTimingRecorder
 from kuavo_deploy.kuavo_service.client import PolicyClient
-from kuavo_deploy.utils.deco_obs_action import apply_deco_runtime_overrides, validate_deco_policy_compatibility
+from kuavo_deploy.utils.deco_obs_action import configure_deco_action_dispatch, validate_deco_policy_compatibility
 from lerobot.policies.factory import make_pre_post_processors
 log_model = setup_logger("model")
 log_robot = setup_logger("robot")
@@ -179,7 +180,7 @@ def setup_policy(pretrained_path, policy_type, device=torch.device("cuda"), infe
     
     return policy
 
-def run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory):
+def run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory, timing_recorder):
     """运行单个episode Running a single episode"""
     cfg = config.inference
     seed = cfg.seed
@@ -241,12 +242,20 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
             log_robot.info("🛑 Stop signal detected, exiting robot arm motion")
             return 0
         
+        control_loop_start_ns = time.perf_counter_ns()
         start_time = time.time()
+        preprocess_start_ns = time.perf_counter_ns()
         observation = preprocessor(observation)
+        preprocess_end_ns = time.perf_counter_ns()
+        policy_call_start_ns = time.perf_counter_ns()
         with torch.inference_mode():
             action = policy.select_action(observation)
+        policy_call_end_ns = time.perf_counter_ns()
+        raw_policy_action = action.detach().cpu().tolist()
         log_model.info(f"Step {step}: predict action {action}")
+        postprocess_start_ns = time.perf_counter_ns()
         action = postprocessor(action)
+        postprocess_end_ns = time.perf_counter_ns()
         # print(f"action: {action}, action.shape: {action.shape}, action min: {action.min()}, action max: {action.max()}")
         action_infer_time = time.time()
         log_model.info(f"episode {episode}, step {step}, action infer time: {action_infer_time - start_time:.3f}s")
@@ -255,7 +264,9 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
         numpy_action = action.squeeze(0).cpu().numpy()
 
         log_model.info(f"Step {step}: Executing action {numpy_action}")
+        environment_step_start_ns = time.perf_counter_ns()
         observation, reward, terminated, truncated, info = env.step(numpy_action)
+        environment_step_end_ns = time.perf_counter_ns()
 
         exec_time = time.time()
         log_model.debug(f"step {step}: exec time: {exec_time - action_infer_time:.3f}s")
@@ -269,6 +280,31 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
             if img.shape[-1] == 1:
                 img = img.squeeze(-1)
             imageio.imwrite(str(frame_path), img)
+
+        control_loop_end_ns = time.perf_counter_ns()
+        dispatch_info = policy.get_dispatch_info() if hasattr(policy, "get_dispatch_info") else {}
+        env_diagnostics = getattr(env.unwrapped, "last_step_diagnostics", {})
+        timing_recorder.record(
+            {
+                "episode": episode,
+                "step": step,
+                "mode": dispatch_info.get("mode", config.deco.action_dispatch.mode),
+                "chunk_id": dispatch_info.get("chunk_id"),
+                "action_index": dispatch_info.get("action_index"),
+                "queue_remaining": dispatch_info.get("queue_remaining"),
+                "model_inference": dispatch_info.get("model_inference"),
+                "ensemble_count": dispatch_info.get("ensemble_count"),
+                "preprocess_time_ns": preprocess_end_ns - preprocess_start_ns,
+                "policy_call_time_ns": policy_call_end_ns - policy_call_start_ns,
+                "model_inference_time_ns": dispatch_info.get("inference_time_ns"),
+                "postprocess_time_ns": postprocess_end_ns - postprocess_start_ns,
+                "environment_step_time_ns": environment_step_end_ns - environment_step_start_ns,
+                "control_loop_time_ns": control_loop_end_ns - control_loop_start_ns,
+                "raw_policy_action": raw_policy_action,
+                "postprocessed_action": numpy_action.tolist(),
+                **env_diagnostics,
+            }
+        )
 
         # The rollout is considered done when the success state is reached (i.e. terminated is True),
         # or the maximum number of iterations is reached (i.e. truncated is True)
@@ -333,6 +369,13 @@ def kuavo_eval_autotest(config: KuavoConfig):
     pretrained_path = Path(f"outputs/train/{task}/{method}/{timestamp}/epoch{epoch}")
     output_directory = Path(f"outputs/eval/{task}/{method}/{timestamp}/epoch{epoch}")
     output_directory.mkdir(parents=True, exist_ok=True)
+    timing_config = config.deco.timing_diagnostics
+    timing_recorder = DecoTimingRecorder(
+        output_directory,
+        enabled=timing_config.enabled and config.env.state_layout.startswith("deco_"),
+        flush_every_steps=timing_config.flush_every_steps,
+        target_hz=config.env.ros_rate,
+    )
 
     # Log evaluation results
     log_file_path = output_directory / "evaluation_autotest.log"
@@ -348,8 +391,8 @@ def kuavo_eval_autotest(config: KuavoConfig):
     policy = setup_policy(pretrained_path, policy_type, device, cfg)
     if policy_type.lower() == 'deco':
         validate_deco_policy_compatibility(policy.config, config.deco, config.env)
-        apply_deco_runtime_overrides(policy.config, config.deco)
-        log_model.info(f"DECO effective n_action_steps: {getattr(policy.config, 'n_action_steps', None)}")
+        configure_deco_action_dispatch(policy, config.deco, config.env)
+        log_model.info(f"DECO action dispatch: {policy.get_dispatch_info()}")
     preprocessor, postprocessor = make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
     
     # first reset
@@ -381,7 +424,15 @@ def kuavo_eval_autotest(config: KuavoConfig):
                 return
             time.sleep(1)
         try:
-            result = run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory)
+            result = run_single_episode(
+                config,
+                policy,
+                preprocessor,
+                postprocessor,
+                episode,
+                output_directory,
+                timing_recorder,
+            )
             log_robot.info(f"Episode {episode+1} completed with return code: {result}")
             
             # 重置policy状态，清理缓存 Reset policy, clear cache
@@ -431,6 +482,7 @@ def kuavo_eval_autotest(config: KuavoConfig):
     log_model.info(f"📈 Success rate: {success_count / eval_episodes:.2%}")
     log_model.info(f"📁 Videos and logs saved to: {output_directory}")
     log_model.info("="*50)
+    timing_recorder.close()
     init_service.shutdown()
     pause_sub.unregister()
     stop_sub.unregister()

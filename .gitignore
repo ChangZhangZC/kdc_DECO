@@ -226,4 +226,5 @@ obs.png
 # files for dev
 data_example/
 kuavo_data/inspect_outputs/
-DECO/
+# 仅忽略仓库根目录的原始 DECO 工作区，避免 macOS 大小写不敏感文件系统误伤 Python 包中的 deco/ 新文件。
+/DECO/

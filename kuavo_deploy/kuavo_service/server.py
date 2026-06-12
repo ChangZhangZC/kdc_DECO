@@ -23,7 +23,7 @@ import torch
 import zmq
 
 from kuavo_deploy.config import KuavoConfig, load_kuavo_config
-from kuavo_deploy.utils.deco_obs_action import apply_deco_runtime_overrides, validate_deco_policy_compatibility
+from kuavo_deploy.utils.deco_obs_action import configure_deco_action_dispatch, validate_deco_policy_compatibility
 from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
 from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
 from kuavo_train.wrapper.policy.deco import DECOProcessor  # noqa: F401 - 注册 DECO processor，保持与本地 eval 入口一致
@@ -241,7 +241,8 @@ def load_policy_from_config(cfg: KuavoConfig):
     elif policy_type == "deco":
         policy = CustomDECOPolicyWrapper.from_pretrained(pretrained_path, strict=True)
         validate_deco_policy_compatibility(policy.config, cfg.deco, cfg.env)
-        apply_deco_runtime_overrides(policy.config, cfg.deco)
+        configure_deco_action_dispatch(policy, cfg.deco, cfg.env)
+        print(f"DECO action dispatch configured: {policy.get_dispatch_info()}")
     else:
         raise ValueError(
             "Server policy_type must be 'diffusion', 'act', or 'deco'. "
@@ -266,7 +267,15 @@ class Policy:
 
     def select_action(self,obs):
         obs = hardware_obses_to_policy_obs_dict(obs)
-        return self.policy.select_action(obs)
+        action = self.policy.select_action(obs)
+        if hasattr(self.policy, "get_dispatch_info"):
+            # DECO server 将轻量 dispatcher 元数据与 action 一起返回，client 侧可记录 chunk 边界，
+            # 但 pre/postprocessor 归属仍保持不变：server 返回的 action 仍未执行 postprocess。
+            return {
+                "action": action,
+                "dispatch_info": self.policy.get_dispatch_info(),
+            }
+        return action
 
     def reset(self):
         """重置服务端真实 policy，清空 DECO/ACT 等策略内部 action queue。"""

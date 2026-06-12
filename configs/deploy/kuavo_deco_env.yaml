@@ -37,7 +37,9 @@ env:
   # - deco_18d: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2，用于 gripper_no_tactile。
   state_layout: deco_18d
   head_init: [-0.000115, 0.262111]
-  ros_rate: 10  # DECO 数据为 30Hz，部署控制为 10Hz；降频由 wrapper 的 action_stride=3 处理。
+  # 默认 Receding Horizon / Temporal Ensembling 必须连续消费 30Hz 语义动作。
+  # 仅当 action_dispatch.mode=stride_action 时，才将此值同步改为 stride_action.target_hz。
+  ros_rate: 30
 
   # 固定约束：DECO 部署不下发下肢/base action。
   only_arm: true
@@ -122,11 +124,31 @@ deco:
   #   使用 env.head_init 作为固定头部 state。优点是稳定；缺点是必须确认与训练数据头部姿态一致。
   head_state_source: fixed_config
 
-  # 部署期覆盖 DECO policy.n_action_steps，用于旧 checkpoint 直接做 receding horizon 消融。
-  # null 表示使用 checkpoint 保存的默认值；正整数表示每次推理后只执行前 N 个 10Hz action。
-  # 例如当前 chunk_size=32、action_stride=3 时，n_action_steps=4 表示约 0.4s 后重新推理。
-  # server/client 模式下，该字段必须写在 server 加载 policy 时使用的配置中。
-  n_action_steps: null
+  # 三种动作分发策略互斥；默认 Receding Horizon 不读取 checkpoint 的 action_stride。
+  # server/client 模式下，本段配置必须写在 server 实际加载 policy 的 YAML 中。
+  action_dispatch:
+    # 可选值：receding_horizon | temporal_ensemble | stride_action
+    mode: receding_horizon
+
+    receding_horizon:
+      # 连续执行 action[0:N] 后重新推理；null 表示完整消费原始 chunk_size（当前为 32）。
+      n_action_steps: null
+
+    temporal_ensemble:
+      # 原生在线指数加权系数；该模式每个 30Hz 控制周期都重新预测完整 chunk。
+      coefficient: 0.1
+
+    stride_action:
+      # 显式旧行为对照：30Hz chunk 以整数 stride 降采样到目标频率。
+      # 启用该模式时必须同时设置 env.ros_rate == target_hz。
+      target_hz: 10
+      # null 表示完整消费降采样后的队列；正整数限制每次推理后的入队动作数。
+      queue_steps: null
+
+  # 仅记录时间与越界证据，不参与动作选择或机器人控制。
+  timing_diagnostics:
+    enabled: true
+    flush_every_steps: 100
 
 
 # =====================================================

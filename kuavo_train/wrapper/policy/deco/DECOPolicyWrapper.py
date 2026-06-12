@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 from kuavo_train.wrapper.policy.deco import ensure_deco_on_path
+from kuavo_train.wrapper.policy.deco.action_dispatch import make_action_dispatcher
 from kuavo_train.wrapper.policy.deco.DECOConfigWrapper import CustomDECOConfigWrapper
 
 ensure_deco_on_path()
@@ -55,7 +55,13 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             depth_backbone=config.depth_backbone,
             visual_fusion_mode=config.visual_fusion_mode,
         )
-        self._action_queue: deque[Tensor] = deque()
+        # 默认采用连续 30Hz Receding Horizon；旧 checkpoint 中的 action_stride 仅保留反序列化兼容，
+        # 不会再隐式启动降频。部署入口可通过 configure_action_dispatch() 显式切换三种互斥策略。
+        self._action_dispatcher = make_action_dispatcher(
+            "receding_horizon",
+            dataset_hz=config.dataset_hz,
+            n_action_steps=config.n_action_steps,
+        )
         self._weight_load_reports: list[dict[str, int | str]] = []
         self._load_configured_weights()
         if self._should_freeze_main_for_tactile_adapter():
@@ -246,7 +252,32 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
         )
 
     def reset(self) -> None:
-        self._action_queue.clear()
+        self._action_dispatcher.reset()
+
+    def configure_action_dispatch(
+        self,
+        mode: str,
+        *,
+        n_action_steps: int | None = None,
+        temporal_ensemble_coefficient: float = 0.1,
+        stride_target_hz: int = 10,
+        stride_queue_steps: int | None = None,
+    ) -> None:
+        """应用纯部署期动作分发配置，不改变 DECO forward、loss 或权重 shape。"""
+
+        self._action_dispatcher = make_action_dispatcher(
+            mode,
+            dataset_hz=self.config.dataset_hz,
+            n_action_steps=n_action_steps,
+            temporal_ensemble_coefficient=temporal_ensemble_coefficient,
+            stride_target_hz=stride_target_hz,
+            stride_queue_steps=stride_queue_steps,
+        )
+        # 保留该字段用于旧日志和 checkpoint config 查看；其新语义只属于 Receding Horizon。
+        self.config.n_action_steps = n_action_steps if mode == "receding_horizon" else None
+
+    def get_dispatch_info(self) -> dict[str, int | float | str | bool | None]:
+        return self._action_dispatcher.get_dispatch_info()
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
         rgb, depth, state, action, task_idx = self._unpack_batch(batch, require_action=True)
@@ -281,15 +312,10 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
-        if len(self._action_queue) == 0:
-            action_chunk = self.predict_action_chunk(batch, **kwargs)
-            # DECO chunk 是 30Hz 语义动作；部署 10Hz 时按 action_stride 降频进入执行队列。
-            strided_actions = action_chunk[0, :: self.config.action_stride]
-            # n_action_steps 只限制降频后的执行队列长度；None 表示完整消费 strided chunk。
-            if self.config.n_action_steps is not None:
-                strided_actions = strided_actions[: self.config.n_action_steps]
-            self._action_queue.extend(strided_actions)
-        return self._action_queue.popleft()
+        return self._action_dispatcher.select_action(
+            lambda observation: self.predict_action_chunk(observation, **kwargs),
+            batch,
+        )
 
     def _unpack_batch(
         self,

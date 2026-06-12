@@ -1,6 +1,6 @@
 # DECO 技术决策记录
 
-> 最后更新：2026-06-02
+> 最后更新：2026-06-12
 > 用途：记录 Kuavo-DECO 集成过程中已经确认、仍待验证、以及被放弃的关键技术方案。本文档应与 `PLANS.md` 保持一致；若二者冲突，以最新 `PLANS.md` 和本文档中标注的“当前冻结方案”为准。
 
 ---
@@ -37,7 +37,7 @@ Kuavo RGB + depth + state + action + optional tactile rosbag
      3) tactile branch：仅 qiangnao_tactile 可启用；30D observation.tactile -> left/right tactile max normalize -> tactile encoder / PI_Adapter
   -> DECO action-token Flow Matching transformer
   -> profile action_dim 对应的 action chunk（qiangnao 28D / gripper 18D）
-  -> 部署阶段按 10Hz 控制频率消费动作队列
+  -> 部署默认按 30Hz Receding Horizon 连续消费动作；Temporal Ensembling 与 Stride Action 为显式可选模式
 ```
 
 核心原则：
@@ -59,7 +59,7 @@ Kuavo RGB + depth + state + action + optional tactile rosbag
 - **wrapper 边界清晰化**：`lerobot_patches/` 只做 LeRobot 全局 feature/type 兼容补丁，例如新增 `FeatureType.TACTILE`；DECO 专用 RGB-D `Resize/Letterbox`、RGB augmentation 接入顺序、tactile max normalization 和两阶段训练逻辑放在 `kuavo_train/wrapper/policy/deco/`。
 - **两阶段训练是两次独立启动**：第一阶段 `visual_main` 完整训练 RGB-D + state 主干并保存 Kuavo run 目录；第二阶段 `tactile_adapter` 再加载第一阶段选定 epoch 的 policy 权重，冻结主干，只训练 tactile encoder、tactile cross-attention、PI_Adapter 等新参数。若不使用触觉，则第一阶段 run 目录加选定 epoch 权重就是最终部署资产；部署阶段必须同时允许灵巧手无触觉、灵巧手带触觉和二夹爪无触觉三种推理模式。
 - **权重格式语义分层**：`.safetensors` policy 权重目录是 Kuavo-DECO 正式训练、续训和加载权重的入口；`.pth` 只作为 DECO 原生 checkpoint 或历史 PyTorch 权重导入兼容入口。部署资产则沿用 Kuavo 原逻辑，以 `outputs/train/<task>/<method>/<timestamp>/` run 根目录为单位，`epoch<epoch>/` 只是其中被选择的权重子目录；最终保存的 policy 会清空外部初始化路径并关闭外部初始化读取，避免迁移后依赖原始初始化文件。
-- **频率处理分层**：数据转换阶段负责 30Hz 训练数据；部署 wrapper 负责 10Hz 控制输出。
+- **频率处理分层**：数据转换阶段负责 30Hz 训练数据；部署默认使用 30Hz Receding Horizon。10Hz 只属于用户显式选择的 Stride Action 对照模式。
 
 ### 2.2 被替代的旧方案
 
@@ -125,6 +125,8 @@ fused_rgb/fused_depth -> stream embedding + RoPE -> DECO MMAttention
 
 ### 2A.5 推理队列 n_action_steps 决策
 
+> **已被 2026-06-12 的 2B 决策替代**：以下内容保留为 v2.0 历史记录，不再代表当前默认部署行为。
+
 当前 Kuavo-DECO 部署 wrapper 的 action 队列逻辑为：
 
 ```text
@@ -160,6 +162,34 @@ action_stride=3 -> 取 index 0, 3, 6, ..., 30
 - 判断指标应包括 MuJoCo 成功率、空抓比例、末端是否朝目标收敛、抓取触发时目标与末端的空间关系、动作平滑性，而不是只看训练 loss。
 - 若 `direct_tokens` 明显改善空抓，说明 early cross attention 至少存在可疑副作用；后续可研究 RoPE 后局部 cross attention、主干内融合或带位置约束的 cross attention。
 - 若 `direct_tokens` 无改善，应优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
+
+---
+
+## 2B. 版本 2.1 决策：三种互斥动作分发策略
+
+> **记录日期**：2026-06-12
+> **状态**：静态接入完成，等待 MuJoCo/ROS 实际频率和任务成功率验证。
+
+当前部署动作分发统一由 `deco.action_dispatch.mode` 选择：
+
+| 模式 | 动作索引语义 | 默认控制频率 | 重新推理条件 |
+| --- | --- | --- | --- |
+| `receding_horizon` | 连续执行 `0,1,...,N-1` | 30Hz | 已执行 N 步；`null` 表示完整 chunk |
+| `temporal_ensemble` | 每周期融合多个重叠 chunk 对当前时刻的预测 | 30Hz | 每个控制周期均重新推理 |
+| `stride_action` | 显式执行 `0,stride,2*stride,...` | `target_hz` | 降采样队列耗尽 |
+
+冻结约束：
+
+- 默认模式是 `receding_horizon`；旧 checkpoint 中存在 `action_stride=3` 不会自动启用 Stride Action。
+- 三种模式互斥，不允许先 stride 再做 Receding Horizon 或 Temporal Ensembling。
+- `n_action_steps` 的当前语义只属于 Receding Horizon，表示连续原始 action 数量，范围为 `1..chunk_size`。
+- Receding Horizon 和 Temporal Ensembling 要求 `env.ros_rate == checkpoint.dataset_hz`；当前为 30Hz。
+- Stride Action 要求 `dataset_hz % target_hz == 0` 且 `env.ros_rate == target_hz`。
+- 所有策略均位于 postprocessor 之前，在归一化 action 空间选择或融合动作；既有 LeRobot postprocessor、动作映射和机器人限幅顺序保持不变。
+- 这些参数只改变在线动作分发，不改变模型结构、训练 loss、模型权重或 action chunk 输出 shape，因此可以直接复用现有 checkpoint。
+- 当前同步模型推理约 200ms 时，Temporal Ensembling 无法满足 30Hz deadline；时间诊断必须将其标记为实时性失败，不能通过隐式降频掩盖。
+
+部署会生成 `deco_timing_trace.jsonl` 和 `deco_timing_summary.json`，用于记录模型真实推理耗时、动作索引、chunk 边界、clipping、指令发送周期和 deadline miss。是否引入异步推理/双缓冲，必须根据这些实测数据另行决策。
 
 ---
 

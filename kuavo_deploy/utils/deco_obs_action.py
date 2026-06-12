@@ -217,42 +217,38 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
     _assert_equal("policy.use_tactile_lora", policy_config.use_tactile_lora, expected["use_tactile_lora"])
 
 
-def apply_deco_runtime_overrides(policy_config: Any, deploy_config: Any) -> None:
-    """应用 DECO 部署期 runtime override。
+def configure_deco_action_dispatch(policy: Any, deploy_config: Any, env_config: Any) -> None:
+    """使用部署 YAML 配置 DECO dispatcher，并在下发动作前冻结时间语义。
 
-    该函数只允许覆盖不会改变权重 shape 的推理参数。`n_action_steps` 用于当前
-    checkpoint 的 receding horizon 消融：None 保持 checkpoint 原值，正整数在
-    `select_action()` 中限制 strided action queue 的入队长度。
+    此函数只接受不会改变模型结构和权重 shape 的在线参数。三种策略互斥，
+    Receding Horizon 与 Temporal Ensembling 必须按 checkpoint dataset_hz 连续执行。
     """
 
+    policy_config = getattr(policy, "config", None)
     if policy_config is None:
-        raise ValueError("DECO policy has no config; cannot apply runtime overrides.")
+        raise ValueError("DECO policy has no config; cannot configure action dispatcher.")
+    if not hasattr(policy, "configure_action_dispatch"):
+        raise TypeError("DECO policy must implement configure_action_dispatch().")
 
-    n_action_steps = getattr(deploy_config, "n_action_steps", None)
-    if n_action_steps is None:
-        return
-    if isinstance(n_action_steps, bool) or not isinstance(n_action_steps, int) or n_action_steps <= 0:
-        raise ValueError("deco.n_action_steps must be a positive integer or null.")
+    dataset_hz = int(getattr(policy_config, "dataset_hz", 0))
+    chunk_size = int(getattr(policy_config, "chunk_size", 0))
+    deploy_config.validate_action_dispatch_timing(dataset_hz, chunk_size, env_config)
 
-    chunk_size = getattr(policy_config, "chunk_size", None)
-    action_stride = getattr(policy_config, "action_stride", None)
-    if chunk_size is None or action_stride is None:
-        raise ValueError("DECO policy config must define chunk_size and action_stride for n_action_steps override.")
-    chunk_size = int(chunk_size)
-    action_stride = int(action_stride)
-    if chunk_size <= 0 or action_stride <= 0:
-        raise ValueError("DECO policy config chunk_size and action_stride must be positive.")
+    if deploy_config.inf_step is not None:
+        model = getattr(policy, "model", None)
+        if model is None or not hasattr(model, "inference_step"):
+            raise TypeError("DECO policy model must expose inference_step for deco.inf_step override.")
+        model.inference_step = deploy_config.inf_step
+        policy_config.inf_step = deploy_config.inf_step
 
-    max_strided_actions = (chunk_size + action_stride - 1) // action_stride
-    if n_action_steps > max_strided_actions:
-        raise ValueError(
-            "deco.n_action_steps cannot exceed the number of strided actions "
-            f"({max_strided_actions}) for checkpoint chunk_size={chunk_size} "
-            f"and action_stride={action_stride}."
-        )
-
-    # 只覆盖部署期执行队列长度；模型 forward/loss/权重 shape 均不受影响。
-    policy_config.n_action_steps = n_action_steps
+    dispatch = deploy_config.action_dispatch
+    policy.configure_action_dispatch(
+        dispatch.mode,
+        n_action_steps=dispatch.receding_horizon.n_action_steps,
+        temporal_ensemble_coefficient=dispatch.temporal_ensemble.coefficient,
+        stride_target_hz=dispatch.stride_action.target_hz,
+        stride_queue_steps=dispatch.stride_action.queue_steps,
+    )
 
 
 def _assert_equal(name: str, actual: Any, expected: Any) -> None:
