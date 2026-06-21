@@ -42,10 +42,13 @@ dataset:
 
   task_description: "Pick and Place"
 
-  # DECO 训练数据统一下采样为 30Hz；部署 10Hz 在 policy/deploy wrapper 阶段处理。
+  # DECO 训练数据默认下采样为 30Hz；部署动作调度不属于本数据转换配置。
   train_hz: 30
-  # 信息字段：DECO 实际使用 head_cam_h 的真实时间戳生成 30Hz 目标时间轴，不依赖整数跳帧。
-  # 保留 main_timeline/main_timeline_fps 是为了说明主视觉流语义；不要把它当作 ACT/DP 式跳帧开关。
+  # 视觉时间轴策略：
+  # - deco_fixed_hz: 默认 DECO 路线，基于共同覆盖区间生成真实 30Hz 目标时间戳。
+  # - act_densest_camera_jump: ACT 对齐实验路线，选择帧数最多的视觉流并按 main_timeline_fps/train_hz 整数跳帧。
+  timeline_strategy: deco_fixed_hz
+  # main_timeline/main_timeline_fps 仅在 act_densest_camera_jump 或文档说明中有意义。
   main_timeline: head_cam_h
   main_timeline_fps: 30
   sample_drop: 10
@@ -78,27 +81,44 @@ deco:
   # - qiangnao_tactile: observation.state/action 为 28D，observation.tactile 为 30D。
   # - gripper_no_tactile: observation.state/action 为 18D，且没有 observation.tactile。
 
-  # 默认复用现有 Kuavo/ACT-DP 清洗链路。
-  rgb_key: head_cam_h
-  rgb_topic: /cam_h/color/image_raw/compressed
-  depth_key: depth_h
-  # depth_topic/depth_encoding 表示首选 depth 候选，而不是唯一候选。
-  # 脚本会自动补充 /compressed 与 /compressedDepth 的成对 fallback：
-  # - 若首选是 /cam_h/depth/image_raw/compressed，
-  #   会额外尝试 /cam_h/depth/image_raw/compressedDepth + compressedDepth_png。
-  # - 若首选是 /cam_h/depth/image_raw/compressedDepth，
-  #   会额外尝试 /cam_h/depth/image_raw/compressed + compressed_image。
-  # - 同名 topic 会去重，最终按候选顺序选择当前 bag 中第一个存在的 depth topic。
-  depth_topic: /cam_h/depth/image_raw/compressed
-  # depth_encoding 只描述首选 depth_topic 的解码方式；它不等于 topic fallback 开关。
-  # 可选值：
-  # - compressed_image: 普通 sensor_msgs/CompressedImage，data 可直接 cv2.imdecode；当前默认。
+  # 默认复用 Kuavo ACT 的三相机 RGB-D 顺序：head -> left wrist -> right wrist。
+  # use_wrist_cameras=true 时必须正好配置这三组 key，且顺序固定；缺任一 RGB/depth 会直接报错。
+  # use_wrist_cameras=false 时，脚本只保留 head_cam_h/depth_h 兼容路径。
+  use_wrist_cameras: true
+  camera_pairs:
+    - name: head
+      rgb_key: head_cam_h
+      depth_key: depth_h
+      rgb_topic: /cam_h/color/image_raw/compressed
+      depth_topic: /cam_h/depth/image_raw/compressed
+      depth_encoding: compressed_image
+      depth_topic_candidates:
+        - {topic: /cam_h/depth/image_raw/compressed, encoding: compressed_image}
+        - {topic: /cam_h/depth/image_raw/compressedDepth, encoding: compressedDepth_png}
+    - name: left_wrist
+      rgb_key: wrist_cam_l
+      depth_key: depth_l
+      rgb_topic: /cam_l/color/image_raw/compressed
+      depth_topic: /cam_l/depth/image_rect_raw/compressedDepth
+      depth_encoding: compressedDepth_png
+      depth_topic_candidates:
+        - {topic: /cam_l/depth/image_rect_raw/compressedDepth, encoding: compressedDepth_png}
+        - {topic: /cam_l/depth/image_rect_raw/compressed, encoding: compressed_image}
+    - name: right_wrist
+      rgb_key: wrist_cam_r
+      depth_key: depth_r
+      rgb_topic: /cam_r/color/image_raw/compressed
+      depth_topic: /cam_r/depth/image_rect_raw/compressedDepth
+      depth_encoding: compressedDepth_png
+      depth_topic_candidates:
+        - {topic: /cam_r/depth/image_rect_raw/compressedDepth, encoding: compressedDepth_png}
+        - {topic: /cam_r/depth/image_rect_raw/compressed, encoding: compressed_image}
+
+  # depth_encoding 可选值：
+  # - compressed_image: 普通 sensor_msgs/CompressedImage，data 可直接 cv2.imdecode。
   # - compressedDepth_png: ROS compressedDepth 封装，data 前缀有配置头，需要定位 PNG payload 后解码。
   # - auto: 对同一个 topic 先尝试 compressed_image，失败后再尝试 compressedDepth_png。
   # - raw_16uc1: raw depth fallback；只有 allow_raw_depth_fallback=true 且对应 topic 存在时才应使用。
-  # 注意：如果首选 topic 存在但 depth_encoding 写错，脚本不会因为解码失败自动切到下一个 topic；
-  # 不确定封装格式时应使用 depth_encoding: auto。
-  depth_encoding: compressed_image
 
   # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
   raw_depth_topic: /camera/depth/image_rect_raw
@@ -134,4 +154,3 @@ deco:
   # 继承原脚本保护性检查：检测 arm trajectory timestamp gap。
   # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
   arm_traj_gap_threshold_s: null
-

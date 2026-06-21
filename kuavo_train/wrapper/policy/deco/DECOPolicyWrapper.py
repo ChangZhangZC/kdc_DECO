@@ -297,8 +297,8 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
         *,
         require_action: bool,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor | None, Tensor | None]:
-        rgb = self._ensure_batched_tensor(batch[self.config.rgb_key], image=True)
-        depth = self._ensure_batched_tensor(batch[self.config.depth_key], image=True)
+        rgb = self._stack_image_views(batch, self.config.rgb_keys, image_name="RGB")
+        depth = self._stack_image_views(batch, self.config.depth_keys, image_name="depth")
         state = self._ensure_batched_tensor(batch[OBS_STATE], image=False)
 
         action = None
@@ -315,6 +315,33 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             elif task_idx.ndim == 0:
                 task_idx = task_idx.unsqueeze(0)
         return rgb, depth, state, action, task_idx
+
+    def _stack_image_views(self, batch: dict[str, Tensor], keys: tuple[str, ...], *, image_name: str) -> Tensor:
+        """按配置顺序组装多相机图像。
+
+        输出 shape 为 [B, V, C, H, W]。这里不重排相机顺序，避免 wrapper 和
+        数据清洗配置各自维护一份隐式 camera order。
+        """
+
+        views = []
+        batch_size = None
+        spatial_shape = None
+        for key in keys:
+            if key not in batch:
+                raise ValueError(f"Missing {image_name} input feature: {key}")
+            tensor = self._ensure_batched_tensor(batch[key], image=True)
+            if tensor.ndim != 4:
+                raise ValueError(f"{key} must be image tensor [B,C,H,W] or [C,H,W], got {tuple(tensor.shape)}")
+            if batch_size is None:
+                batch_size = tensor.shape[0]
+                spatial_shape = tensor.shape[-2:]
+            elif tensor.shape[0] != batch_size or tensor.shape[-2:] != spatial_shape:
+                raise ValueError(
+                    f"All {image_name} views must share batch/spatial shape; "
+                    f"{key} got {tuple(tensor.shape)}"
+                )
+            views.append(tensor)
+        return torch.stack(views, dim=1)
 
     def _ensure_batched_tensor(self, value: Tensor, *, image: bool) -> Tensor:
         tensor = value

@@ -1,5 +1,73 @@
 # AI Execution Logs
 
+## 2026-06-21
+
+### 强化 use_wrist_cameras 三相机配置校验
+- **任务**: 根据静态审查结果和用户确认，修复 `deco.use_wrist_cameras=true` 时未强制三相机完整性的风险；validator 不纳入本次收尾范围，未修改。
+- **修改文件 1**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 新增 `REQUIRED_WRIST_VISUAL_ORDER`，固定三相机 RGB-D 顺序为 `head_cam_h/depth_h -> wrist_cam_l/depth_l -> wrist_cam_r/depth_r`。
+  - 在 `parse_visual_pairs()` 解析结束后增加强校验：当 `deco.use_wrist_cameras=true` 时，`camera_pairs` 必须正好包含上述三组 key 且顺序一致；缺失腕部 RGB/depth、顺序错误或额外添加 view 都会直接抛出 `ValueError`。
+  - 保留 `use_wrist_cameras=false` 的 head-only 兼容路径，允许只使用 `head_cam_h/depth_h`。
+- **修改文件 2**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 补充中文注释，明确 `use_wrist_cameras=true` 表示固定三相机模式，缺任一 RGB/depth 会直接报错。
+- **未修改文件**:
+  - 未修改 `kuavo_data/validate_deco_lerobot_dataset.py`；按用户要求 validator 不纳入本次收尾范围。
+  - 未修改 `PLANS.md`。
+- **验证方式**:
+  - 本次遵守仓库 No-Runtime 约束，未运行 Python、训练、转换、validator、MuJoCo、ROS、pip、conda 或任何环境变更命令。
+  - 仅执行静态文本检索、`git diff --check` 和人工逻辑检查，确认三相机强校验逻辑已接入。
+
+## 2026-06-17
+
+### 接入 Kuavo-DECO 多相机 RGB-D 前端
+- **任务**: 根据用户确认的 v3 方案，将 Kuavo-DECO 视觉前端从单头部 RGB-D / RGB-depth 双流 token，升级为 Kuavo ACT 风格的头部 + 左腕 + 右腕多相机 RGB-D 前端。
+- **修改文件 1**: `kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 新增 `VisualPair` 数据结构和默认三相机 RGB-D topic 配置，默认顺序为 `head_cam_h/depth_h -> wrist_cam_l/depth_l -> wrist_cam_r/depth_r`。
+  - 新增 `parse_visual_pairs()`，支持 `deco.use_wrist_cameras` 与 `deco.camera_pairs`；`use_wrist_cameras=false` 时只保留 head-only 兼容路径。
+  - 新增 `dataset.timeline_strategy` 支持：默认 `deco_fixed_hz` 使用真实 30Hz 目标时间轴，可选 `act_densest_camera_jump` 复刻 ACT densest-camera + integer jump 采样。
+  - 将 rosbag topic map、depth topic candidate 解析、必需字段检查、对齐和 frame 写入从单 RGB-D key 扩展为多 RGB-D key。
+  - LeRobot dataset feature schema 现在按 `visual_pairs` 写入三组 RGB-D feature，depth 仍沿用当前 Kuavo 兼容链路保存为 3-channel depth image。
+  - 创建 LeRobotDataset 时使用 `dataset.train_hz` 解析出的 `reader.train_hz` 作为 `fps`，避免时间轴配置只影响对齐逻辑却不影响数据集元信息。
+- **修改文件 2**: `configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 新增 `dataset.timeline_strategy: deco_fixed_hz`。
+  - 新增 `deco.use_wrist_cameras: true` 与三组 `deco.camera_pairs`，显式记录每组 RGB/depth key、topic 和 depth decoder candidates。
+- **修改文件 3**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 将 DECO 视觉主路径改为 `visual_fusion_mode: act_rgbd`。
+  - 新增 `rgb_keys/depth_keys` 多 key 配置，默认三相机顺序与数据转换一致。
+  - 保留旧 `rgb_key/depth_key` 的单视角 fallback；若旧字段与新列表同时配置且语义冲突，会显式报错。
+  - `validate_features()` 改为校验多相机 key 列表、RGB/depth 数量一致、各图像 feature shape 合法且空间尺寸一致。
+  - 将 `letterbox_fill_depth` 默认值改为 `0.5`，作为归一化 depth image 的中性 padding。
+- **修改文件 4**: `kuavo_train/wrapper/policy/deco/DECOProcessor.py`
+  - preprocessor builder 从单 `rgb_key/depth_key` 改为传入 `rgb_keys/depth_keys` 列表。
+  - `DECORGBDLetterboxProcessorStep` 的 depth padding 默认值改为 `0.5`，并继续保存在 processor config 中供部署恢复。
+- **修改文件 5**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - `_unpack_batch()` 从读取单个 RGB/depth tensor 改为按 config 顺序 stack 多相机输入。
+  - 新增 `_stack_image_views()`，输出 `rgb_views/depth_views` shape 为 `[B, V, C, H, W]`，并校验 batch/spatial shape 一致。
+- **修改文件 6**: `third_party/deco/models/deco/deco.py`
+  - 将 `rgbd_img_encoding()` 改为 multi-view ACT-style RGB-D encoder，兼容 `[B,V,C,H,W]` 输入。
+  - 每个相机内部执行 RGB ResNet + depth ResNet、双向 RGB-depth cross attention、`concat(fused_rgb, fused_depth)` 和 `Linear(2C -> C)`，得到单路 camera fused tokens。
+  - `pack_visual_token_sequences()` 改为按相机顺序串接 `[head fused][left wrist fused][right wrist fused]`，不再添加 RGB/depth stream embedding。
+  - `MMAttention.forward()` 删除 `total_img_len / 2` 双流切分假设，改为按 `visual_num_views/tokens_per_view` 对每个相机段重复应用 image RoPE。
+- **修改文件 7**: `configs/policy/deco_config.yaml`
+  - `visual_fusion_mode` 改为 `act_rgbd`。
+  - `rgb_key/depth_key` 改为三相机 `rgb_keys/depth_keys` 列表。
+  - `letterbox_fill_depth` 改为 `0.5`，中文注释说明该值是归一化 depth image 的中性补边。
+- **修改文件 8**: `configs/deploy/kuavo_deco_env.yaml`
+  - 部署 obs key 增加 `wrist_cam_l`、`wrist_cam_r`、`depth_l`、`depth_r`。
+  - 修正 `depth_h` 的 `depth_encoding` 为 `compressedDepth_png`，与 `/compressedDepth` topic 语义一致。
+- **修改文件 9**: `kuavo_deploy/utils/deco_obs_action.py`
+  - 在 `validate_deco_policy_compatibility()` 中增加 act_rgbd 视觉 key 校验。
+  - 新增 `_validate_deco_visual_obs_keys()`，确认部署 `obs_key_map` 覆盖 checkpoint 保存的 `rgb_keys/depth_keys`，避免缺腕部相机时推理阶段才失败。
+- **修改文件 10**: `Content/DECO_ACT_MultiView_RGBD_Frontend_Plan.md`
+  - 新增功能分支专用技术决策文档，记录三相机 RGB-D、timeline 策略、256 letterbox、depth padding 0.5、ACT 相似性和不实施项。
+  - 未修改 `Content/DECO_Technical_Decisions.md`，避免将旧冻结决策与当前功能分支新决策混在同一文件中。
+- **修改文件 11**: `PLANS.md`
+  - 新增 `版本 3.0 修正计划：多相机 RGB-D 前端对齐 Kuavo ACT`，并勾选本次已经完成的代码、配置、部署、文档和静态检查任务。
+  - 将旧计划中 `letterbox_fill_depth: 0` 的记录更新为 `0.5`。
+- **验证方式**:
+  - 本次遵守仓库 No-Runtime 约束，未运行 Python、训练、转换、validator、MuJoCo、ROS、pip、conda 或任何环境变更命令。
+  - 仅执行静态文本检索与人工逻辑检查，确认旧 `total_img_len / 2`、`direct_tokens/cross_attention` 主路径和 wrapper 单 key 解包已从当前代码主路径移除。
+
 ## 2026-06-05
 
 ### 创建本地 Git 版本标签 v2.0

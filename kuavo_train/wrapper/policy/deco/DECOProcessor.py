@@ -39,7 +39,7 @@ class DECORGBDLetterboxProcessorStep(ProcessorStep):
     resize_shape: tuple[int, int] = (256, 256)
     use_letterbox: bool = True
     letterbox_fill_rgb: float = 128.0 / 255.0
-    letterbox_fill_depth: float = 0.0
+    letterbox_fill_depth: float = 0.5
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         new_transition = transition.copy()
@@ -152,8 +152,8 @@ def make_deco_pre_post_processors(
         AddBatchDimensionProcessorStep(),
         DeviceProcessorStep(device=config.device),
         DECORGBDLetterboxProcessorStep(
-            rgb_keys=[config.rgb_key],
-            depth_keys=[config.depth_key],
+            rgb_keys=list(config.rgb_keys),
+            depth_keys=list(config.depth_keys),
             resize_shape=tuple(config.resize_shape),
             use_letterbox=config.use_letterbox,
             letterbox_fill_rgb=config.letterbox_fill_rgb,

@@ -20,7 +20,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   -> LeRobot Normalizer：RGB/depth/state/action 按配置归一化，tactile 作为 TACTILE 保持 IDENTITY
   -> 三条平行主枝：
      1) state branch：profile action_dim 对应的 observation.state -> obs_encoder -> time embedding condition
-     2) RGB-D visual branch：RGB ResNet34 + 1-channel Depth ResNet34 -> cross attention -> fused RGB/depth tokens
+     2) RGB-D visual branch：head/left wrist/right wrist 三组 RGB-D 视角；每个 view 内部 RGB ResNet34 + 1-channel Depth ResNet34 -> cross attention -> concat(fused_rgb, fused_depth) -> Linear(2C -> C) -> camera fused tokens
      3) tactile branch：仅 qiangnao_tactile 可启用；30D observation.tactile -> left/right tactile max normalize -> tactile encoder / PI_Adapter
   -> DECO action-token Flow Matching transformer
   -> profile action_dim 对应的 action chunk（qiangnao 28D / gripper 18D）
@@ -29,11 +29,11 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 
 ### 0.2 已确认技术决策
 
-- DECO 不再沿用原生“双目 RGB 近似深度”的视觉假设；Kuavo 版本采用现有工具链的 **RGB + depth** 输入方式。
+- DECO 不再沿用原生“双目 RGB 近似深度”的视觉假设；Kuavo 版本采用 Kuavo ACT 风格的 **多相机 RGB-D** 输入方式，默认包含 head、left wrist、right wrist 三组 RGB-D。
 - 视觉前端默认 `vision_backbone: resnet34`，允许通过配置切换为 `resnet18`。
-- RGB 与 depth 分别通过独立 ResNet backbone 编码；depth backbone 使用 1-channel 输入，初始化策略参考 ACT：用 RGB ResNet 第一层权重在通道维求均值初始化 depth conv1。RGB 与 depth 不共用同一个 ResNet。
-- 阶段三第一版保留 DECO 原生“两路视觉 token”结构，但把语义改为 `RGB/depth` 或 `fused_rgb/fused_depth`；暂不把 RGB-D 过早压成单路 visual token，以降低 DECO 主干改动风险。
-- RGB 视觉处理拆成两层：`Resize/Letterbox` 属于确定性空间预处理，不放入随机增强池；`RGB_Augmenter` 属于训练期随机增强池。默认空间输入保持 DECO 原生 `256x256 letterbox`：RGB padding 使用灰色 `fill=128`，depth padding 单独配置，默认使用 `0` 或 invalid depth。
+- 每个相机 view 内部，RGB 与 depth 分别通过独立 ResNet backbone 编码；depth backbone 使用 1-channel 输入，初始化策略参考 ACT：用 RGB ResNet 第一层权重在通道维求均值初始化 depth conv1。RGB 与 depth 不共用同一个 ResNet。
+- v3 视觉前端不再保留旧 `[RGB tokens][Depth tokens]` 双流结构；每个 view 内部先做 RGB/depth token fusion，再按固定顺序打包为 `[head fused][left wrist fused][right wrist fused]` 单路 visual token 序列进入 DECO 主干。
+- RGB 视觉处理拆成两层：`Resize/Letterbox` 属于确定性空间预处理，不放入随机增强池；`RGB_Augmenter` 属于训练期随机增强池。默认空间输入保持 DECO 原生 `256x256 letterbox`：RGB padding 使用灰色 `fill=128`，depth padding 单独配置，默认使用归一化中性值 `0.5`。
 - RGB 增强复用 Kuavo 现有 `RGB_Augmenter`，并吸收 DECO 原生 blur 思路：Identity/Notransform、ColorJitter、SharpnessJitter、RandomMask、RandomBorderCutout、GaussianNoise、GammaCorrection、GaussianBlur 等。
 - RGB 增强采样权重参考 Kuavo ACT：保留原图的 Identity/Notransform 权重较高（默认 `3.0`），其他增强默认 `1.0`，每次默认从增强池中采样一个变换。
 - depth 不做颜色类增强；仅与 RGB 共享 `Resize/Letterbox` 等空间同步变换，RGB 使用双线性插值，depth 使用 nearest 插值，避免破坏深度物理含义。
@@ -119,6 +119,31 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [ ] `n_action_steps` 消融建议优先搭配 `inf_step=5/10/20` 做小网格测试；若 `n_action_steps=1/2` 造成推理耗时超过 10Hz 控制周期，应优先回退到 `4` 或降低 `inf_step`。
 - [ ] 若 `direct_tokens` 明显改善空抓，后续再评估更温和的融合方式，例如 RoPE 后局部 cross attention、只在主干中融合，或保留 cross attention 但加入局部窗口/位置约束。
 - [ ] 若 `direct_tokens` 无明显改善，则优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
+
+---
+
+## 版本 3.0 修正计划：多相机 RGB-D 前端对齐 Kuavo ACT
+
+> **记录日期**：2026-06-17
+> **状态**：代码接入与静态检查已完成；尚待用户在允许运行的环境中执行转换/训练/部署验证。
+> **边界**：本章节覆盖当前 `deco/feature/muti-visual` 功能分支的新前端路线；不回写 `Content/DECO_Technical_Decisions.md` 中的旧冻结决策。
+
+- [x] 新增 `Content/DECO_ACT_MultiView_RGBD_Frontend_Plan.md`，记录本轮多相机 RGB-D 前端的关键技术决策，不修改旧 `DECO_Technical_Decisions.md`。
+- [x] 数据清洗配置新增 `dataset.timeline_strategy`，默认 `deco_fixed_hz`，可选 `act_densest_camera_jump`；默认仍生成 30Hz DECO 语义数据。
+- [x] 数据清洗配置新增 `deco.use_wrist_cameras` 与三组 `deco.camera_pairs`：`head_cam_h/depth_h`、`wrist_cam_l/depth_l`、`wrist_cam_r/depth_r`。
+- [x] `CvtRosbag2Lerobot_DECO.py` 支持多相机 RGB-D topic map、depth candidate 按 key 解析、三组视觉 feature 写入，以及 head-only 兼容模式。
+- [x] `CvtRosbag2Lerobot_DECO.py` 保留 `deco_fixed_hz` 真实目标时间轴，并新增 ACT 风格 densest-camera integer jump 策略；两种策略都继续对所有必需模态做 nearest-neighbor 对齐。
+- [x] `configs/policy/deco_config.yaml` 将 `rgb_key/depth_key` 改为 `rgb_keys/depth_keys` 列表，默认顺序为 head、left wrist、right wrist。
+- [x] 将 `visual_fusion_mode` 的主路径更新为 `act_rgbd`，替代 v2.0 的 `cross_attention/direct_tokens` 双流消融入口。
+- [x] `DECOProcessor` 使用多 key 执行 RGB/depth 同步 `256x256 letterbox`，并将 `letterbox_fill_depth` 默认改为 `0.5` 中性补边。
+- [x] `DECOPolicyWrapper` 按 config 顺序 stack 多相机输入为 `[B, V, C, H, W]`，不再依赖单个 `rgb_key/depth_key`。
+- [x] `third_party/deco/models/deco/deco.py` 将 `rgbd_img_encoding` 改为 multi-view ACT-style RGB-D encoder：每个相机内部执行 RGB/depth 双向 cross attention，concat 后通过 `Linear(2C -> C)` 压回单路 fused tokens。
+- [x] `pack_visual_token_sequences` 改为按相机顺序串接 `[head fused][left wrist fused][right wrist fused]`，不再生成 `[RGB tokens][Depth tokens]` 双流序列。
+- [x] `MMAttention.forward` 删除 `total_img_len / 2` 双流切分假设，改为按 `visual_num_views/tokens_per_view` 对每个相机段重复应用 image RoPE。
+- [x] 部署配置新增左右腕 RGB-D obs key，并在 `validate_deco_policy_compatibility()` 中校验部署 obs key 覆盖 checkpoint 保存的 `rgb_keys/depth_keys`。
+- [x] 明确本轮不重新设计 action 执行调度，不把 action_stride 类算法作为视觉前端依赖。
+- [ ] 在允许运行的环境中转换包含头部与双腕 RGB-D 的 rosbag，确认 dataset metadata 中出现六个视觉 feature。
+- [ ] 在允许运行的环境中做一次训练/推理 smoke test，确认模型 forward 接收 `[B,V,C,H,W]` 并输出预期 action chunk。
 
 ---
 
@@ -238,11 +263,11 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] RGB backbone 输出 layer4 feature map，并投影到 DECO hidden dim。
   - [x] depth backbone 使用 1-channel ResNet；第一层卷积权重使用 RGB backbone conv1 权重按通道平均初始化。
   - [x] RGB 与 depth 使用独立 backbone，不共享同一个 ResNet；二者只在 ResNet 后的 token 层做 cross-modal fusion。
-  - [x] 复用 ACT 风格 RGB-depth cross attention fusion，并保留两路视觉 token：`fused_rgb_tokens` 与 `fused_depth_tokens`。
-  - [x] 将 DECO 原生两路 token 语义改写为 `fused_rgb/fused_depth`；`MMAttention` 中基于 `total_img_len / 2` 的视觉分流逻辑仍可保留，但必须用中文注释说明新语义。
-  - [x] 清理 `third_party/deco/models/deco/deco.py`：移除旧双 RGB 兼容分支和相关模型主体命名，forward 接口改为 `forward(rgb, depth, ...)`，使模型主体仅保留 Kuavo RGB-D 路线。
+  - [x] 复用 ACT 风格 RGB-depth cross attention fusion；v3 路线中每个相机内部将 `fused_rgb_tokens/fused_depth_tokens` concat 后通过 `Linear(2C -> C)` 压回单路 camera fused tokens。
+  - [x] 将 DECO 原生两路 token 语义替换为多相机 fused token 序列：`[head fused][left wrist fused][right wrist fused]`；`MMAttention` 中不再保留基于 `total_img_len / 2` 的视觉分流逻辑。
+  - [x] 清理 `third_party/deco/models/deco/deco.py`：移除旧双 RGB 兼容分支和相关模型主体命名，forward 接口改为 multi-view `forward(rgb, depth, ...)`，其中 RGB/depth 由 wrapper 组织为 `[B,V,C,H,W]`。
   - [x] 保留空间 token 形式，而不是过早压成单个全局向量，以匹配 DECO 原本 image tokens 与 action tokens 联合 attention 的结构。
-  - [x] 第一版暂不采用单路 `visual_tokens: [B, L, D]` 方案；该方案作为后续 ablation 或二期重构候选。
+  - [x] v3 采用单路多相机 `visual_tokens: [B, V*L, D]` 方案；旧两路 RGB/depth token 方案仅作为 v2.0 历史记录保留。
 - [x] **3.2 触觉编码器手术 (Tactile Encoder Surgery)**
   - [x] 删除或绕过原版 `init_tac_regions` 的 1062 维 Inspire Hand 区域均值逻辑。
   - [x] 将触觉输入改为 Kuavo 双手 30 维：左手 15 + 右手 15。
@@ -264,9 +289,9 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 第一版 loss 不使用 `action_is_pad` mask，保持 DECO 原生“mask 返回但 diffusion loss 不消费 mask”的行为。
   - [x] 保留推理阶段 Flow Matching 去噪循环；`inf_step` 仍只表示去噪步数，不表示 10Hz 控制频率。
 - [x] **3.4 模型静态验证**
-  - [x] 做静态 shape 审查：RGB `(B, 3, H, W)`、depth `(B, 1, H, W)`、state `(B, 28)`、tactile `(B, 30)`、action `(B, chunk_size, 28)`。
-  - [x] 增补 `gripper_no_tactile` shape 审查：RGB `(B, 3, H, W)`、depth `(B, 1, H, W)`、state `(B, 18)`、无 tactile、action `(B, chunk_size, 18)`。
-  - [x] 做 visual token 审查：`fused_rgb_tokens` 与 `fused_depth_tokens` 应具有相同空间长度，拼接后为 `[B, 2L, dim]`，以兼容 DECO 原生两路视觉 token 假设。
+  - [x] 做静态 shape 审查：RGB views `(B, V, 3, H, W)`、depth views `(B, V, 1, H, W)`、state `(B, 28)`、tactile `(B, 30)`、action `(B, chunk_size, 28)`。
+  - [x] 增补 `gripper_no_tactile` shape 审查：RGB views `(B, V, 3, H, W)`、depth views `(B, V, 1, H, W)`、state `(B, 18)`、无 tactile、action `(B, chunk_size, 18)`。
+  - [x] 做 visual token 审查：每个 view 内部 `fused_rgb_tokens` 与 `fused_depth_tokens` 具有相同空间长度，concat 后经 `Linear(2C -> C)` 得到 `[B, V, L, dim]`，最终 pack 为 `[B, V*L, dim]`。
   - [x] 明确不在当前机器执行 forward 验证；仅通过代码审查、shape 推导和注释记录完成逻辑验证。
 - [x] **3.5 触觉 LoRA / Plugin Adapter 保留策略**
   - [x] 保留 DECO 源码中的 `PI_Adapter` 低秩 adapter 思路：`down: dim -> rank`，`up: rank -> out_dim`，并以 residual delta 形式注入 image/action attention 与 MLP 分支。
@@ -311,8 +336,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] **4.1 开发 DECOConfigWrapper**
   - [x] 注册 DECO 专属超参数：`training_stage`、`chunk_size`、`dim`、`num_attn_blocks`、`inf_step`、`use_tactile`、`vision_backbone`、`depth_backbone`、`control_hz`、`dataset_hz`、`action_stride` 等。
   - [x] 默认 `vision_backbone: resnet34`、`depth_backbone: resnet34`；允许切换 `resnet18`。
-  - [x] 不再暴露旧视觉模式开关；DECO 主体固定为 RGB/depth 独立 backbone + cross attention + 两路 visual tokens。
-  - [x] 注册确定性空间预处理参数：默认 `resize_shape: [256, 256]`、`use_letterbox: true`、`letterbox_fill_rgb: 128/255`、`letterbox_fill_depth: 0`、RGB/depth 插值策略等。
+  - [x] 不再暴露旧视觉模式开关；DECO 主体固定为 multi-view ACT-style RGB-D encoder，每个 view 内部 RGB/depth 独立 backbone + cross attention + concat/proj，最终输出单路多相机 fused visual tokens。
+  - [x] 注册确定性空间预处理参数：默认 `resize_shape: [256, 256]`、`use_letterbox: true`、`letterbox_fill_rgb: 128/255`、`letterbox_fill_depth: 0.5`、RGB/depth 插值策略等。
   - [x] 注册触觉 adapter 参数：`use_tactile_lora`、`tactile_lora_rank`、`freeze_pretrained_main`、`base_policy_path`、`deco_init_pth_path`、`adapter_model_path`。
   - [x] 注册 DECO-style 触觉归一化参数：`tactile_left_max`、`tactile_right_max` 或等价配置；其输入单位为洗数据后已经 `/100` 的牛顿值。
   - [x] 注册 `clip_tactile_to_unit: true` 默认开关，使 `tactile / tactile_max` 后默认 clamp 到 `[0, 1]`，与 DECO 原生 inference 行为一致。
@@ -346,11 +371,11 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 沿用 Kuavo Hydra 配置规范：`batch_size`、`max_epoch`、`device`、`RGB_Augmenter`、optimizer/scheduler 等。
   - [x] 复用 ACT/DP 的 `RGB_Augmenter` 配置，并新增 DECO blur 候选：Identity/Notransform、ColorJitter、SharpnessJitter、RandomMask、RandomBorderCutout、GaussianNoise、GammaCorrection、GaussianBlur。
   - [x] 显式配置增强权重：Identity/Notransform 默认 `3.0`，其他增强默认 `1.0`，`max_num_transforms: 1`，保证部分训练样本保持原始 RGB 分布。
-  - [x] 显式配置确定性空间预处理：默认 `resize_shape: [256, 256]`、`use_letterbox: true`、RGB 双线性插值、depth nearest 插值、`letterbox_fill_rgb: 128/255`、`letterbox_fill_depth: 0`；该部分不作为随机增强池的一员，并由 DECO 专用 preprocessor 在 normalizer 前执行。
+  - [x] 显式配置确定性空间预处理：默认 `resize_shape: [256, 256]`、`use_letterbox: true`、RGB 双线性插值、depth nearest 插值、`letterbox_fill_rgb: 128/255`、`letterbox_fill_depth: 0.5`；该部分不作为随机增强池的一员，并由 DECO 专用 preprocessor 在 normalizer 前执行。
   - [x] 显式配置 depth，并说明 depth 不做 RGB photometric augmentation。
   - [x] 显式记录第一版 depth 输入语义：当前 depth 来自 3-channel uint8 兼容存储，wrapper/DECO 主干取单通道后进入 1-channel depth backbone；该输入不是严格 metric depth。
   - [x] 在配置注释中保留后续备选策略说明：若要保留绝对毫米尺度，应升级为 `uint16`/单通道 metric depth feature 或 raw depth 保存方案，并同步更新 converter 与 validator。
-  - [x] 不再额外暴露视觉 token 模式开关；DECO 主体固定为 RGB/depth 独立 backbone、cross attention 后仍保留两路 visual tokens。
+  - [x] 不再额外暴露视觉 token 模式开关；DECO 主体固定为 multi-view ACT-style RGB-D encoder，cross attention 后在每个 view 内部压成 camera fused tokens，再按 head、left wrist、right wrist 顺序串接。
   - [x] 注入 DECO 参数：`policy_name: deco`、`training_stage: visual_main`、`chunk_size`、`dim`、`num_attn_blocks`、`inf_step`。
   - [x] 默认配置面向第一阶段主干训练：`use_tactile: false`、`use_tactile_lora: false`、`tactile_left_max: null`、`tactile_right_max: null`；若用户完全不使用触觉，第一阶段 run 根目录 + 选定 epoch 权重可直接部署。
   - [x] 为第二阶段触觉 adapter 训练提供清晰 override 注释：`training_stage: tactile_adapter`、`use_tactile: true`、`use_tactile_lora: true`、`base_policy_path: /path/to/stage1_policy`、`freeze_pretrained_main: true`。
@@ -437,7 +462,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] `configs/policy/deco_config.yaml` 准确记录 ResNet34 默认 backbone、RGB-D 前端、视觉增强、Flow Matching 主干、30Hz/10Hz 解耦参数。
 - [x] `configs/policy/deco_config.yaml` 准确记录默认 `256x256 letterbox`、RGB 灰色 padding `128`、depth 独立 padding、确定性 `Resize/Letterbox` 与随机 `RGB_Augmenter` 的边界，并包含 GaussianBlur 及其采样权重。
 - [x] `configs/policy/deco_config.yaml` 准确记录第一版 depth 使用 3-channel uint8 兼容存储并由 wrapper 取单通道的事实，同时说明 metric depth / raw depth 是后续备选升级路线。
-- [x] DECO wrapper 完成静态审查：RGB/depth 使用独立 backbone，cross attention 后仍以 `fused_rgb/fused_depth` 两路 visual tokens 接入 DECO MMAttention。
+- [x] DECO wrapper 完成静态审查：三组 RGB-D 按 config 顺序 stack 为 `[B,V,C,H,W]`，每个 view 内部 RGB/depth 使用独立 backbone 与 cross attention，concat/proj 后以 `[head fused][left wrist fused][right wrist fused]` 单路 visual tokens 接入 DECO MMAttention。
 - [x] DECO wrapper 完成静态审查：`observation.state` 只经 LeRobot stats 归一化一次，并按 DECO `obs_encoder + time embedding` 路线接入 MMAttention。
 - [x] `lerobot_patches/custom_patches.py` 完成静态审查：`observation.tactile` 被识别为 `FeatureType.TACTILE`，并在 DECO normalization mapping 中使用 `IDENTITY`。
 - [x] DECO wrapper 完成静态审查：`observation.tactile` 不走 STATE `MEAN_STD`，而是在 `/100` 牛顿单位基础上执行 DECO-style 左/右手 tactile max 归一化并默认 clamp 到 `[0, 1]` 后进入 tactile encoder。

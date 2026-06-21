@@ -65,6 +65,12 @@ log = logging.getLogger(__name__)
 DECO_RGB_KEY = "head_cam_h"
 DECO_DEPTH_KEY = "depth_h"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+DECO_FIXED_HZ_TIMELINE = "deco_fixed_hz"
+ACT_DENSEST_CAMERA_JUMP_TIMELINE = "act_densest_camera_jump"
+SUPPORTED_TIMELINE_STRATEGIES = {
+    DECO_FIXED_HZ_TIMELINE,
+    ACT_DENSEST_CAMERA_JUMP_TIMELINE,
+}
 
 QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
 GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
@@ -93,6 +99,75 @@ DECO_GRIPPER_ACTION_NAMES = DECO_GRIPPER_STATE_NAMES.copy()
 # 保留旧常量名，避免文档或外部静态引用失效；实际写 dataset 时会按 profile 选择。
 DECO_STATE_NAMES = DECO_QIANGNAO_STATE_NAMES
 DECO_ACTION_NAMES = DECO_QIANGNAO_ACTION_NAMES
+
+
+@dataclass(frozen=True)
+class VisualPair:
+    """一组 RGB-D 相机配置。
+
+    rgb_key/depth_key 是写入 LeRobot dataset 的短 key；脚本内部会自动加上
+    observation.images. / observation. 前缀。depth_candidates 保留 topic 与 decoder
+    的绑定关系，避免把 compressedDepth 与普通 CompressedImage 混用。
+    """
+
+    name: str
+    rgb_key: str
+    depth_key: str
+    rgb_topic: str
+    depth_candidates: tuple[tuple[str, str], ...]
+
+    @property
+    def rgb_feature_key(self) -> str:
+        return f"observation.images.{self.rgb_key}"
+
+    @property
+    def depth_feature_key(self) -> str:
+        return f"observation.{self.depth_key}"
+
+
+DEFAULT_HEAD_PAIR = {
+    "name": "head",
+    "rgb_key": "head_cam_h",
+    "depth_key": "depth_h",
+    "rgb_topic": "/cam_h/color/image_raw/compressed",
+    "depth_topic": "/cam_h/depth/image_raw/compressed",
+    "depth_encoding": "compressed_image",
+    "depth_topic_candidates": [
+        {"topic": "/cam_h/depth/image_raw/compressed", "encoding": "compressed_image"},
+        {"topic": "/cam_h/depth/image_raw/compressedDepth", "encoding": "compressedDepth_png"},
+    ],
+}
+DEFAULT_WRIST_PAIRS = [
+    {
+        "name": "left_wrist",
+        "rgb_key": "wrist_cam_l",
+        "depth_key": "depth_l",
+        "rgb_topic": "/cam_l/color/image_raw/compressed",
+        "depth_topic": "/cam_l/depth/image_rect_raw/compressedDepth",
+        "depth_encoding": "compressedDepth_png",
+        "depth_topic_candidates": [
+            {"topic": "/cam_l/depth/image_rect_raw/compressedDepth", "encoding": "compressedDepth_png"},
+            {"topic": "/cam_l/depth/image_rect_raw/compressed", "encoding": "compressed_image"},
+        ],
+    },
+    {
+        "name": "right_wrist",
+        "rgb_key": "wrist_cam_r",
+        "depth_key": "depth_r",
+        "rgb_topic": "/cam_r/color/image_raw/compressed",
+        "depth_topic": "/cam_r/depth/image_rect_raw/compressedDepth",
+        "depth_encoding": "compressedDepth_png",
+        "depth_topic_candidates": [
+            {"topic": "/cam_r/depth/image_rect_raw/compressedDepth", "encoding": "compressedDepth_png"},
+            {"topic": "/cam_r/depth/image_rect_raw/compressed", "encoding": "compressed_image"},
+        ],
+    },
+]
+REQUIRED_WRIST_VISUAL_ORDER = (
+    ("head_cam_h", "depth_h"),
+    ("wrist_cam_l", "depth_l"),
+    ("wrist_cam_r", "depth_r"),
+)
 
 # dexhand/touch_state 每个手 5 指，每指 3 个 normal force。
 DECO_TACTILE_NAMES = [
@@ -150,6 +225,98 @@ def cfg_select(cfg: DictConfig, key: str, default: Any = None) -> Any:
     """集中读取 Hydra 配置，避免在主逻辑中散落 try/except。"""
 
     return OmegaConf.select(cfg, key, default=default)
+
+
+def parse_visual_pairs(cfg: DictConfig) -> list[VisualPair]:
+    """解析 DECO 多相机 RGB-D 配置。
+
+    默认顺序严格对齐 Kuavo ACT：head -> left wrist -> right wrist。用户若显式
+    配置 `deco.camera_pairs`，则按配置顺序作为唯一真理源，避免相机语义在
+    data/policy/deploy 三处漂移。
+    """
+
+    use_wrist_cameras = bool(cfg_select(cfg, "deco.use_wrist_cameras", True))
+    configured_pairs = cfg_select(cfg, "deco.camera_pairs", None)
+    if configured_pairs:
+        pair_configs = [OmegaConf.to_container(item, resolve=True) for item in configured_pairs]
+        if not use_wrist_cameras:
+            pair_configs = [
+                item for item in pair_configs
+                if str(item.get("rgb_key", "")) == DECO_RGB_KEY or str(item.get("name", "")) == "head"
+            ]
+            if not pair_configs:
+                pair_configs = [DEFAULT_HEAD_PAIR]
+    else:
+        pair_configs = [DEFAULT_HEAD_PAIR]
+        if use_wrist_cameras:
+            pair_configs.extend(DEFAULT_WRIST_PAIRS)
+
+    visual_pairs: list[VisualPair] = []
+    seen_rgb: set[str] = set()
+    seen_depth: set[str] = set()
+    for item in pair_configs:
+        item_cfg = OmegaConf.create(item)
+        name = str(cfg_select(item_cfg, "name", cfg_select(item_cfg, "rgb_key", "")))
+        rgb_key = str(cfg_select(item_cfg, "rgb_key", ""))
+        depth_key = str(cfg_select(item_cfg, "depth_key", ""))
+        rgb_topic = str(cfg_select(item_cfg, "rgb_topic", ""))
+        depth_topic = str(cfg_select(item_cfg, "depth_topic", ""))
+        depth_encoding = str(cfg_select(item_cfg, "depth_encoding", "auto"))
+        if not name or not rgb_key or not depth_key or not rgb_topic or not depth_topic:
+            raise ValueError(
+                "deco.camera_pairs 每项必须包含 name/rgb_key/depth_key/rgb_topic/depth_topic"
+            )
+        if rgb_key in seen_rgb or depth_key in seen_depth:
+            raise ValueError(f"重复的视觉 key：rgb_key={rgb_key}, depth_key={depth_key}")
+        seen_rgb.add(rgb_key)
+        seen_depth.add(depth_key)
+
+        candidates: list[tuple[str, str]] = []
+        configured_candidates = cfg_select(item_cfg, "depth_topic_candidates", None)
+        if configured_candidates:
+            for candidate in configured_candidates:
+                if isinstance(candidate, str):
+                    candidates.append((candidate, "auto"))
+                else:
+                    candidate_cfg = OmegaConf.create(candidate)
+                    candidates.append(
+                        (
+                            str(cfg_select(candidate_cfg, "topic", "")),
+                            str(cfg_select(candidate_cfg, "encoding", "auto")),
+                        )
+                    )
+        candidates.insert(0, (depth_topic, depth_encoding))
+
+        deduped_candidates: list[tuple[str, str]] = []
+        seen_topics: set[str] = set()
+        for topic, encoding in candidates:
+            if not topic or topic in seen_topics:
+                continue
+            deduped_candidates.append((topic, encoding))
+            seen_topics.add(topic)
+        if not deduped_candidates:
+            raise ValueError(f"{name} 没有可用 depth topic candidate")
+
+        visual_pairs.append(
+            VisualPair(
+                name=name,
+                rgb_key=rgb_key,
+                depth_key=depth_key,
+                rgb_topic=rgb_topic,
+                depth_candidates=tuple(deduped_candidates),
+            )
+        )
+
+    if use_wrist_cameras:
+        actual_order = tuple((pair.rgb_key, pair.depth_key) for pair in visual_pairs)
+        if actual_order != REQUIRED_WRIST_VISUAL_ORDER:
+            raise ValueError(
+                "deco.use_wrist_cameras=true requires exactly three RGB-D camera pairs "
+                "in ACT order: head_cam_h/depth_h -> wrist_cam_l/depth_l -> wrist_cam_r/depth_r. "
+                f"当前配置为：{actual_order}"
+            )
+
+    return visual_pairs
 
 
 def resolve_end_effector_profile(cfg: DictConfig) -> str:
@@ -396,6 +563,55 @@ def build_target_timestamps(
     return start_time + np.arange(count, dtype=np.float64) * step
 
 
+def build_act_densest_camera_jump_timestamps(
+    visual_sequences: dict[str, list[dict[str, Any]]],
+    required_sequences: dict[str, list[dict[str, Any]]],
+    train_hz: int,
+    main_timeline_fps: int,
+    sample_drop: int,
+) -> np.ndarray:
+    """复刻 ACT 风格：选择帧数最多的视觉流作为主时间轴并按整数 jump 采样。
+
+    该策略用于和 Kuavo ACT 数据清洗做对照实验。它保留 ACT 的简单整数跳帧语义，
+    但仍裁剪到所有 DECO 必需模态的共同覆盖区间，避免多相机/动作/触觉断边。
+    """
+
+    if train_hz <= 0 or main_timeline_fps <= 0:
+        raise ValueError(f"train_hz/main_timeline_fps 必须为正数，当前为 {train_hz}/{main_timeline_fps}")
+    if not visual_sequences:
+        raise ValueError("act_densest_camera_jump 需要至少一个视觉流")
+
+    main_key, main_sequence = max(visual_sequences.items(), key=lambda item: len(item[1]))
+    main_times = sequence_timestamps(main_sequence, main_key)
+    if sample_drop > 0:
+        if main_times.shape[0] <= sample_drop * 2:
+            raise ValueError(
+                f"主视觉流 {main_key} 帧数不足，无法执行 sample_drop={sample_drop}，"
+                f"实际帧数={main_times.shape[0]}"
+            )
+        main_times = main_times[sample_drop:-sample_drop]
+
+    jump = max(int(main_timeline_fps // train_hz), 1)
+    sampled_times = main_times[::jump]
+    if sampled_times.shape[0] == 0:
+        raise ValueError(f"ACT 风格整数跳帧后目标时间轴为空：main_key={main_key}, jump={jump}")
+
+    start_time = sampled_times[0]
+    end_time = sampled_times[-1]
+    for key, sequence in required_sequences.items():
+        times = sequence_timestamps(sequence, key)
+        start_time = max(start_time, times[0])
+        end_time = min(end_time, times[-1])
+
+    target_times = sampled_times[(sampled_times >= start_time) & (sampled_times <= end_time)]
+    if target_times.shape[0] == 0:
+        raise ValueError(
+            f"ACT 风格时间轴与必需模态没有共同覆盖区间：main_key={main_key}, "
+            f"start={start_time:.6f}, end={end_time:.6f}"
+        )
+    return target_times
+
+
 def has_timestamp_gap(sequence: list[dict[str, Any]], threshold_s: float) -> bool:
     """检测动作 topic 是否存在明显断流。"""
 
@@ -585,15 +801,28 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         self.profile = resolve_end_effector_profile(cfg)
         self.eef_type = str(cfg_select(cfg, "dataset.eef_type", "qiangnao"))
         self.include_tactile = profile_writes_tactile(self.profile, cfg)
-        self.rgb_key = f"observation.images.{cfg_select(cfg, 'deco.rgb_key', DECO_RGB_KEY)}"
-        self.depth_key = f"observation.{cfg_select(cfg, 'deco.depth_key', DECO_DEPTH_KEY)}"
-        self.depth_encoding = str(cfg_select(cfg, "deco.depth_encoding", "compressed_image"))
+        self.visual_pairs = parse_visual_pairs(cfg)
+        self.rgb_keys = [pair.rgb_feature_key for pair in self.visual_pairs]
+        self.depth_keys = [pair.depth_feature_key for pair in self.visual_pairs]
+        # 保留首相机 key，兼容脚本内少量旧路径和外部静态引用；新逻辑使用 rgb_keys/depth_keys。
+        self.rgb_key = self.rgb_keys[0]
+        self.depth_key = self.depth_keys[0]
+        self.depth_encoding = self.visual_pairs[0].depth_candidates[0][1]
         self.allow_raw_depth_fallback = bool(cfg_select(cfg, "deco.allow_raw_depth_fallback", False))
-        self.depth_topic_candidates = self.build_depth_topic_candidates(cfg)
-        self._active_depth_topic: str | None = None
-        self._active_depth_encoding: str | None = None
+        self.depth_topic_candidates_by_key = {
+            pair.depth_feature_key: list(pair.depth_candidates) for pair in self.visual_pairs
+        }
+        self._active_depth_topics: dict[str, str] = {}
+        self._active_depth_encodings: dict[str, str] = {}
         self.force_scale = float(cfg_select(cfg, "deco.tactile_force_scale", 100.0))
         self.train_hz = int(cfg_select(cfg, "dataset.train_hz", 30))
+        self.timeline_strategy = str(cfg_select(cfg, "dataset.timeline_strategy", DECO_FIXED_HZ_TIMELINE))
+        if self.timeline_strategy not in SUPPORTED_TIMELINE_STRATEGIES:
+            raise ValueError(
+                f"dataset.timeline_strategy={self.timeline_strategy!r} 不支持；"
+                f"可选值为 {sorted(SUPPORTED_TIMELINE_STRATEGIES)}"
+            )
+        self.main_timeline_fps = int(cfg_select(cfg, "dataset.main_timeline_fps", 30))
         self.sample_drop = int(cfg_select(cfg, "dataset.sample_drop", 0))
         self.head_action_fill = list(cfg_select(cfg, "deco.head_action_fill", [0.0, 0.0]))
 
@@ -695,8 +924,6 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
     def build_topic_process_map(self, cfg: DictConfig) -> dict[str, tuple[str, Any]]:
         """集中定义 DECO 所需 topic，便于后续和配置文件逐项核对。"""
 
-        rgb_topic = str(cfg_select(cfg, "deco.rgb_topic", "/cam_h/color/image_raw/compressed"))
-        depth_topic, depth_encoding = self.depth_topic_candidates[0]
         raw_depth_topic = str(cfg_select(cfg, "deco.raw_depth_topic", "/camera/depth/image_rect_raw"))
         tactile_topic = str(cfg_select(cfg, "deco.tactile_topic", "/dexhand/touch_state"))
         hand_state_topic = str(cfg_select(cfg, "deco.hand_state_topic", "/dexhand/state"))
@@ -705,16 +932,20 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         leju_claw_action_topic = str(cfg_select(cfg, "deco.leju_claw_action_topic", "/leju_claw_command"))
         rq2f85_state_topic = str(cfg_select(cfg, "deco.rq2f85_state_topic", "/gripper/state"))
         rq2f85_action_topic = str(cfg_select(cfg, "deco.rq2f85_action_topic", "/gripper/command"))
-        depth_process_fn = self._depth_process_fn_for_encoding(depth_encoding)
 
         topic_map: dict[str, tuple[str, Any]] = {
-            self.rgb_key: (rgb_topic, self._msg_processer.process_color_image),
-            self.depth_key: (depth_topic, depth_process_fn),
             "observation.state": ("/sensors_data_raw", self._msg_processer.process_joint_state),
             "action.joint_cmd": ("/joint_cmd", self._msg_processer.process_joint_cmd),
             "action.kuavo_arm_traj": ("/kuavo_arm_traj", self._msg_processer.process_kuavo_arm_traj),
             "action.kuavo_arm_traj_alt": ("/kuavo_arm_traj_synced", self._msg_processer.process_kuavo_arm_traj),
         }
+        for pair in self.visual_pairs:
+            depth_topic, depth_encoding = pair.depth_candidates[0]
+            topic_map[pair.rgb_feature_key] = (pair.rgb_topic, self._msg_processer.process_color_image)
+            topic_map[pair.depth_feature_key] = (
+                depth_topic,
+                self._depth_process_fn_for_encoding(depth_encoding),
+            )
         if self.profile == QIANGNAO_TACTILE_PROFILE:
             topic_map["observation.qiangnao"] = (hand_state_topic, self._msg_processer.process_dex_state)
             topic_map["action.qiangnao"] = (hand_action_topic, self._msg_processer.process_qiangnao_cmd)
@@ -735,7 +966,7 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
             topic_map["observation.depth_h_raw"] = (raw_depth_topic, self.process_raw_depth_image)
         return topic_map
 
-    def resolve_depth_topic_for_bag(self, bag: Any) -> tuple[str, Any, str]:
+    def resolve_depth_topic_for_bag(self, bag: Any, depth_key: str) -> tuple[str, Any, str]:
         """
         在单个 rosbag 打开后选择真实存在的 depth topic。
 
@@ -745,20 +976,21 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         """
 
         available_topics = set(bag.get_type_and_topic_info().topics.keys())
-        for topic, encoding in self.depth_topic_candidates:
+        candidates = self.depth_topic_candidates_by_key[depth_key]
+        for topic, encoding in candidates:
             if topic not in available_topics:
                 continue
-            self._active_depth_topic = topic
-            self._active_depth_encoding = encoding
-            self.logger.info("DECO depth 使用 topic=%s, encoding=%s", topic, encoding)
+            self._active_depth_topics[depth_key] = topic
+            self._active_depth_encodings[depth_key] = encoding
+            self.logger.info("DECO depth %s 使用 topic=%s, encoding=%s", depth_key, topic, encoding)
             return topic, self._depth_process_fn_for_encoding(encoding), encoding
 
         candidate_text = ", ".join(
-            f"{topic}({encoding})" for topic, encoding in self.depth_topic_candidates
+            f"{topic}({encoding})" for topic, encoding in candidates
         )
         depth_like_topics = sorted(topic for topic in available_topics if "depth" in topic.lower())
         raise ValueError(
-            "rosbag 缺少可用 DECO depth topic；"
+            f"rosbag 缺少可用 DECO depth topic: {depth_key}；"
             f"已尝试：{candidate_text}；"
             f"bag 中 depth 相关 topic：{depth_like_topics}"
         )
@@ -886,9 +1118,10 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
 
         bag = self.load_raw_rosbag(bag_path)
         try:
-            depth_topic, depth_process_fn, _ = self.resolve_depth_topic_for_bag(bag)
             topic_process_map = dict(self._topic_process_map)
-            topic_process_map[self.depth_key] = (depth_topic, depth_process_fn)
+            for depth_key in self.depth_keys:
+                depth_topic, depth_process_fn, _ = self.resolve_depth_topic_for_bag(bag, depth_key)
+                topic_process_map[depth_key] = (depth_topic, depth_process_fn)
 
             process_data: dict[str, list[dict[str, Any]]] = {
                 key: [] for key in topic_process_map.keys()
@@ -942,8 +1175,8 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
 
         arm_action_key = self.select_arm_action_source(process_data)
         required_keys = [
-            self.rgb_key,
-            self.depth_key,
+            *self.rgb_keys,
+            *self.depth_keys,
             "observation.state",
             arm_action_key,
         ]
@@ -966,23 +1199,47 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
             raise ValueError(f"rosbag 缺少 DECO 必需数据：{missing_keys}")
 
         required_sequences = {key: process_data[key] for key in required_keys}
-        target_timestamps = build_target_timestamps(
-            process_data[self.rgb_key],
-            required_sequences,
-            train_hz=self.train_hz,
-            sample_drop=self.sample_drop,
-        )
+        if self.timeline_strategy == DECO_FIXED_HZ_TIMELINE:
+            target_timestamps = build_target_timestamps(
+                process_data[self.rgb_key],
+                required_sequences,
+                train_hz=self.train_hz,
+                sample_drop=self.sample_drop,
+            )
+        elif self.timeline_strategy == ACT_DENSEST_CAMERA_JUMP_TIMELINE:
+            visual_sequences = {
+                key: process_data[key]
+                for key in [*self.rgb_keys, *self.depth_keys]
+            }
+            target_timestamps = build_act_densest_camera_jump_timestamps(
+                visual_sequences,
+                required_sequences,
+                train_hz=self.train_hz,
+                main_timeline_fps=self.main_timeline_fps,
+                sample_drop=self.sample_drop,
+            )
+        else:
+            raise ValueError(f"未知 timeline_strategy：{self.timeline_strategy}")
 
         aligned = {key: nearest_align(process_data[key], target_timestamps) for key in required_keys}
         aligned["__metadata__"] = {
             "target_hz": self.train_hz,
             "num_frames": int(target_timestamps.shape[0]),
+            "timeline_strategy": self.timeline_strategy,
             "arm_action_source": arm_action_key,
             "end_effector_profile": self.profile,
             "eef_type": self.eef_type,
             "include_tactile": self.include_tactile,
-            "depth_topic": self._active_depth_topic,
-            "depth_encoding": self._active_depth_encoding,
+            "visual_pairs": [
+                {
+                    "name": pair.name,
+                    "rgb_key": pair.rgb_feature_key,
+                    "depth_key": pair.depth_feature_key,
+                    "depth_topic": self._active_depth_topics.get(pair.depth_feature_key),
+                    "depth_encoding": self._active_depth_encodings.get(pair.depth_feature_key),
+                }
+                for pair in self.visual_pairs
+            ],
         }
         return aligned
 
@@ -995,6 +1252,8 @@ def create_empty_deco_dataset(
     root: str | None,
     profile: str,
     include_tactile: bool,
+    visual_pairs: list[VisualPair],
+    train_hz: int,
 ) -> LeRobotDataset:
     """创建符合 DECO profile schema 的 LeRobotDataset。"""
 
@@ -1018,23 +1277,23 @@ def create_empty_deco_dataset(
             "names": {"tactile": DECO_TACTILE_NAMES},
         }
 
-    camera_features = {
-        "observation.images.head_cam_h": {
+    camera_features: dict[str, dict[str, Any]] = {}
+    for pair in visual_pairs:
+        camera_features[pair.rgb_feature_key] = {
             "dtype": mode,
             "shape": (3, kuavo.RESIZE_H, kuavo.RESIZE_W),
             "names": ["channels", "height", "width"],
-        },
-        "observation.depth_h": {
+        }
+        camera_features[pair.depth_feature_key] = {
             "dtype": mode,
             "shape": (3, kuavo.RESIZE_H, kuavo.RESIZE_W),
             "names": ["channels", "height", "width"],
-        },
-    }
+        }
 
     features = {**motors_features, **camera_features}
     return LeRobotDataset.create(
         repo_id=repo_id,
-        fps=kuavo.TRAIN_HZ,
+        fps=train_hz,
         robot_type=robot_type,
         features=features,
         use_videos=dataset_config.use_videos,
@@ -1156,14 +1415,15 @@ def populate_dataset(
                     raise ValueError(f"未知 DECO profile：{profile}")
 
                 frame = {
-                    "observation.images.head_cam_h": bag_data[reader.rgb_key][frame_idx]["data"],
-                    "observation.depth_h": depth_to_compatible_image(
-                        bag_data[reader.depth_key][frame_idx]["data"], depth_range
-                    ),
                     "observation.state": torch.from_numpy(state).float(),
                     "action": torch.from_numpy(clamp_deco_arm_action(action, profile)).float(),
                     "task": task,
                 }
+                for pair in reader.visual_pairs:
+                    frame[pair.rgb_feature_key] = bag_data[pair.rgb_feature_key][frame_idx]["data"]
+                    frame[pair.depth_feature_key] = depth_to_compatible_image(
+                        bag_data[pair.depth_feature_key][frame_idx]["data"], depth_range
+                    )
                 if reader.include_tactile:
                     tactile = as_float_array(
                         "observation.tactile",
@@ -1245,6 +1505,8 @@ def port_deco_rosbag(
         root=str(output_root),
         profile=reader.profile,
         include_tactile=reader.include_tactile,
+        visual_pairs=reader.visual_pairs,
+        train_hz=reader.train_hz,
     )
     return populate_dataset(dataset, bag_files, task, reader, cfg, episodes=episodes)
 

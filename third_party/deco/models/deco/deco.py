@@ -8,17 +8,15 @@ from models.deco.denoise_schedular import get_schedule
 from models.deco.rope import apply_rotary_emb, RotaryPosEmbed
 
 
-CROSS_ATTENTION_FUSION = "cross_attention"
-DIRECT_TOKEN_FUSION = "direct_tokens"
-SUPPORTED_VISUAL_FUSION_MODES = {CROSS_ATTENTION_FUSION, DIRECT_TOKEN_FUSION}
+ACT_RGBD_FRONTEND = "act_rgbd"
+SUPPORTED_VISUAL_FUSION_MODES = {ACT_RGBD_FRONTEND}
 
 
 class RGBDepthCrossAttentionFusion(nn.Module):
     """ACT 风格 RGB-depth 双向 cross attention。
 
-    输入和输出均为 token 序列 [B, L, dim]。阶段三第一版不把 RGB-D 压成
-    单路 visual token，而是保留 fused_rgb / fused_depth 两路语义，继续适配
-    DECO 原生两路视觉 token 假设。
+    输入和输出均为 token 序列 [B*V, L, dim]。v3 前端在每个相机内部先得到
+    fused_rgb / fused_depth，再通过 concat + Linear 压回单路 camera fused tokens。
     """
 
     def __init__(self, dim, heads):
@@ -68,12 +66,12 @@ class DECO(nn.Module):
         rope_axes_dim=[256, 256],
         vision_backbone="resnet34",
         depth_backbone="resnet34",
-        visual_fusion_mode=CROSS_ATTENTION_FUSION,
+        visual_fusion_mode=ACT_RGBD_FRONTEND,
     ):
         super().__init__()
         if visual_fusion_mode not in SUPPORTED_VISUAL_FUSION_MODES:
             raise ValueError(
-                "visual_fusion_mode must be 'cross_attention' or 'direct_tokens', "
+                "visual_fusion_mode must be 'act_rgbd', "
                 f"got {visual_fusion_mode!r}"
             )
         head_dim = dim // heads
@@ -91,9 +89,9 @@ class DECO(nn.Module):
         self.depth_encoder = build_resnet_backbone(depth_backbone, in_channels=1)
         self.depth_head = nn.Conv2d(512, dim, kernel_size=3, padding=1)
         self.rgb_depth_fusion = RGBDepthCrossAttentionFusion(dim=dim, heads=heads)
+        self.rgb_depth_fusion_proj = nn.Linear(dim * 2, dim)
         self.sync_depth_conv1_from_rgb()
-        
-        self.pos_idx_embedd = nn.Embedding(2, dim) # stream 0: RGB, stream 1: depth
+
         if self.obs_state:
             self.obs_encoder = nn.Sequential(
                 nn.Linear(act_dim, dim),
@@ -147,8 +145,8 @@ class DECO(nn.Module):
     def forward(self, rgb, depth, obs=None, act=None, task_idx=None, tac1=None, tac2=None, action_mask=None, training=True):
         """
         Args:
-            rgb: [B, 3, H, W], Kuavo 头部 RGB 图像
-            depth: [B, 1, H, W] 或 [B, 3, H, W], Kuavo depth 图像；3 通道兼容存储会取第一通道
+            rgb: [B, V, 3, H, W], Kuavo 多相机 RGB 图像；兼容 [B, 3, H, W] 单视角。
+            depth: [B, V, 1/3, H, W], Kuavo depth 图像；3 通道兼容存储会取第一通道。
             obs: [B, 28]
             act: [B, chunk, 28]
             task_idx: [B, ]
@@ -156,8 +154,8 @@ class DECO(nn.Module):
             tac2: [B, 15], Kuavo 右手 DECO-style normalized tactile
             training: bool
         """
-        # RGB-D encoding：输出仍保持两路视觉 token，前半为 RGB stream，后半为 depth stream。
-        feat, image_rotary_emb = self.img_encoding(rgb, depth) # feat:[B, 2*img_seq_len, dim]
+        # RGB-D encoding：每个相机内部融合 RGB/depth，输出按 camera order 串接的单路视觉 token。
+        feat, image_rotary_emb, visual_num_views, tokens_per_view = self.img_encoding(rgb, depth)
         if self.use_tactile:
             tactile = self.encode_kuavo_tactile(tac1, tac2)
         else:
@@ -176,7 +174,15 @@ class DECO(nn.Module):
                 t = t + obs
             if self.use_task_condition:
                 t = t + task_emb
-            feat, act = self.atten_forward(feat, act, image_rotary_emb=image_rotary_emb, t=t, tactile=tactile)
+            feat, act = self.atten_forward(
+                feat,
+                act,
+                image_rotary_emb=image_rotary_emb,
+                visual_num_views=visual_num_views,
+                tokens_per_view=tokens_per_view,
+                t=t,
+                tactile=tactile,
+            )
             return act, noise
 
         else:
@@ -189,7 +195,15 @@ class DECO(nn.Module):
                     t_vec = t_vec + obs
                 if self.use_task_condition:
                     t_vec = t_vec + task_emb
-                _, denoise_act = self.atten_forward(feat, sample, image_rotary_emb=image_rotary_emb, t=t_vec, tactile=tactile)
+                _, denoise_act = self.atten_forward(
+                    feat,
+                    sample,
+                    image_rotary_emb=image_rotary_emb,
+                    visual_num_views=visual_num_views,
+                    tokens_per_view=tokens_per_view,
+                    t=t_vec,
+                    tactile=tactile,
+                )
                 # denoise_act : noise - action
                 # t_prev - t_curr < 0 ---> -|△t|
                 # action =  noise_act + |△t| * (action - noise)
@@ -201,49 +215,65 @@ class DECO(nn.Module):
         return self.rgbd_img_encoding(rgb, depth)
 
     def rgbd_img_encoding(self, rgb, depth):
-        if rgb.ndim != 4 or depth.ndim != 4:
+        if rgb.ndim == 4:
+            rgb = rgb.unsqueeze(1)
+        if depth.ndim == 4:
+            depth = depth.unsqueeze(1)
+        if rgb.ndim != 5 or depth.ndim != 5:
             raise ValueError(
-                "RGB-D visual inputs must be 4D tensors [B, C, H, W], "
+                "RGB-D visual inputs must be 5D tensors [B, V, C, H, W], "
                 f"got rgb={tuple(rgb.shape)}, depth={tuple(depth.shape)}"
             )
-        if rgb.shape[0] != depth.shape[0] or rgb.shape[-2:] != depth.shape[-2:]:
+        if rgb.shape[0] != depth.shape[0] or rgb.shape[1] != depth.shape[1] or rgb.shape[-2:] != depth.shape[-2:]:
             raise ValueError(
-                "RGB and depth must share batch/spatial shape, "
+                "RGB and depth must share batch/view/spatial shape, "
                 f"got rgb={tuple(rgb.shape)}, depth={tuple(depth.shape)}"
             )
-        if rgb.shape[1] != 3:
-            raise ValueError(f"RGB stream expects 3 channels, got {rgb.shape[1]}")
+        if rgb.shape[2] != 3:
+            raise ValueError(f"RGB stream expects 3 channels, got {rgb.shape[2]}")
 
         depth = self.prepare_depth_input(depth)
-        rgb_feat = self.img_head(self.img_encoder(rgb))
-        depth_feat = self.depth_head(self.depth_encoder(depth))
+        batch_size, visual_num_views = rgb.shape[:2]
+        rgb_flat = einops.rearrange(rgb, "b v c h w -> (b v) c h w")
+        depth_flat = einops.rearrange(depth, "b v c h w -> (b v) c h w")
+        rgb_feat = self.img_head(self.img_encoder(rgb_flat))
+        depth_feat = self.depth_head(self.depth_encoder(depth_flat))
         if rgb_feat.shape[-2:] != depth_feat.shape[-2:]:
             raise ValueError(
                 "RGB/depth feature maps must share spatial shape before fusion, "
                 f"got rgb={tuple(rgb_feat.shape)}, depth={tuple(depth_feat.shape)}"
             )
 
-        rgb_tokens = einops.rearrange(rgb_feat, 'b c h w -> b (h w) c')
-        depth_tokens = einops.rearrange(depth_feat, 'b c h w -> b (h w) c')
-        if self.visual_fusion_mode == CROSS_ATTENTION_FUSION:
-            fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
-        elif self.visual_fusion_mode == DIRECT_TOKEN_FUSION:
-            # v2.0 消融路线：RGB/depth 在进入 DECO 主干前不做内容交汇。
-            # 二者仍会在 pack_visual_token_sequences 中获得 stream embedding，
-            # 并在 MMAttention 中分别施加同一套二维 RoPE 后再与 action token 做 joint attention。
-            fused_rgb_tokens, fused_depth_tokens = rgb_tokens, depth_tokens
-        else:
+        rgb_tokens = einops.rearrange(rgb_feat, 'bv c h w -> bv (h w) c')
+        depth_tokens = einops.rearrange(depth_feat, 'bv c h w -> bv (h w) c')
+        if self.visual_fusion_mode != ACT_RGBD_FRONTEND:
             raise ValueError(f"Unsupported visual_fusion_mode: {self.visual_fusion_mode!r}")
+        fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
+        fused_tokens = self.rgb_depth_fusion_proj(
+            torch.cat([fused_rgb_tokens, fused_depth_tokens], dim=-1)
+        )
+        fused_tokens = einops.rearrange(
+            fused_tokens,
+            "(b v) l c -> b v l c",
+            b=batch_size,
+            v=visual_num_views,
+        )
 
         return self.pack_visual_token_sequences(
-            fused_rgb_tokens,
-            fused_depth_tokens,
+            fused_tokens,
             rgb_feat.shape[-2],
             rgb_feat.shape[-1],
-            rgb.device,
         )
 
     def prepare_depth_input(self, depth):
+        if depth.ndim == 5:
+            channel_dim = depth.shape[2]
+            if channel_dim == 1:
+                return depth
+            if channel_dim == 3:
+                # 当前 Kuavo depth 在磁盘中为 3-channel 兼容图像；三通道由同一深度图 repeat 得到。
+                return depth[:, :, :1]
+            raise ValueError(f"Depth stream expects 1 or 3 channels, got {channel_dim}")
         if depth.shape[1] == 1:
             return depth
         if depth.shape[1] == 3:
@@ -252,15 +282,19 @@ class DECO(nn.Module):
             return depth[:, :1]
         raise ValueError(f"Depth stream expects 1 or 3 channels, got {depth.shape[1]}")
 
-    def pack_visual_token_sequences(self, feat1, feat2, feat_h, feat_w, device):
+    def pack_visual_token_sequences(self, view_tokens, feat_h, feat_w):
+        if view_tokens.ndim != 4:
+            raise ValueError(f"view_tokens must be [B,V,L,C], got {tuple(view_tokens.shape)}")
+        expected_tokens_per_view = feat_h * feat_w
+        if view_tokens.shape[2] != expected_tokens_per_view:
+            raise ValueError(
+                "camera fused token length must match feature map H*W, "
+                f"got L={view_tokens.shape[2]}, H={feat_h}, W={feat_w}"
+            )
         image_rotary_emb = self.rope(feat_h, feat_w)
-        # stream_id=0 表示 Kuavo RGB；stream_id=1 表示 Kuavo depth。
-        stream_id = torch.tensor([0] * feat1.shape[1] + [1] * feat2.shape[1]).to(device)
-        stream_emb = self.pos_idx_embedd(stream_id).repeat(feat1.shape[0], 1, 1)
-        feat = torch.cat([feat1, feat2], dim=1)  # (b, 2*seq_len, dim)
-        feat = feat + stream_emb
-
-        return feat, image_rotary_emb
+        # 不加入显式 camera embedding；固定相机顺序由 wrapper/config 保证，与 Kuavo ACT 前端保持一致。
+        feat = einops.rearrange(view_tokens, "b v l c -> b (v l) c")
+        return feat, image_rotary_emb, view_tokens.shape[1], view_tokens.shape[2]
 
     def encode_kuavo_tactile(self, tac1, tac2):
         if tac1 is None or tac2 is None:
@@ -283,12 +317,20 @@ class DECO(nn.Module):
         return tactile
 
 
-    def atten_forward(self, img, act, image_rotary_emb, t, tactile=None):
+    def atten_forward(self, img, act, image_rotary_emb, visual_num_views, tokens_per_view, t, tactile=None):
         act = self.action_encoder(act)   # (b, seq_len, act_dim) --> (b, seq_len, dim)
         act = act + self.action_embedd   # add learnable action positional embedding
 
         for mma in self.mmattn:
-            img, act = mma(img, act, t, image_rotary_emb, tactile) 
+            img, act = mma(
+                img,
+                act,
+                t,
+                image_rotary_emb,
+                tactile,
+                visual_num_views=visual_num_views,
+                tokens_per_view=tokens_per_view,
+            )
 
         act = self.linear(act)
         return img, act
@@ -393,10 +435,20 @@ class MMAttention(nn.Module):
                 self.act_mlp_pi = PI_Adapter(dim, dim, plugin_rank)
 
 
-    def forward(self, img, act, t, image_rotary_emb, tactile=None):
+    def forward(
+        self,
+        img,
+        act,
+        t,
+        image_rotary_emb,
+        tactile=None,
+        *,
+        visual_num_views=1,
+        tokens_per_view=None,
+    ):
         """
         Args:
-            img: [B, 2*img_len, dim], 前半为 RGB stream，后半为 depth stream
+            img: [B, V*img_len, dim], 按固定相机顺序串接的 fused RGB-D tokens
             act: [B, chunk, dim]
             t: [B, dim]
             image_rotary_emb: tuple[Tensor, Tensor]
@@ -413,10 +465,24 @@ class MMAttention(nn.Module):
         img_q, img_k, img_v = einops.rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.head, D=self.head_dim)
         img_q, img_k = self.img_qknorm(img_q, img_k, img_v)  # qk norm
         # q,k,v: [B, H, l1, D]
-        feat_len = int(total_img_len / 2)
-        # 前后两半共享同一组二维 RoPE；Kuavo RGB-D 模式下两半分别是 RGB stream 与 depth stream。
-        img_q[:, :, :feat_len, :], img_k[:, :, :feat_len, :] = apply_rotary_emb(img_q[:, :, :feat_len, :], image_rotary_emb), apply_rotary_emb(img_k[:, :, :feat_len, :], image_rotary_emb)
-        img_q[:, :, feat_len:, :], img_k[:, :, feat_len:, :] = apply_rotary_emb(img_q[:, :, feat_len:, :], image_rotary_emb), apply_rotary_emb(img_k[:, :, feat_len:, :], image_rotary_emb)
+        if tokens_per_view is None:
+            if total_img_len % visual_num_views != 0:
+                raise ValueError(
+                    "visual tokens cannot be evenly split by visual_num_views, "
+                    f"got total_img_len={total_img_len}, visual_num_views={visual_num_views}"
+                )
+            tokens_per_view = total_img_len // visual_num_views
+        if total_img_len != visual_num_views * tokens_per_view:
+            raise ValueError(
+                "visual token layout mismatch: expected visual_num_views*tokens_per_view, "
+                f"got {visual_num_views}*{tokens_per_view} != {total_img_len}"
+            )
+        # 每个相机段内部复用同一套二维 RoPE；RoPE 表达图像内位置，不表达相机身份。
+        for view_idx in range(visual_num_views):
+            start = view_idx * tokens_per_view
+            end = start + tokens_per_view
+            img_q[:, :, start:end, :] = apply_rotary_emb(img_q[:, :, start:end, :], image_rotary_emb)
+            img_k[:, :, start:end, :] = apply_rotary_emb(img_k[:, :, start:end, :], image_rotary_emb)
         
 
         scale1_act, shift1_act, gate1_act, scale2_act, shift2_act, gate2_act = self.act_bais(t) # adaLN

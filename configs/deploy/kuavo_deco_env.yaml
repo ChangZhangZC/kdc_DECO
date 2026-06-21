@@ -45,14 +45,18 @@ env:
   image_size: &IMGSIZE [640, 480]
   depth_range: &DEPTHRANGE [0, 1500]
   obs_key_map:
-    # DECO 默认只使用头部 RGB-D。depth topic 对齐当前数据规划中的 compressed_image 路线。
+    # DECO v3 默认使用 ACT 风格三相机 RGB-D，顺序必须与 policy.rgb_keys/depth_keys 一致。
     head_cam_h: ["/cam_h/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
+    wrist_cam_l: ["/cam_l/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
+    wrist_cam_r: ["/cam_r/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
     # depth_h 第 6 项为 depth_encoding，可选值：
     # - compressed_image: 普通 CompressedImage 直解；当前默认。
     # - compressedDepth_png: ROS compressedDepth，需要定位 PNG payload。
     # - auto: 先尝试 compressed_image，再尝试 compressedDepth_png。
     # depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
-    depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
+    depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_png"]
+    depth_l: ["/cam_l/depth/image_rect_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_png"]
+    depth_r: ["/cam_r/depth/image_rect_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressedDepth_png"]
     joint_q: ["/sensors_data_raw", "sensorsData", 500]
     head_q: ["/sensors_data_raw", "sensorsData", 500]
     qiangnao: ["/dexhand/state", "JointState", 500]

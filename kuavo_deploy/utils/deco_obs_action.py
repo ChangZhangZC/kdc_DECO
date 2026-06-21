@@ -215,6 +215,8 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
     _assert_equal("policy.action_dim", policy_config.action_dim, expected["action_dim"])
     _assert_equal("policy.use_tactile", policy_config.use_tactile, expected["use_tactile"])
     _assert_equal("policy.use_tactile_lora", policy_config.use_tactile_lora, expected["use_tactile_lora"])
+    if getattr(policy_config, "visual_fusion_mode", None) == "act_rgbd":
+        _validate_deco_visual_obs_keys(policy_config, env_config)
 
 
 def apply_deco_runtime_overrides(policy_config: Any, deploy_config: Any) -> None:
@@ -258,3 +260,34 @@ def apply_deco_runtime_overrides(policy_config: Any, deploy_config: Any) -> None
 def _assert_equal(name: str, actual: Any, expected: Any) -> None:
     if actual != expected:
         raise ValueError(f"{name} must be {expected!r} for DECO deployment, got {actual!r}.")
+
+
+def _validate_deco_visual_obs_keys(policy_config: Any, env_config: Any) -> None:
+    """确认部署 obs_key_map 能提供 checkpoint 需要的多相机 RGB-D 输入。"""
+
+    obs_key_map = getattr(env_config, "obs_key_map", {}) or {}
+    rgb_keys = tuple(getattr(policy_config, "rgb_keys", ()) or ())
+    depth_keys = tuple(getattr(policy_config, "depth_keys", ()) or ())
+    if len(rgb_keys) != len(depth_keys) or not rgb_keys:
+        raise ValueError(
+            "DECO act_rgbd checkpoint must define non-empty rgb_keys/depth_keys with the same length."
+        )
+
+    expected_short_keys: list[str] = []
+    for key in rgb_keys:
+        prefix = "observation.images."
+        if not key.startswith(prefix):
+            raise ValueError(f"DECO RGB key must start with {prefix!r}, got {key!r}.")
+        expected_short_keys.append(key[len(prefix):])
+    for key in depth_keys:
+        prefix = "observation."
+        if not key.startswith(prefix):
+            raise ValueError(f"DECO depth key must start with {prefix!r}, got {key!r}.")
+        expected_short_keys.append(key[len(prefix):])
+
+    missing = [key for key in expected_short_keys if key not in obs_key_map]
+    if missing:
+        raise ValueError(
+            "DECO deployment obs_key_map is missing visual keys required by checkpoint: "
+            f"{missing}. checkpoint rgb_keys={rgb_keys}, depth_keys={depth_keys}"
+        )

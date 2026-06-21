@@ -19,9 +19,18 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
 GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
 SUPPORTED_END_EFFECTOR_PROFILES = {QIANGNAO_TACTILE_PROFILE, GRIPPER_NO_TACTILE_PROFILE}
-CROSS_ATTENTION_FUSION = "cross_attention"
-DIRECT_TOKEN_FUSION = "direct_tokens"
-SUPPORTED_VISUAL_FUSION_MODES = {CROSS_ATTENTION_FUSION, DIRECT_TOKEN_FUSION}
+ACT_RGBD_FRONTEND = "act_rgbd"
+SUPPORTED_VISUAL_FUSION_MODES = {ACT_RGBD_FRONTEND}
+DEFAULT_RGB_KEYS = (
+    "observation.images.head_cam_h",
+    "observation.images.wrist_cam_l",
+    "observation.images.wrist_cam_r",
+)
+DEFAULT_DEPTH_KEYS = (
+    "observation.depth_h",
+    "observation.depth_l",
+    "observation.depth_r",
+)
 
 
 def _is_positive_number(value: float | int | None) -> bool:
@@ -56,8 +65,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     rope_axes_dim: tuple[int, int] = (256, 256)
     vision_backbone: str = "resnet34"
     depth_backbone: str = "resnet34"
-    # 控制 ResNet 后、RoPE/stream embedding 前的 RGB-D token 融合方式。
-    visual_fusion_mode: str = CROSS_ATTENTION_FUSION
+    # v3 视觉前端：多相机 RGB-D 在每个相机内做 ACT 风格 token fusion，再按相机顺序串接。
+    visual_fusion_mode: str = ACT_RGBD_FRONTEND
 
     # 两阶段训练与 tactile adapter。
     training_stage: str = "visual_main"
@@ -77,13 +86,16 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     deco_init_pth_path: str | None = None
 
     # 训练/部署预处理字段。
-    rgb_key: str = "observation.images.head_cam_h"
-    depth_key: str = "observation.depth_h"
+    rgb_keys: tuple[str, ...] = DEFAULT_RGB_KEYS
+    depth_keys: tuple[str, ...] = DEFAULT_DEPTH_KEYS
+    # legacy fallback：旧配置若只保存单 key，可在 _convert_omegaconf_fields 中提升为列表。
+    rgb_key: str | None = None
+    depth_key: str | None = None
     tactile_key: str = "observation.tactile"
     resize_shape: tuple[int, int] = (256, 256)
     use_letterbox: bool = True
     letterbox_fill_rgb: float = 128.0 / 255.0
-    letterbox_fill_depth: float = 0.0
+    letterbox_fill_depth: float = 0.5
     dataset_hz: int = 30
     control_hz: int = 10
     action_stride: int = 3
@@ -131,6 +143,16 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self.resize_shape = tuple(self.resize_shape)
         self.rope_axes_dim = tuple(self.rope_axes_dim)
         self.optimizer_betas = tuple(self.optimizer_betas)
+        self.rgb_keys = tuple(self.rgb_keys)
+        self.depth_keys = tuple(self.depth_keys)
+        if self.rgb_key is not None and self.rgb_keys not in {DEFAULT_RGB_KEYS, (self.rgb_key,)}:
+            raise ValueError("Do not set both legacy rgb_key and new rgb_keys with different values.")
+        if self.depth_key is not None and self.depth_keys not in {DEFAULT_DEPTH_KEYS, (self.depth_key,)}:
+            raise ValueError("Do not set both legacy depth_key and new depth_keys with different values.")
+        if self.rgb_key is not None:
+            self.rgb_keys = (self.rgb_key,)
+        if self.depth_key is not None:
+            self.depth_keys = (self.depth_key,)
 
     def _merge_custom_fields(self) -> None:
         if not isinstance(self.custom, dict):
@@ -190,7 +212,7 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     def _validate_visual_fusion_mode(self) -> None:
         if self.visual_fusion_mode not in SUPPORTED_VISUAL_FUSION_MODES:
             raise ValueError(
-                "visual_fusion_mode must be 'cross_attention' or 'direct_tokens'. "
+                "visual_fusion_mode must be 'act_rgbd' for the multi-view DECO frontend. "
                 f"got {self.visual_fusion_mode!r}."
             )
 
@@ -258,23 +280,37 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         return None
 
     def validate_features(self) -> None:
-        if self.rgb_key not in self.input_features:
-            raise ValueError(f"Missing RGB input feature: {self.rgb_key}")
-        if self.depth_key not in self.input_features:
-            raise ValueError(f"Missing depth input feature: {self.depth_key}")
+        if len(self.rgb_keys) == 0 or len(self.depth_keys) == 0:
+            raise ValueError("rgb_keys/depth_keys must not be empty.")
+        if len(self.rgb_keys) != len(self.depth_keys):
+            raise ValueError(
+                "rgb_keys and depth_keys must have the same number of views, "
+                f"got {len(self.rgb_keys)} RGB and {len(self.depth_keys)} depth."
+            )
+        for key in self.rgb_keys:
+            if key not in self.input_features:
+                raise ValueError(f"Missing RGB input feature: {key}")
+        for key in self.depth_keys:
+            if key not in self.input_features:
+                raise ValueError(f"Missing depth input feature: {key}")
         if OBS_STATE not in self.input_features:
             raise ValueError(f"Missing state input feature: {OBS_STATE}")
         if ACTION not in self.output_features:
             raise ValueError(f"Missing action output feature: {ACTION}")
 
-        rgb_shape = tuple(self.input_features[self.rgb_key].shape)
-        depth_shape = tuple(self.input_features[self.depth_key].shape)
+        rgb_shapes = [tuple(self.input_features[key].shape) for key in self.rgb_keys]
+        depth_shapes = [tuple(self.input_features[key].shape) for key in self.depth_keys]
         state_shape = tuple(self.input_features[OBS_STATE].shape)
         action_shape = tuple(self.output_features[ACTION].shape)
-        if len(rgb_shape) != 3 or rgb_shape[0] != 3:
-            raise ValueError(f"{self.rgb_key} must be RGB image shape (3,H,W), got {rgb_shape}")
-        if len(depth_shape) != 3 or depth_shape[0] not in {1, 3}:
-            raise ValueError(f"{self.depth_key} must be depth image shape (1,H,W) or (3,H,W), got {depth_shape}")
+        for key, shape in zip(self.rgb_keys, rgb_shapes):
+            if len(shape) != 3 or shape[0] != 3:
+                raise ValueError(f"{key} must be RGB image shape (3,H,W), got {shape}")
+        for key, shape in zip(self.depth_keys, depth_shapes):
+            if len(shape) != 3 or shape[0] not in {1, 3}:
+                raise ValueError(f"{key} must be depth image shape (1,H,W) or (3,H,W), got {shape}")
+        spatial_shapes = {shape[-2:] for shape in [*rgb_shapes, *depth_shapes]}
+        if len(spatial_shapes) != 1:
+            raise ValueError(f"All RGB/depth inputs must share H,W before DECOProcessor, got {spatial_shapes}")
         if state_shape != (self.action_dim,):
             raise ValueError(f"observation.state must be ({self.action_dim},), got {state_shape}")
         if action_shape != (self.action_dim,):

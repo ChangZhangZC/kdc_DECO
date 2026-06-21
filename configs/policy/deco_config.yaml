@@ -137,21 +137,26 @@ policy:
   # - resnet18: 低显存/低延迟备选，通常用于 ablation 或资源受限场景。
   vision_backbone: resnet34
   depth_backbone: resnet34
-  # RGB-D 视觉融合模式：
-  # - cross_attention: 当前默认路线，RGB/depth ResNet token 先做双向 cross attention，再以两路 token 入 DECO 主干。
-  # - direct_tokens: v2.0 空抓问题消融路线，RGB/depth ResNet token 跳过 early cross attention，直接加 stream embedding / RoPE 后入 DECO 主干。
-  visual_fusion_mode: direct_tokens
+  # v3 多相机 RGB-D 视觉前端：
+  # - act_rgbd: 每个相机内部执行 ACT 风格 RGB/depth token fusion，再按 head/left/right 顺序串接给 DECO 主干。
+  visual_fusion_mode: act_rgbd
 
   # DECO 专用 RGB-D preprocessor：raw RGB-D -> letterbox -> RGB augmentation -> normalizer。
-  rgb_key: observation.images.head_cam_h
-  depth_key: observation.depth_h
+  rgb_keys:
+    - observation.images.head_cam_h
+    - observation.images.wrist_cam_l
+    - observation.images.wrist_cam_r
+  depth_keys:
+    - observation.depth_h
+    - observation.depth_l
+    - observation.depth_r
   tactile_key: observation.tactile
   resize_shape: [256, 256]
   use_letterbox: true
   letterbox_fill_rgb: 0.5019607843 # raw RGB 灰色 padding 128/255
-  letterbox_fill_depth: 0.0
+  letterbox_fill_depth: 0.5 # 归一化 depth image 的中性 padding，避免 0 被误解为最近/无效深度。
 
-  # 30Hz 数据语义动作，部署侧以 10Hz 消费队列。
+  # 视觉数据默认仍为 30Hz DECO 语义数据；action 执行调度不是本次前端改造依赖。
   dataset_hz: 30
   control_hz: 10
   action_stride: 3
