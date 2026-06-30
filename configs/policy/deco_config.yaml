@@ -156,14 +156,12 @@ policy:
   letterbox_fill_rgb: 0.5019607843 # raw RGB 灰色 padding 128/255
   letterbox_fill_depth: 0.5 # 归一化 depth image 的中性 padding，避免 0 被误解为最近/无效深度。
 
-  # 视觉数据默认仍为 30Hz DECO 语义数据；action 执行调度不是本次前端改造依赖。
+  # checkpoint 保留 30Hz 数据语义和旧 Stride Action 元数据；正式部署动作分发由 deploy YAML 的 deco.action_dispatch 决定。
   dataset_hz: 30
   control_hz: 10
   action_stride: 3
-  # 每次 DECO 推理后，实际放入执行队列的 10Hz action 数量。
-  # null 表示默认行为：完整消费按 action_stride 降频后的 action chunk。
-  # 例如 chunk_size=32、action_stride=3 时，完整队列为 11 个 10Hz action；
-  # n_action_steps=4 表示只执行前 4 个 10Hz action，约 0.4s 后重新推理。
+  # Receding Horizon 连续执行步数；null 表示完整消费 32-step 原始 chunk。
+  # 该字段只保留 checkpoint 兼容，正式部署请使用 deco.action_dispatch.receding_horizon.n_action_steps。
   n_action_steps: null
 
   # NormalizationMode 可选值：

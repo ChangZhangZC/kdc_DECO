@@ -52,8 +52,9 @@ import threading
 
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.logging_utils import setup_logger
+from kuavo_deploy.utils.deco_timing import DecoTimingRecorder
 from kuavo_deploy.kuavo_service.client import PolicyClient
-from kuavo_deploy.utils.deco_obs_action import apply_deco_runtime_overrides, validate_deco_policy_compatibility
+from kuavo_deploy.utils.deco_obs_action import configure_deco_runtime, validate_deco_policy_compatibility
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 from lerobot.policies.factory import make_pre_post_processors
 
@@ -146,6 +147,13 @@ def main(config: KuavoConfig, env: gym.Env):
     output_directory = Path(f"outputs/eval/{task}/{method}/{timestamp}/epoch{epoch}")
     # Create a directory to store the video of the evaluation
     output_directory.mkdir(parents=True, exist_ok=True)
+    timing_config = config.deco.timing_diagnostics
+    timing_recorder = DecoTimingRecorder(
+        output_directory,
+        enabled=timing_config.enabled and config.env.state_layout.startswith("deco_"),
+        flush_every_steps=timing_config.flush_every_steps,
+        target_hz=config.env.ros_rate,
+    )
 
     # set seed
     set_seed(seed=seed)
@@ -156,8 +164,13 @@ def main(config: KuavoConfig, env: gym.Env):
     policy = setup_policy(pretrained_path, policy_type, device, cfg)
     if policy_type.lower() == 'deco':
         validate_deco_policy_compatibility(policy.config, config.deco, config.env)
-        apply_deco_runtime_overrides(policy.config, config.deco)
-        log_model.info(f"DECO effective n_action_steps: {getattr(policy.config, 'n_action_steps', None)}")
+        runtime_info = configure_deco_runtime(policy, config.deco, config.env)
+        log_model.info(
+            "DECO runtime: inf_step=%s source=%s; action_dispatch=%s",
+            runtime_info["inf_step"],
+            runtime_info["inf_step_source"],
+            runtime_info["action_dispatch"],
+        )
     # preprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_preprocessor.json")
     # postprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_postprocessor.json")
     preprocessor, postprocessor = make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
@@ -216,11 +229,17 @@ def main(config: KuavoConfig, env: gym.Env):
                     log_model.info("Stop flag detected during pause. Exiting loop.")
                     return
                 
+                control_loop_start_ns = time.perf_counter_ns()
                 start_time = time.time()
-                
+
+                policy_call_start_ns = time.perf_counter_ns()
                 with torch.inference_mode():
                     action = policy.select_action(observation)
+                policy_call_end_ns = time.perf_counter_ns()
+                raw_policy_action = action.detach().cpu().tolist()
+                postprocess_start_ns = time.perf_counter_ns()
                 action = postprocessor(action)
+                postprocess_end_ns = time.perf_counter_ns()
                 action_infer_time = time.time()
                 log_model.debug(f"action infer time: {action_infer_time - start_time:.3f}s")
                 average_action_infer_time += action_infer_time - start_time
@@ -229,13 +248,43 @@ def main(config: KuavoConfig, env: gym.Env):
                 log_model.debug(f"numpy_action: {numpy_action}")
 
                 # 执行动作 Execute action
+                environment_step_start_ns = time.perf_counter_ns()
                 observation, reward, terminated, truncated, info = env.step(numpy_action)
+                environment_step_end_ns = time.perf_counter_ns()
+                preprocess_start_ns = time.perf_counter_ns()
                 observation = preprocessor(observation)
+                preprocess_end_ns = time.perf_counter_ns()
                 exec_time = time.time()
                 log_model.debug(f"exec time: {exec_time - action_infer_time:.3f}s")
                 average_exec_time += exec_time - action_infer_time
 
                 rewards.append(reward)
+
+                control_loop_end_ns = time.perf_counter_ns()
+                dispatch_info = policy.get_dispatch_info() if hasattr(policy, "get_dispatch_info") else {}
+                raw_env = getattr(env, "unwrapped", env)
+                env_diagnostics = getattr(raw_env, "last_step_diagnostics", {})
+                timing_recorder.record(
+                    {
+                        "episode": episode,
+                        "step": step,
+                        "mode": dispatch_info.get("mode", config.deco.action_dispatch.mode),
+                        "chunk_id": dispatch_info.get("chunk_id"),
+                        "action_index": dispatch_info.get("action_index"),
+                        "queue_remaining": dispatch_info.get("queue_remaining"),
+                        "model_inference": dispatch_info.get("model_inference"),
+                        "ensemble_count": dispatch_info.get("ensemble_count"),
+                        "preprocess_time_ns": preprocess_end_ns - preprocess_start_ns,
+                        "policy_call_time_ns": policy_call_end_ns - policy_call_start_ns,
+                        "model_inference_time_ns": dispatch_info.get("inference_time_ns"),
+                        "postprocess_time_ns": postprocess_end_ns - postprocess_start_ns,
+                        "environment_step_time_ns": environment_step_end_ns - environment_step_start_ns,
+                        "control_loop_time_ns": control_loop_end_ns - control_loop_start_ns,
+                        "raw_policy_action": raw_policy_action,
+                        "postprocessed_action": numpy_action.tolist(),
+                        **env_diagnostics,
+                    }
+                )
 
                 # 相机帧记录，真机请取消，否则会一直堆叠卡死
                 # Camera frame record, must be commented out during real-device testing
@@ -300,6 +349,7 @@ def main(config: KuavoConfig, env: gym.Env):
     log_model.info(f"📈 Success rate: {success_count / eval_episodes:.2%}")
     print(f"📁 Videos and logs saved to: {output_directory}")
     print("="*50)
+    timing_recorder.close()
 
 def kuavo_eval(config: KuavoConfig, env: gym.Env):
     main(config, env)

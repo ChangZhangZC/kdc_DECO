@@ -2,8 +2,16 @@
 
 > **生成日期**：2026-05-08  
 > **重构日期**：2026-05-18
-> **核心架构策略**：**Wrapper 融入模式** + **Kuavo/ACT 风格 RGB-D 视觉前端移植** + **DECO Action-Token Flow Matching 主干保留** + **Tactile Plugin/LoRA 低秩微调保留** + **30Hz 数据 / 10Hz 控制解耦**  
+> **核心架构策略**：**Wrapper 融入模式** + **Kuavo/ACT 风格 RGB-D 视觉前端移植** + **DECO Action-Token Flow Matching 主干保留** + **Tactile Plugin/LoRA 低秩微调保留** + **部署默认 30Hz Receding Horizon**
 > **使用说明**：本计划书为 Kuavo-DECO 集成的当前唯一“真理源 (Single Source of Truth)”。后续 AI Agent 应在每次会话开始时读取此文件与 `AI_Logs.md`，并在完成任务后更新 Checkbox 状态。
+
+---
+
+## Active Branch Plans
+
+| Branch | Plan | Merge Target | Final Target | Status |
+| --- | --- | --- | --- | --- |
+| `deco/fix/action-state` | `docs/plans/2026-06-12-deco-action-dispatch.md` | `deco/dev` | `deco/main` | 静态实现完成，待 MuJoCo/ROS 运行验证 |
 
 ---
 
@@ -24,7 +32,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
      3) tactile branch：仅 qiangnao_tactile 可启用；30D observation.tactile -> left/right tactile max normalize -> tactile encoder / PI_Adapter
   -> DECO action-token Flow Matching transformer
   -> profile action_dim 对应的 action chunk（qiangnao 28D / gripper 18D）
-  -> 部署阶段按 10Hz 控制频率消费动作队列
+  -> 部署默认按 30Hz Receding Horizon 连续消费动作；Temporal Ensembling 与 Stride Action 为显式可选模式
 ```
 
 ### 0.2 已确认技术决策
@@ -119,6 +127,28 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [ ] `n_action_steps` 消融建议优先搭配 `inf_step=5/10/20` 做小网格测试；若 `n_action_steps=1/2` 造成推理耗时超过 10Hz 控制周期，应优先回退到 `4` 或降低 `inf_step`。
 - [ ] 若 `direct_tokens` 明显改善空抓，后续再评估更温和的融合方式，例如 RoPE 后局部 cross attention、只在主干中融合，或保留 cross attention 但加入局部窗口/位置约束。
 - [ ] 若 `direct_tokens` 无明显改善，则优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
+
+---
+
+## 版本 2.1 修正计划：DECO 动作分发策略与时间诊断
+
+> **记录日期**：2026-06-12
+> **状态**：静态代码与配置接入完成；按仓库规约尚未运行 Python、MuJoCo、ROS 或单元测试。
+
+- [x] 部署默认模式改为 `receding_horizon`，连续执行原始 30Hz chunk，不再由 checkpoint 的 `action_stride` 隐式启动降频。
+- [x] 新增互斥 dispatcher：`receding_horizon`、`temporal_ensemble`、`stride_action`。
+- [x] `n_action_steps=null` 表示完整执行原始 `chunk_size`；正整数表示连续执行 `action[0:N]` 后重新推理。
+- [x] Stride Action 保留为显式实验模式，并通过 `target_hz` 自动计算整数 stride。
+- [x] Temporal Ensembling 使用原生在线指数加权公式，每个控制周期重新预测完整 chunk 并只输出一个融合动作。
+- [x] 在 `configs/deploy/kuavo_deco_env.yaml` 暴露嵌套 `deco.action_dispatch` 用户接口，并将默认 `env.ros_rate` 改为 30。
+- [x] 本地仿真、真机和 inference server 共用同一个 dispatcher 配置与时间语义校验入口。
+- [x] 完整接入部署期 `deco.inf_step`：`null`/缺失保持 checkpoint 值，正整数覆盖 config 与模型真实 Flow Matching 推理步数。
+- [x] 增加控制链路时间诊断，记录 preprocess、模型推理、postprocess、动作 clipping、指令发送、ROS sleep、观测读取和完整控制周期。
+- [x] 增加 dispatcher/config 静态单元测试文件；受 No-Runtime 规则限制，本机未执行测试。
+- [x] 将遗漏的 `action_dispatch.py` 合并并纳入 Git 跟踪；将 `DECO/` ignore 规则锚定为 `/DECO/`，防止大小写不敏感文件系统误伤小写 Python package。
+- [ ] 在允许运行的环境中验证默认 30Hz Receding Horizon 的实际指令周期 P95 是否接近 33.3ms。
+- [ ] 依次完成 Receding Horizon `null/8/4/2/1`、Temporal Ensembling `0.01/0.1` 和显式 Stride baseline 的 MuJoCo 对照实验。
+- [ ] 根据 `deco_timing_trace.jsonl` 与 `deco_timing_summary.json` 判断同步推理是否需要升级为异步推理/双缓冲。
 
 ---
 
