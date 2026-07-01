@@ -67,6 +67,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     depth_backbone: str = "resnet34"
     # v3 视觉前端：多相机 RGB-D 在每个相机内做 ACT 风格 token fusion，再按相机顺序串接。
     visual_fusion_mode: str = ACT_RGBD_FRONTEND
+    # 是否启用每个相机内部 RGB/depth token 双向 cross attention；默认关闭用于稳定消融。
+    use_rgbd_cross_attention: bool = False
 
     # 两阶段训练与 tactile adapter。
     training_stage: str = "visual_main"
@@ -133,6 +135,7 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self._set_and_validate_temporal_window()
         self._validate_end_effector_profile()
         self._validate_visual_fusion_mode()
+        self._validate_rgbd_cross_attention()
         self._validate_stage_and_tactile()
         self._validate_frequency()
 
@@ -215,6 +218,13 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
             raise ValueError(
                 "visual_fusion_mode must be 'act_rgbd' for the multi-view DECO frontend. "
                 f"got {self.visual_fusion_mode!r}."
+            )
+
+    def _validate_rgbd_cross_attention(self) -> None:
+        if type(self.use_rgbd_cross_attention) is not bool:
+            raise ValueError(
+                "use_rgbd_cross_attention must be a boolean true/false value, "
+                f"got {self.use_rgbd_cross_attention!r}."
             )
 
     def _validate_stage_and_tactile(self) -> None:

@@ -140,6 +140,9 @@ policy:
   # v3 多相机 RGB-D 视觉前端：
   # - act_rgbd: 每个相机内部执行 ACT 风格 RGB/depth token fusion，再按 head/left/right 顺序串接给 DECO 主干。
   visual_fusion_mode: act_rgbd
+  # 是否在每个相机内部启用 RGB/depth token 双向 cross attention。
+  # false 时保留 RGB/depth 双 ResNet 与 concat+Linear 压缩路径，只跳过 early cross-modal attention。
+  use_rgbd_cross_attention: false
 
   # DECO 专用 RGB-D preprocessor：raw RGB-D -> letterbox -> RGB augmentation -> normalizer。
   rgb_keys:

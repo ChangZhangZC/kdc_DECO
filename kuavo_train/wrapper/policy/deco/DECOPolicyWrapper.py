@@ -54,6 +54,7 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             vision_backbone=config.vision_backbone,
             depth_backbone=config.depth_backbone,
             visual_fusion_mode=config.visual_fusion_mode,
+            use_rgbd_cross_attention=config.use_rgbd_cross_attention,
         )
         # 默认采用连续 30Hz Receding Horizon；旧 checkpoint 中的 action_stride 仅保留反序列化兼容，
         # 不会再隐式启动降频。部署入口可通过 configure_action_dispatch() 显式切换三种互斥策略。

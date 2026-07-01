@@ -67,12 +67,18 @@ class DECO(nn.Module):
         vision_backbone="resnet34",
         depth_backbone="resnet34",
         visual_fusion_mode=ACT_RGBD_FRONTEND,
+        use_rgbd_cross_attention=False,
     ):
         super().__init__()
         if visual_fusion_mode not in SUPPORTED_VISUAL_FUSION_MODES:
             raise ValueError(
                 "visual_fusion_mode must be 'act_rgbd', "
                 f"got {visual_fusion_mode!r}"
+            )
+        if type(use_rgbd_cross_attention) is not bool:
+            raise ValueError(
+                "use_rgbd_cross_attention must be a boolean true/false value, "
+                f"got {use_rgbd_cross_attention!r}"
             )
         head_dim = dim // heads
         self.head_dim = head_dim
@@ -82,6 +88,7 @@ class DECO(nn.Module):
         self.use_tactile = use_tactile
         self.use_task_condition = use_task_condition
         self.visual_fusion_mode = visual_fusion_mode
+        self.use_rgbd_cross_attention = use_rgbd_cross_attention
         self.inference_step = inf_step
         self.rope = RotaryPosEmbed(head_dim, rope_axes_dim)  # initial mrope embedding
         self.img_encoder = build_resnet_backbone(vision_backbone, in_channels=3)  # RGB encoder
@@ -248,7 +255,12 @@ class DECO(nn.Module):
         depth_tokens = einops.rearrange(depth_feat, 'bv c h w -> bv (h w) c')
         if self.visual_fusion_mode != ACT_RGBD_FRONTEND:
             raise ValueError(f"Unsupported visual_fusion_mode: {self.visual_fusion_mode!r}")
-        fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
+        if self.use_rgbd_cross_attention:
+            fused_rgb_tokens, fused_depth_tokens = self.rgb_depth_fusion(rgb_tokens, depth_tokens)
+        else:
+            # 关闭 early cross attention 时，仅跳过 RGB/depth token 交互；
+            # 后续 concat + Linear 与多相机 token 打包保持完全一致。
+            fused_rgb_tokens, fused_depth_tokens = rgb_tokens, depth_tokens
         fused_tokens = self.rgb_depth_fusion_proj(
             torch.cat([fused_rgb_tokens, fused_depth_tokens], dim=-1)
         )

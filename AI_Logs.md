@@ -1,5 +1,31 @@
 # AI Execution Logs
 
+## 2026-07-01
+
+### 新增 DECO RGB-D Cross Attention 可配置开关
+- **任务**: 根据用户确认的计划，在 Kuavo-DECO 多相机 RGB-D 前端中新增 `policy.use_rgbd_cross_attention` 开关，默认关闭每个相机内部 RGB/depth token 的 early cross attention，同时保持三相机输入、双 ResNet、concat+Linear 压缩、多相机 token 打包、MMAttention 和动作分发逻辑不变。
+- **修改文件 1**: `configs/policy/deco_config.yaml`
+  - 新增 `use_rgbd_cross_attention: false`。
+  - 添加中文注释，说明 `false` 时只跳过 RGB/depth token 双向 cross attention，仍保留 RGB/depth 双 ResNet 与 `concat + Linear` 路径。
+- **修改文件 2**: `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 在 `CustomDECOConfigWrapper` 中新增 `use_rgbd_cross_attention: bool = False`。
+  - 新增 `_validate_rgbd_cross_attention()`，要求该字段必须是 YAML boolean true/false，避免字符串或整数误配置。
+  - 该字段会随 policy config 保存进 checkpoint；部署侧不新增 runtime override，默认读取 checkpoint 保存值。
+- **修改文件 3**: `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 构造 `DECO(...)` 时透传 `use_rgbd_cross_attention=config.use_rgbd_cross_attention`。
+  - 未修改 batch 解包、三相机 stack、tactile、loss、action dispatcher 或 processor 顺序。
+- **修改文件 4**: `third_party/deco/models/deco/deco.py`
+  - `DECO.__init__()` 新增 `use_rgbd_cross_attention=False` 参数，并做 bool 类型校验。
+  - 保留 `RGBDepthCrossAttentionFusion` 类与 `self.rgb_depth_fusion` 实例，保证旧 checkpoint 中相关权重 key 仍可匹配加载。
+  - 在 `rgbd_img_encoding()` 中增加分支：开启时沿用 `self.rgb_depth_fusion(rgb_tokens, depth_tokens)`；关闭时直接使用原始 `rgb_tokens/depth_tokens`。
+  - 两条路径都继续执行 `torch.cat([...], dim=-1) -> self.rgb_depth_fusion_proj -> pack_visual_token_sequences()`，输出 shape 仍为 `[B, V*L, D]`。
+- **修改文件 5**: `PLANS.md`
+  - 更新总体架构与技术决策，明确 RGB/depth cross attention 变为可选且默认关闭。
+  - 新增 `版本 3.1 修正计划：RGB-D Cross Attention 可配置消融`，记录已完成代码项和后续运行环境中的 ablation 验证项。
+- **验证边界**:
+  - 本次遵守仓库 No-Runtime 约束，未运行 Python、pytest、训练、转换、validator、MuJoCo、ROS、pip、conda 或任何环境变更命令。
+  - 仅执行静态文本检索、diff 检查和人工逻辑审查。
+
 ## 2026-06-30
 
 ### 合并 `deco/fix/action-state` 到 `deco/feature/muti-visual`

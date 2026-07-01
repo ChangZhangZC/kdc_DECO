@@ -28,7 +28,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   -> LeRobot Normalizer：RGB/depth/state/action 按配置归一化，tactile 作为 TACTILE 保持 IDENTITY
   -> 三条平行主枝：
      1) state branch：profile action_dim 对应的 observation.state -> obs_encoder -> time embedding condition
-     2) RGB-D visual branch：head/left wrist/right wrist 三组 RGB-D 视角；每个 view 内部 RGB ResNet34 + 1-channel Depth ResNet34 -> cross attention -> concat(fused_rgb, fused_depth) -> Linear(2C -> C) -> camera fused tokens
+     2) RGB-D visual branch：head/left wrist/right wrist 三组 RGB-D 视角；每个 view 内部 RGB ResNet34 + 1-channel Depth ResNet34 -> 可选 RGB/depth cross attention（默认关闭）-> concat(rgb_or_fused_rgb, depth_or_fused_depth) -> Linear(2C -> C) -> camera fused tokens
      3) tactile branch：仅 qiangnao_tactile 可启用；30D observation.tactile -> left/right tactile max normalize -> tactile encoder / PI_Adapter
   -> DECO action-token Flow Matching transformer
   -> profile action_dim 对应的 action chunk（qiangnao 28D / gripper 18D）
@@ -40,7 +40,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - DECO 不再沿用原生“双目 RGB 近似深度”的视觉假设；Kuavo 版本采用 Kuavo ACT 风格的 **多相机 RGB-D** 输入方式，默认包含 head、left wrist、right wrist 三组 RGB-D。
 - 视觉前端默认 `vision_backbone: resnet34`，允许通过配置切换为 `resnet18`。
 - 每个相机 view 内部，RGB 与 depth 分别通过独立 ResNet backbone 编码；depth backbone 使用 1-channel 输入，初始化策略参考 ACT：用 RGB ResNet 第一层权重在通道维求均值初始化 depth conv1。RGB 与 depth 不共用同一个 ResNet。
-- v3 视觉前端不再保留旧 `[RGB tokens][Depth tokens]` 双流结构；每个 view 内部先做 RGB/depth token fusion，再按固定顺序打包为 `[head fused][left wrist fused][right wrist fused]` 单路 visual token 序列进入 DECO 主干。
+- v3 视觉前端不再保留旧 `[RGB tokens][Depth tokens]` 双流结构；每个 view 内部先通过 `concat(rgb_tokens, depth_tokens) -> Linear(2C -> C)` 压成 camera fused tokens，再按固定顺序打包为 `[head fused][left wrist fused][right wrist fused]` 单路 visual token 序列进入 DECO 主干。
+- 每个 view 内部的 RGB/depth 双向 cross attention 由 `policy.use_rgbd_cross_attention` 控制，默认 `false`。关闭时只跳过 early RGB-depth token 交互，仍保留 RGB/depth 双 ResNet、concat+Linear 压缩、多相机打包和 DECO 主干流程；若需要复现旧 multi-view cross attention 训练语义，必须显式设为 `true`。
 - RGB 视觉处理拆成两层：`Resize/Letterbox` 属于确定性空间预处理，不放入随机增强池；`RGB_Augmenter` 属于训练期随机增强池。默认空间输入保持 DECO 原生 `256x256 letterbox`：RGB padding 使用灰色 `fill=128`，depth padding 单独配置，默认使用归一化中性值 `0.5`。
 - RGB 增强复用 Kuavo 现有 `RGB_Augmenter`，并吸收 DECO 原生 blur 思路：Identity/Notransform、ColorJitter、SharpnessJitter、RandomMask、RandomBorderCutout、GaussianNoise、GammaCorrection、GaussianBlur 等。
 - RGB 增强采样权重参考 Kuavo ACT：保留原图的 Identity/Notransform 权重较高（默认 `3.0`），其他增强默认 `1.0`，每次默认从增强池中采样一个变换。
@@ -174,6 +175,22 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 明确本轮不重新设计 action 执行调度，不把 action_stride 类算法作为视觉前端依赖。
 - [ ] 在允许运行的环境中转换包含头部与双腕 RGB-D 的 rosbag，确认 dataset metadata 中出现六个视觉 feature。
 - [ ] 在允许运行的环境中做一次训练/推理 smoke test，确认模型 forward 接收 `[B,V,C,H,W]` 并输出预期 action chunk。
+
+---
+
+## 版本 3.1 修正计划：RGB-D Cross Attention 可配置消融
+
+> **记录日期**：2026-07-01
+> **状态**：代码接入与静态检查已完成；尚待用户在允许运行的环境中执行训练/部署 ablation。
+> **边界**：本节只控制每个相机内部 RGB/depth token 的 early cross attention，不改变三相机输入、双 ResNet、concat+Linear 压缩、MMAttention、动作分发或部署 YAML。
+
+- [x] `configs/policy/deco_config.yaml` 新增 `policy.use_rgbd_cross_attention: false`，默认关闭 early RGB-depth cross attention。
+- [x] `DECOConfigWrapper` 注册并校验 `use_rgbd_cross_attention`，只接受 YAML boolean true/false。
+- [x] `DECOPolicyWrapper` 构造 DECO 模型时透传 `use_rgbd_cross_attention`。
+- [x] `third_party/deco/models/deco/deco.py` 保留 `RGBDepthCrossAttentionFusion` 模块实例和权重 key，但在 `use_rgbd_cross_attention=false` 时直接使用原始 `rgb_tokens/depth_tokens`。
+- [x] 两条路径都继续执行 `concat(..., dim=-1) -> Linear(2C -> C) -> pack_visual_token_sequences()`，保证输出仍为 `[B, V*L, D]`。
+- [x] 本轮不新增 deploy YAML runtime override；部署默认读取 checkpoint 保存的 policy config。
+- [ ] 在允许运行的环境中对比 `use_rgbd_cross_attention=false/true` 的训练收敛、MuJoCo 成功率、空抓比例和视觉 grounding 表现。
 
 ---
 
