@@ -14,6 +14,7 @@ DECO_28D_LAYOUT = "deco_28d"
 DECO_18D_LAYOUT = "deco_18d"
 HEAD_STATE_LIVE_JOINT_Q = "live_joint_q"
 HEAD_STATE_FIXED_CONFIG = "fixed_config"
+SUPPORTED_MULTI_VIEW_VISUAL_FRONTENDS = {"act_rgbd", "letools_act"}
 
 
 @dataclass(frozen=True)
@@ -215,7 +216,8 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
     _assert_equal("policy.action_dim", policy_config.action_dim, expected["action_dim"])
     _assert_equal("policy.use_tactile", policy_config.use_tactile, expected["use_tactile"])
     _assert_equal("policy.use_tactile_lora", policy_config.use_tactile_lora, expected["use_tactile_lora"])
-    if getattr(policy_config, "visual_fusion_mode", None) == "act_rgbd":
+    # 两种前端都读取完全相同的三组 RGB-D key；差异只发生在模型内部的视觉编码方式。
+    if getattr(policy_config, "visual_fusion_mode", None) in SUPPORTED_MULTI_VIEW_VISUAL_FRONTENDS:
         _validate_deco_visual_obs_keys(policy_config, env_config)
 
 
@@ -316,7 +318,7 @@ def _validate_deco_visual_obs_keys(policy_config: Any, env_config: Any) -> None:
     depth_keys = tuple(getattr(policy_config, "depth_keys", ()) or ())
     if len(rgb_keys) != len(depth_keys) or not rgb_keys:
         raise ValueError(
-            "DECO act_rgbd checkpoint must define non-empty rgb_keys/depth_keys with the same length."
+            "DECO multi-view checkpoint must define non-empty rgb_keys/depth_keys with the same length."
         )
 
     expected_short_keys: list[str] = []

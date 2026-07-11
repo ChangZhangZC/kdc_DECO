@@ -53,6 +53,8 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             rope_axes_dim=config.rope_axes_dim,
             vision_backbone=config.vision_backbone,
             depth_backbone=config.depth_backbone,
+            pretrained_backbone_weights=config.pretrained_backbone_weights,
+            replace_final_stride_with_dilation=config.replace_final_stride_with_dilation,
             visual_fusion_mode=config.visual_fusion_mode,
             use_rgbd_cross_attention=config.use_rgbd_cross_attention,
         )

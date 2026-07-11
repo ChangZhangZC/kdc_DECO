@@ -12,6 +12,7 @@
 | Branch | Plan | Merge Target | Final Target | Status |
 | --- | --- | --- | --- | --- |
 | `deco/fix/action-state` | `docs/plans/2026-06-12-deco-action-dispatch.md` | `deco/dev` | `deco/main` | 静态实现完成，待 MuJoCo/ROS 运行验证 |
+| `deco/feature/letools-visual` | `docs/plans/2026-07-12-letools-act-visual-frontend.md` | `deco/dev` | `deco/main` | 静态实现完成，待运行环境验证 |
 
 ---
 
@@ -191,6 +192,32 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 两条路径都继续执行 `concat(..., dim=-1) -> Linear(2C -> C) -> pack_visual_token_sequences()`，保证输出仍为 `[B, V*L, D]`。
 - [x] 本轮不新增 deploy YAML runtime override；部署默认读取 checkpoint 保存的 policy config。
 - [ ] 在允许运行的环境中对比 `use_rgbd_cross_attention=false/true` 的训练收敛、MuJoCo 成功率、空抓比例和视觉 grounding 表现。
+
+---
+
+## 版本 3.2 修正计划：LeTools ACT 六流共享视觉前端
+
+> **记录日期**：2026-07-12
+>
+> **状态**：代码、配置、部署兼容、静态测试定义与最终静态审查已完成；尚待运行环境验证。
+>
+> **边界**：本节是 `deco/feature/letools-visual` 的分支专用视觉决策，优先于上文 v3.0/v3.1 的默认视觉路径；旧 `act_rgbd` 路径保留为 checkpoint 兼容与 A/B 对照，不修改数据转换、state、tactile、Flow Matching 或动作 dispatcher。
+
+- [x] 从干净的 `deco/feature/muti-visual@517069b` 创建并推送 `deco/feature/letools-visual`；保留 `deco/feature/optimal-depth` 不变。
+- [x] 新增 `visual_fusion_mode: letools_act` 并设为分支默认；继续接受 `act_rgbd`。
+- [x] 固定三组 RGB-D，经 `256x256 letterbox` 后按 `[head RGB, head depth, left RGB, left depth, right RGB, right depth]` 交错为六个三通道 stream。
+- [x] 六路严格使用 ImageNet mean/std；RGB/DEPTH 均配置为 `MEAN_STD`，覆盖后的统计随 policy preprocessor 保存。
+- [x] 对齐 LeTools ACT 的 torchvision ImageNet ResNet18、FrozenBatchNorm2d、layer4 与共享 `Conv2d(512,512,1)`；禁止 final stride dilation。
+- [x] 固定输出 `8x8=64 tokens/stream`，六流共 `[B,384,512]`，并由 MMAttention 对六个 segment 分别复用现有二维 RoPE。
+- [x] `letools_act` 不构建独立 depth backbone、RGB-depth cross-attention 或 concat+Linear fusion；不新增 camera/modality embedding。
+- [x] RGB 增强池保留为显式开关、默认关闭；训练入口继续只选择 RGB key，depth 不参与增强。
+- [x] 配置对非法 mode、backbone、权重、dilation、ImageNet stats、cross-attention、输入组数和 depth channel 做 fail-fast 校验。
+- [x] 部署视觉 key 校验同时支持 `act_rgbd` 与 `letools_act`，两者继续读取相同六个 observation key。
+- [x] 新增 `tests/test_deco_letools_visual_frontend.py`，定义六流顺序、shape、stats、增强、非法配置、旧模式和部署兼容回归。
+- [x] 新增 `Content/DECO_LeTools_ACT_Visual_Frontend.md`，记录迁移边界、数值语义、兼容模式及计算代价。
+- [x] 完成 `git diff --check`、改动范围检索和人工静态审查，并确认 state/tactile/loss/action dispatcher/data converter 未改变。
+- [ ] 在允许运行的环境中执行静态定义的 pytest、单步 forward 与 checkpoint 保存/恢复 smoke test。
+- [ ] 在目标 GPU 上记录六流前端显存、训练吞吐和部署推理时延，并与 `act_rgbd` 做 A/B 对照。
 
 ---
 

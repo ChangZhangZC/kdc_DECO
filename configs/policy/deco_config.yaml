@@ -45,7 +45,9 @@ training:
   # - GammaCorrection: 做 gamma 亮度校正。
   # - GaussianBlur: 高斯模糊，用于吸收 DECO 原生 blur 增强思路。
   RGB_Augmenter:
-    enable: True
+    # LeTools ACT 默认 image_transforms 为空（等价于 enable=false）；保留完整增强池供用户显式开启。
+    # 训练入口只会对不含 depth 的 RGB key 应用该池，depth 始终保持 Identity。
+    enable: False
     max_num_transforms: 1
     random_order: True
     tfs:
@@ -132,16 +134,19 @@ policy:
   heads: 8
   dim: 512
   rope_axes_dim: [256, 256]
+  # letools_act 严格复刻 LeTools ACT 的 torchvision ImageNet ResNet18 视觉编码结构。
+  # 切回 act_rgbd 时仍可按旧实验需要使用 resnet34/resnet18。
+  vision_backbone: resnet18
+  depth_backbone: resnet34  # 仅旧 act_rgbd 路径使用；letools_act 不构建独立 depth backbone。
+  pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1
+  replace_final_stride_with_dilation: false
+  use_imagenet_stats: true
   # 可选值：
-  # - resnet34: 默认容量，更贴近当前 Kuavo-DECO 方案。
-  # - resnet18: 低显存/低延迟备选，通常用于 ablation 或资源受限场景。
-  vision_backbone: resnet34
-  depth_backbone: resnet34
-  # v3 多相机 RGB-D 视觉前端：
-  # - act_rgbd: 每个相机内部执行 ACT 风格 RGB/depth token fusion，再按 head/left/right 顺序串接给 DECO 主干。
-  visual_fusion_mode: act_rgbd
-  # 是否在每个相机内部启用 RGB/depth token 双向 cross attention。
-  # false 时保留 RGB/depth 双 ResNet 与 concat+Linear 压缩路径，只跳过 early cross-modal attention。
+  # - letools_act: 六路三通道视觉流共享一个 ResNet18，不做 RGB-depth 前融合。
+  # - act_rgbd: 旧前端；每相机使用独立 RGB/depth backbone，再 concat+Linear 压成单路 token。
+  visual_fusion_mode: letools_act
+  # 仅 act_rgbd 可在每个相机内部启用 RGB/depth token 双向 cross attention；
+  # letools_act 必须为 false，且不会构建双 ResNet、cross-attention 或 concat+Linear 路径。
   use_rgbd_cross_attention: false
 
   # DECO 专用 RGB-D preprocessor：raw RGB-D -> letterbox -> RGB augmentation -> normalizer。
@@ -168,8 +173,9 @@ policy:
   n_action_steps: null
 
   # NormalizationMode 可选值：
-  # - MEAN_STD: 使用 dataset stats 做均值方差归一化，适合 RGB/state/action。
-  # - MIN_MAX: 使用 dataset stats 做 min/max 归一化，当前用于 depth。
+  # - MEAN_STD: 使用 mean/std 归一化；letools_act 会把六个视觉 key 严格覆盖为 ImageNet stats，
+  #   state/action 仍使用 dataset stats。
+  # - MIN_MAX: 使用 dataset stats 做 min/max 归一化，仅供旧 act_rgbd 实验显式切回。
   # - IDENTITY: 不做 LeRobot 统计归一化，当前用于 tactile，避免触觉被当作普通 STATE。
   normalization_mapping:
     VISUAL:
@@ -177,7 +183,7 @@ policy:
       value: MEAN_STD
     DEPTH:
       _target_: lerobot.configs.types.NormalizationMode
-      value: MIN_MAX
+      value: MEAN_STD
     STATE:
       _target_: lerobot.configs.types.NormalizationMode
       value: MEAN_STD

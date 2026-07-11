@@ -1,5 +1,51 @@
 # AI Execution Logs
 
+## 2026-07-12
+
+### 迁移 LeTools ACT 六流视觉前端到 Kuavo-DECO
+
+- **任务与分支**：根据用户批准的实施计划，从干净的 `deco/feature/muti-visual@517069b` 创建并设置远端跟踪分支 `deco/feature/letools-visual`。本地和远端 `deco/feature/optimal-depth` 均保留不变。迁移范围只覆盖 RGB-D 进入模型后到 DECO 主干之前的视觉前端；不修改数据转换、30Hz 时间轴、joint state、触觉、action token、Flow Matching loss、推理去噪或动作 dispatcher。
+- **LeTools 静态对照**：复核本机 `LeTools-Learning` 中 ACT 配置和 `modeling_act.py`，确认参考结构使用 ImageNet ResNet18、`FrozenBatchNorm2d`、`IntermediateLayerGetter(layer4)`、共享 `1x1 Conv`、`replace_final_stride_with_dilation=false` 与 `dataset.use_imagenet_stats=true`。参考 ACT 默认 `dataset.image_transforms` 为空，因此本分支把 RGB 增强默认关闭，只保留显式开启能力。
+- **新增文件 1**：`third_party/deco/models/deco/letools_act_visual_encoder.py`
+  - 新增 `interleave_rgb_depth_streams()`，固定把三组 RGB-D 组装为 `[head RGB, head depth, left RGB, left depth, right RGB, right depth]`。
+  - RGB 与 depth 均强制保持三通道和 `256x256`；拒绝单通道 depth、非三组输入和错误空间尺寸。
+  - 新增 `LeToolsACTVisualEncoder`，六路共享一个 torchvision ImageNet ResNet18、FrozenBN、layer4 getter 和 `Conv2d(512,512,1)`。
+  - 标准无 dilation 的 ResNet18 把每路 `256x256` 编码为 `8x8=64` 个 token；模块输出 `[B,6,64,512]`。
+- **修改文件 2**：`third_party/deco/models/deco/deco.py`
+  - 新增 `letools_act` 分支；该分支只构建共享视觉 encoder，不构建独立 depth backbone、RGB-depth cross-attention 或 concat+Linear fusion 参数。
+  - 六路 token 展平为 `[B,384,512]`，并把 segment 数量和每段 64-token 长度传给现有 `MMAttention`；主干继续对每个 segment 重复应用同一套二维 RoPE，不增加 camera/modality embedding。
+  - 将旧实现完整保留在 `act_rgbd_img_encoding()`，旧模式的 RGB/depth backbone、可选 cross-attention、concat+Linear fusion 和权重 key 不变。
+  - 模型 factory 同步注册新增参数；state、tactile、action、loss 和去噪路径未修改。
+- **修改文件 3**：`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增 `visual_fusion_mode=letools_act`、`pretrained_backbone_weights`、`replace_final_stride_with_dilation` 与 `use_imagenet_stats` 配置接口，同时保留旧字段默认值以兼容历史 checkpoint。
+  - 严格校验新模式必须使用固定顺序的 head/left/right 三组 RGB-D、三通道 depth、`256x256 letterbox`、ResNet18、ImageNet V1 权重、无 dilation、`dim=512`、六路 ImageNet stats、RGB/DEPTH `MEAN_STD`，并拒绝 RGB-D cross-attention。
+  - 旧 `act_rgbd` 仍接受 1/3 通道 depth；新模式只接受三通道 depth。
+- **修改文件 4**：`kuavo_train/wrapper/policy/deco/DECOProcessor.py`
+  - 新增与 LeTools/LeRobot 逐值一致的 ImageNet mean `[0.485,0.456,0.406]` 和 std `[0.229,0.224,0.225]`。
+  - 构造 preprocessor 时复制 dataset stats，并只覆盖三个 RGB key 和三个 depth key；state/action 继续使用数据集统计，tactile 继续使用 `IDENTITY`。
+  - normalizer 和 postprocessor 共享覆盖后的统计；这些统计由现有 preprocessor 保存流程写入 checkpoint 资产，保证训练和部署恢复一致。
+- **修改文件 5**：`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 向 DECO 模型透传预训练权重名和 final stride dilation 字段；现有 RGB/depth stack、state、触觉、loss 与动作分发接口保持不变。
+- **修改文件 6**：`configs/policy/deco_config.yaml`
+  - 分支默认改为 `visual_fusion_mode: letools_act`、`vision_backbone: resnet18`、ImageNet V1 权重、无 dilation、`use_imagenet_stats: true`。
+  - RGB 和 DEPTH 均设置 `MEAN_STD`；RGB 增强默认改为 `False`，完整增强池仍保留，训练入口继续排除所有 depth key。
+  - 注释明确 `depth_backbone` 与 RGB-depth cross-attention 只属于旧 `act_rgbd` 路径。
+- **修改文件 7**：`kuavo_deploy/utils/deco_obs_action.py`
+  - 部署兼容校验同时识别 `act_rgbd` 和 `letools_act`，两种模式继续要求 checkpoint 的相同 RGB/depth keys 必须由 `obs_key_map` 提供。
+- **新增文件 8**：`tests/test_deco_letools_visual_frontend.py`
+  - 定义六流交错顺序、三通道 depth、ResNet18/FrozenBN/1x1 projection、`8x8` feature map、64 tokens/stream、384 总 token、六段 RoPE 接口、六路 ImageNet stats、preprocessor 顺序和 RGB-only 增强回归。
+  - 定义非法 mode/backbone/权重/dilation/stats/cross-attention/key 顺序/输入数量/channel 的 fail-fast 回归，并覆盖旧 `act_rgbd` 构造与新部署 key 校验。
+- **新增/修改文档**：
+  - 新增 `docs/plans/2026-07-12-letools-act-visual-frontend.md`，记录批准后的逐项实施计划。
+  - 新增 `Content/DECO_LeTools_ACT_Visual_Frontend.md`，记录 LeTools 对照依据、冻结数据流、兼容边界、优缺点与运行验证项。
+  - 更新 `PLANS.md` 的 Active Branch Plans 和 v3.2 完成清单。
+- **静态验证**：
+  - `git diff --check` 通过；四个新增文件分别执行静态 whitespace check，未发现格式错误。
+  - 冲突标记检索无结果；受保护的 `kuavo_data/`、`configs/deploy/`、`action_dispatch.py` 与 `third_party/lerobot/` 无 diff。
+  - 静态检索确认六个视觉 key 全部覆盖 ImageNet mean/std、两条训练入口都排除 depth augmentation、六流 encoder 只构建单个共享 backbone、MMAttention 按 segment 循环应用 RoPE。
+  - 确认当前分支创建前指向 `517069b`，且本地/远端 `optimal-depth` 均仍存在。
+- **No-Runtime 边界**：严格遵守仓库规定，未运行 Python、pytest、训练、forward、权重下载、ROS、MuJoCo、仿真、部署、pip、conda 或任何环境变更命令。新增测试仅完成静态定义，必须在允许运行的目标环境中执行。
+
 ## 2026-07-01
 
 ### 新增 DECO RGB-D Cross Attention 可配置开关

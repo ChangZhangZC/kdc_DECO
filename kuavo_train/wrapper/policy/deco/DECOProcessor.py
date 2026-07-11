@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,35 @@ from lerobot.processor.pipeline import ProcessorStep, ProcessorStepRegistry
 from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 from kuavo_train.wrapper.policy.deco.DECOConfigWrapper import CustomDECOConfigWrapper
+
+
+# 与 LeTools/LeRobot 的 IMAGENET_STATS 保持逐值一致。这里不修改 third_party/lerobot，
+# 也不从 dataset factory 反向导入，避免 policy processor 与 dataset 构造产生循环依赖。
+LETOOLS_IMAGENET_STATS = {
+    "mean": [[[0.485]], [[0.456]], [[0.406]]],
+    "std": [[[0.229]], [[0.224]], [[0.225]]],
+}
+
+
+def _build_deco_normalizer_stats(
+    config: CustomDECOConfigWrapper,
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None,
+) -> dict[str, dict[str, torch.Tensor]] | None:
+    """为 LeTools 六流模式覆盖视觉 mean/std，同时保留 state/action/tactile 统计。
+
+    必须复制输入 mapping，不能原地改写 dataset metadata；否则同一进程内构造其他
+    policy 时会意外继承 ImageNet 统计。保存 preprocessor 后，这六路统计会随 checkpoint
+    一起恢复，从而保证训练和部署的数值语义一致。
+    """
+
+    if not config.use_imagenet_stats:
+        return dataset_stats
+    normalizer_stats = deepcopy(dataset_stats) if dataset_stats is not None else {}
+    for key in (*config.rgb_keys, *config.depth_keys):
+        feature_stats = normalizer_stats.setdefault(key, {})
+        for stat_name, values in LETOOLS_IMAGENET_STATS.items():
+            feature_stats[stat_name] = torch.tensor(values, dtype=torch.float32)
+    return normalizer_stats
 
 
 @dataclass
@@ -147,6 +177,8 @@ def make_deco_pre_post_processors(
     （由训练入口插入）-> LeRobot normalizer。tactile 在 normalizer 中为 IDENTITY。
     """
 
+    normalizer_stats = _build_deco_normalizer_stats(config, dataset_stats)
+
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
@@ -162,7 +194,7 @@ def make_deco_pre_post_processors(
         NormalizerProcessorStep(
             features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,
-            stats=dataset_stats,
+            stats=normalizer_stats,
             device=config.device,
         ),
     ]
@@ -170,7 +202,7 @@ def make_deco_pre_post_processors(
         UnnormalizerProcessorStep(
             features=config.output_features,
             norm_map=config.normalization_mapping,
-            stats=dataset_stats,
+            stats=normalizer_stats,
         ),
         DeviceProcessorStep(device="cpu"),
     ]
