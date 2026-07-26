@@ -112,6 +112,7 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     def __post_init__(self) -> None:
         super().__post_init__()
         self._convert_omegaconf_fields()
+        self._normalize_policy_feature_fields()
         self._merge_custom_fields()
         self._merge_default_normalization_mapping()
         self._set_and_validate_temporal_window()
@@ -130,6 +131,91 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self.rope_axes_dim = tuple(self.rope_axes_dim)
         self.optimizer_betas = tuple(self.optimizer_betas)
         self.rgb_keys = tuple(self.rgb_keys)
+
+    def _normalize_policy_feature_fields(self) -> None:
+        """恢复 Hydra 展平的 ``PolicyFeature``，再执行任何模态筛选。
+
+        训练入口传入的 feature 原本是 ``PolicyFeature``，但 Hydra ``instantiate``
+        会把嵌套 dataclass 展平成普通字典。3View RGB 配置需要在 ``__post_init__``
+        内立即筛掉数据集中的 depth，因此不能等外层 ``build_policy_config`` 在实例化
+        结束后再恢复类型。这里统一处理训练、Accelerate 与 checkpoint 反序列化入口。
+        """
+
+        self.input_features = self._normalize_policy_feature_dict(
+            self.input_features,
+            field_name="input_features",
+        )
+        self.output_features = self._normalize_policy_feature_dict(
+            self.output_features,
+            field_name="output_features",
+        )
+
+    @staticmethod
+    def _normalize_policy_feature_dict(
+        feature_map: Any,
+        *,
+        field_name: str,
+    ) -> dict[str, PolicyFeature]:
+        """把 feature mapping 严格规范化为 ``dict[str, PolicyFeature]``。"""
+
+        if isinstance(feature_map, DictConfig):
+            feature_map = OmegaConf.to_container(feature_map, resolve=True)
+        if not isinstance(feature_map, dict):
+            raise TypeError(
+                f"{field_name} must be a dict or DictConfig, got {type(feature_map).__name__}."
+            )
+
+        normalized: dict[str, PolicyFeature] = {}
+        for key, feature in feature_map.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError(f"{field_name} keys must be non-empty strings, got {key!r}.")
+            if isinstance(feature, DictConfig):
+                feature = OmegaConf.to_container(feature, resolve=True)
+
+            if isinstance(feature, PolicyFeature):
+                feature_type = feature.type
+                feature_shape = feature.shape
+            elif isinstance(feature, dict):
+                missing_fields = {"type", "shape"} - feature.keys()
+                if missing_fields:
+                    raise ValueError(
+                        f"{field_name}[{key!r}] is missing required fields: "
+                        f"{sorted(missing_fields)}."
+                    )
+                feature_type = feature["type"]
+                feature_shape = feature["shape"]
+            else:
+                raise TypeError(
+                    f"{field_name}[{key!r}] must be PolicyFeature, dict, or DictConfig, "
+                    f"got {type(feature).__name__}."
+                )
+
+            # JSON/Draccus checkpoint 可能把枚举保存为字符串；运行时自定义 patch
+            # 已为 FeatureType 注册 RGB/DEPTH/TACTILE，因此在配置边界统一恢复枚举。
+            if isinstance(feature_type, str):
+                try:
+                    feature_type = FeatureType(feature_type)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{field_name}[{key!r}].type has unsupported value "
+                        f"{feature_type!r}."
+                    ) from exc
+            if not isinstance(feature_type, FeatureType):
+                raise TypeError(
+                    f"{field_name}[{key!r}].type must be FeatureType or string, "
+                    f"got {type(feature_type).__name__}."
+                )
+            if not isinstance(feature_shape, (list, tuple)):
+                raise TypeError(
+                    f"{field_name}[{key!r}].shape must be a list or tuple, "
+                    f"got {type(feature_shape).__name__}."
+                )
+
+            normalized[key] = PolicyFeature(
+                type=feature_type,
+                shape=tuple(feature_shape),
+            )
+        return normalized
 
     def _merge_custom_fields(self) -> None:
         if not isinstance(self.custom, dict):

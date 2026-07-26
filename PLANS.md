@@ -39,6 +39,7 @@
 - [x] 移植 `deco/fix/action-state` 的三模式动作后端：`receding_horizon`、`temporal_ensemble`、`stride_action`。
 - [x] 默认 `chunk_size=32`、`n_action_steps=16`，以30Hz连续执行原始 action index `0..15`，约0.533s后使用最新观测重新推理。
 - [x] `action_stride=3` 不再属于默认路径；仅显式选择 `stride_action` 时允许按目标频率降采样。
+- [x] 修复 Hydra 将嵌套 `PolicyFeature` 展平为普通字典后，3View RGB 配置在 `__post_init__` 提前访问 `.type` 的问题；配置入口会先恢复 input/output feature 类型，再过滤数据集中的 depth。
 - [x] 完成 `git diff --check`、禁止项文本检索、关键 tensor shape 与 key 顺序的逐文件静态审查。
 - [ ] 在允许运行代码的环境中验证三路 batch 构造、训练 forward/loss 与 checkpoint 保存加载。
 - [ ] 在仿真和实机分别验证左右腕物理对应、相机丢帧 fail-fast、30Hz Receding Horizon 与三种末端执行器 profile。

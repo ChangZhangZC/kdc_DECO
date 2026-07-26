@@ -108,6 +108,34 @@
   - 本次仅进行静态代码修改与文本检查，不运行 Python、pytest、训练、ROS、MuJoCo、部署程序或任何环境变更命令。
   - 外部允许运行环境仍需验证实际30Hz控制周期、重规划阻塞、action jitter、三种末端执行器与 server/client 行为。
 
+### 修复 3View RGB 配置初始化时 PolicyFeature 被 Hydra 展平的问题
+
+- **故障现象**：
+  - 训练入口能够从 LeRobot metadata 正确生成并打印 `PolicyFeature`。
+  - Hydra 调用 `CustomDECOConfigWrapper` 时将嵌套 dataclass 展平为普通字典。
+  - 3View RGB 版本新增的输入 feature 白名单会在 `__post_init__` 内提前检查 `tactile_feature`，此时访问字典的 `.type`，触发 `AttributeError("'dict' object has no attribute 'type'")`。
+- **根因定位**：
+  - `train_policy.py` 和 `train_policy_with_accelerate.py` 原本会在 `hydra.utils.instantiate()` 返回后恢复 `PolicyFeature`。
+  - 该恢复时机晚于 `CustomDECOConfigWrapper.__post_init__`；旧 RGB-D 配置没有在构造期间筛选 feature，因此此前未暴露这个顺序问题。
+  - 故障发生于 policy 配置构造阶段，尚未进入三路 RGB processor、共享 ResNet、DECO forward 或 action dispatcher。
+- **修改文件 1**：`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 在 OmegaConf 字段转换后、任何 tactile 检查和三路 RGB 输入筛选前，统一规范化 `input_features` 与 `output_features`。
+  - 同时支持已构造的 `PolicyFeature`、Hydra 普通字典与嵌套 `DictConfig`。
+  - 将 JSON/Draccus 中的字符串 feature type 恢复为 `FeatureType`，将 shape 固定恢复为 tuple。
+  - 对缺失 `type/shape`、非法 feature type、非法 shape 和非法 key 提供带具体字段路径的显式错误。
+  - 保持当前输入白名单不变：最终只保留 state、head RGB、left wrist RGB、right wrist RGB，以及按需启用的 tactile；数据集中已有的三路 depth 继续被忽略。
+- **新增文件 2**：`tests/test_deco_config_feature_normalization.py`
+  - 使用用户实际数据 schema 构造“18D state + 三路 RGB + 三路 depth + 18D action”的 Hydra 字典输入。
+  - 静态覆盖 feature 类型恢复、shape tuple 恢复、depth 过滤、三路 RGB 顺序和 `validate_features()` 契约。
+  - 增加畸形 feature 缺少 shape 时的 fail-fast 用例。
+- **修改文件 3**：`PLANS.md`
+  - 在当前 `deco/feature/3view-rgb` 覆盖方案中勾选本次配置边界修复。
+- **明确未修改范围**：
+  - 未修改 rosbag 转换脚本、数据转换 YAML、已有 LeRobot 数据、视觉模型、processor、训练 loss 或动作后端。
+- **No-Runtime 边界**：
+  - 按仓库规约仅执行文本检索、diff 检查与逐文件静态审查。
+  - 未运行 Python、pytest、训练、ROS、MuJoCo、部署程序或环境变更命令；新增回归测试留待允许运行代码的环境执行。
+
 ## 2026-06-05
 
 ### 创建本地 Git 版本标签 v2.0
