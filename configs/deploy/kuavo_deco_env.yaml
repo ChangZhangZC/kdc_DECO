@@ -37,7 +37,9 @@ env:
   # - deco_18d: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2，用于 gripper_no_tactile。
   state_layout: deco_18d
   head_init: [-0.000115, 0.262111]
-  ros_rate: 10  # DECO 数据为 30Hz，部署控制为 10Hz；降频由 wrapper 的 action_stride=3 处理。
+  # Receding Horizon / Temporal Ensembling 连续消费 30Hz 语义动作。
+  # 只有显式选择 stride_action 时，才同步改成 stride_action.target_hz。
+  ros_rate: 30
 
   # 固定约束：DECO 部署不下发下肢/base action。
   only_arm: true
@@ -58,7 +60,7 @@ env:
     tactile: ["/dexhand/touch_state", "dexhandTouchState", 500, 100.0]
 
   # DECO state 由 state_layout 对应 helper 直接拼接，不使用原 ACT/DP 的 arm_state_keys。
-  # 三路移动视角必须在 10Hz 控制周期内完成时间对齐；DECO 模式不允许失败后回退旧帧。
+  # 三路移动视角必须在当前30Hz控制周期内完成时间对齐；DECO 模式不允许失败后回退旧帧。
   frame_alignment: true
   ratio: 1.0
 
@@ -100,7 +102,7 @@ deco:
   inference_mode: gripper_no_tactile
 
   # null 表示使用 checkpoint 保存值；正整数表示部署期覆盖 denoising steps
-  inf_step: null  
+  inf_step: null
 
   # 可选值：
   # - local_real: 本地单进程真机推理，沿用 real_single_test.py 的 pre/postprocessor 路径。
@@ -118,11 +120,26 @@ deco:
   #   使用 env.head_init 作为固定头部 state。优点是稳定；缺点是必须确认与训练数据头部姿态一致。
   head_state_source: fixed_config
 
-  # 部署期覆盖 DECO policy.n_action_steps，用于旧 checkpoint 直接做 receding horizon 消融。
-  # null 表示使用 checkpoint 保存的默认值；正整数表示每次推理后只执行前 N 个 10Hz action。
-  # 例如当前 chunk_size=32、action_stride=3 时，n_action_steps=4 表示约 0.4s 后重新推理。
-  # server/client 模式下，该字段必须写在 server 加载 policy 时使用的配置中。
-  n_action_steps: null
+  # 三种动作分发策略互斥；server/client 模式下必须写在 server 的部署配置中。
+  action_dispatch:
+    # 可选值：receding_horizon | temporal_ensemble | stride_action
+    # 切换到后两种模式时，必须同时把 receding_horizon.n_action_steps 设为 null。
+    mode: receding_horizon
+
+    receding_horizon:
+      # 连续执行原始 action[0:16]，约 0.533s 后根据最新观测重新推理。
+      # null 表示完整消费原始 32-step chunk。
+      n_action_steps: 16
+
+    temporal_ensemble:
+      # 每个 30Hz 控制周期重新预测完整 chunk，并对同一绝对时刻做指数加权。
+      coefficient: 0.1
+
+    stride_action:
+      # 仅用于显式旧行为消融；启用时必须设置 env.ros_rate == target_hz。
+      target_hz: 10
+      # null 表示完整消费降采样队列；正整数限制每个 chunk 的入队数量。
+      queue_steps: null
 
 
 # =====================================================

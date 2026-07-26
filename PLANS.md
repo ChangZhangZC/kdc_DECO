@@ -36,9 +36,13 @@
 - [x] 任一路相机缺失、重复、shape 不一致、部署 topic 不可提供或帧同步失败时显式报错，不复制 head、不复用旧帧、不静默降级。
 - [x] 从头训练，默认关闭外部 checkpoint 初始化，不实现旧 RGB-D checkpoint 的 shape 兼容或参数迁移。
 - [x] 保持 `kuavo_data/CvtRosbag2Lerobot_DECO.py`、`configs/data/KuavoRosbag2Lerobot_deco.yaml` 与已有 LeRobot 数据不变；训练仅从数据集读取三路 RGB。
+- [x] 移植 `deco/fix/action-state` 的三模式动作后端：`receding_horizon`、`temporal_ensemble`、`stride_action`。
+- [x] 默认 `chunk_size=32`、`n_action_steps=16`，以30Hz连续执行原始 action index `0..15`，约0.533s后使用最新观测重新推理。
+- [x] `action_stride=3` 不再属于默认路径；仅显式选择 `stride_action` 时允许按目标频率降采样。
 - [x] 完成 `git diff --check`、禁止项文本检索、关键 tensor shape 与 key 顺序的逐文件静态审查。
 - [ ] 在允许运行代码的环境中验证三路 batch 构造、训练 forward/loss 与 checkpoint 保存加载。
-- [ ] 在仿真和实机分别验证左右腕物理对应、相机丢帧 fail-fast、10Hz action dispatch 与三种末端执行器 profile。
+- [ ] 在仿真和实机分别验证左右腕物理对应、相机丢帧 fail-fast、30Hz Receding Horizon 与三种末端执行器 profile。
+- [ ] 测量 Receding Horizon 重规划周期的推理阻塞、实际控制频率与 action jitter。
 - [ ] 对比原 `optimal-depth` 方案的 loss、成功率、推理延迟、显存占用与空抓比例。
 
 ## 0. 当前冻结的总体架构

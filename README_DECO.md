@@ -152,7 +152,7 @@ deco:
 - `dataset.only_arm: true`：DECO 当前只训练上半身操作。
 - `dataset.which_arm: both`：DECO 28D/18D schema 都是双臂。
 - `dataset.use_depth: true`：Kuavo-DECO 当前是 RGB-D 路线，不是纯 RGB 路线。
-- `dataset.train_hz: 30`：训练数据统一为 30Hz；部署 10Hz 由 wrapper/action queue 处理。
+- `dataset.train_hz: 30`：训练数据统一为30Hz；默认 Receding Horizon 也按30Hz连续执行原始 chunk。
 - `dataset.dex_dof_needed: 6`：强脑灵巧手使用左右手各 6 DoF，不沿用 ACT/DP 单维开合量。
 - `dataset.delta_action: false`、`dataset.relative_start: false`：当前 DECO 输出绝对 joint/action schema。
 
@@ -601,6 +601,36 @@ inference:
 
 实际部署前需要额外核对 `env.obs_key_map`：真机 RGB、depth、`/sensors_data_raw`、夹爪或灵巧手状态、触觉 topic 是否与 YAML 完全一致。Server / Client 模式可以用于边侧机推理：机器人侧作为 client 采集观测并执行动作，边侧机或 GPU 机器作为 server 运行 DECO policy。
 
+### 4.4 动作分发模式
+
+当前 3View RGB 分支支持三种互斥的 `deco.action_dispatch.mode`：
+
+- `receding_horizon`：默认模式。以30Hz连续执行原始 chunk 前 N 步；当前
+  `chunk_size=32`、`n_action_steps=16`，约0.533秒后使用最新观测重新推理。
+- `temporal_ensemble`：每个30Hz控制周期重新预测完整 chunk，并对同一绝对时刻的
+  重叠预测做指数加权。启用时应把 `receding_horizon.n_action_steps` 设为 `null`。
+- `stride_action`：仅作为显式降频消融。启用时应把
+  `receding_horizon.n_action_steps` 设为 `null`，并令 `env.ros_rate` 等于
+  `stride_action.target_hz`。
+
+默认配置：
+
+```yaml
+env:
+  ros_rate: 30
+
+deco:
+  action_dispatch:
+    mode: receding_horizon
+    receding_horizon:
+      n_action_steps: 16
+    temporal_ensemble:
+      coefficient: 0.1
+    stride_action:
+      target_hz: 10
+      queue_steps: null
+```
+
 ## 5. 推荐工作流
 
 ### 5.1 强脑灵巧手，无触觉
@@ -681,6 +711,6 @@ inference:
 - 不要在 `tactile_left_max/right_max` 仍为 `null` 或没有量纲确认时开启 `use_tactile=true`。
 - 不要只拷贝 `epochbest/` 做部署；完整部署资产是整个 `run_<timestamp>/` 目录。
 - 不要把部署 `deco.inference_mode` 当作脚本选择器；实际入口仍由运行的 `script.py`、`script_auto_test.py` 或 `server.py` 决定。
-- 不要把 `train_hz=30` 改成部署频率；部署 10Hz 由 `control_hz=10` 和 `action_stride=3` 处理。
+- 默认 `receding_horizon`/`temporal_ensemble` 要求部署 `env.ros_rate=30`；只有显式选择
+  `stride_action` 时，才允许按 `target_hz` 降频，并同步设置相同的 `env.ros_rate`。
 - 不要让 server/client 两侧都执行 preprocessor 或 postprocessor。
-

@@ -53,7 +53,7 @@ import threading
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.kuavo_service.client import PolicyClient
-from kuavo_deploy.utils.deco_obs_action import apply_deco_runtime_overrides, validate_deco_policy_compatibility
+from kuavo_deploy.utils.deco_obs_action import configure_deco_runtime, validate_deco_policy_compatibility
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 from lerobot.policies.factory import make_pre_post_processors
 
@@ -156,8 +156,8 @@ def main(config: KuavoConfig, env: gym.Env):
     policy = setup_policy(pretrained_path, policy_type, device, cfg)
     if policy_type.lower() == 'deco':
         validate_deco_policy_compatibility(policy.config, config.deco, config.env)
-        apply_deco_runtime_overrides(policy.config, config.deco)
-        log_model.info(f"DECO effective n_action_steps: {getattr(policy.config, 'n_action_steps', None)}")
+        dispatch_info = configure_deco_runtime(policy, config.deco, config.env)
+        log_model.info(f"DECO action dispatch: {dispatch_info}")
     # preprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_preprocessor.json")
     # postprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_postprocessor.json")
     preprocessor, postprocessor = make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))

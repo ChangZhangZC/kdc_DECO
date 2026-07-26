@@ -148,15 +148,11 @@ policy:
   use_letterbox: true
   letterbox_fill_rgb: 0.5019607843 # raw RGB 灰色 padding 128/255
 
-  # 30Hz 数据语义动作，部署侧以 10Hz 消费队列。
+  # checkpoint 保存 30Hz 数据语义；默认 Receding Horizon 连续执行原始 chunk。
   dataset_hz: 30
-  control_hz: 10
-  action_stride: 3
-  # 每次 DECO 推理后，实际放入执行队列的 10Hz action 数量。
-  # null 表示默认行为：完整消费按 action_stride 降频后的 action chunk。
-  # 例如 chunk_size=32、action_stride=3 时，完整队列为 11 个 10Hz action；
-  # n_action_steps=4 表示只执行前 4 个 10Hz action，约 0.4s 后重新推理。
-  n_action_steps: null
+  # 连续执行 action[0:16]，即约 0.533s 后使用最新观测重新推理。
+  # null 表示完整消费原始 32-step chunk；正式部署可由 deploy action_dispatch 覆盖。
+  n_action_steps: 16
 
   # NormalizationMode 可选值：
   # - MEAN_STD: 使用 dataset stats 做均值方差归一化，适合 RGB/state/action。

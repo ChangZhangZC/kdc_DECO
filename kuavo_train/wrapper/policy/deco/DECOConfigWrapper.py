@@ -85,10 +85,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     use_letterbox: bool = True
     letterbox_fill_rgb: float = 128.0 / 255.0
     dataset_hz: int = 30
-    control_hz: int = 10
-    action_stride: int = 3
-    # 推理侧执行队列长度限制；None 表示完整消费 strided chunk，保持旧 checkpoint 行为。
-    n_action_steps: int | None = None
+    # Receding Horizon 连续执行原始 chunk 的前 N 步；None 表示完整消费 chunk。
+    n_action_steps: int | None = 16
 
     # Normalizer 只负责 LeRobot 统计归一化；tactile 在这里显式保持 IDENTITY。
     normalization_mapping: dict[str, NormalizationMode] = field(
@@ -224,22 +222,19 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
                 )
 
     def _validate_frequency(self) -> None:
-        if self.dataset_hz <= 0 or self.control_hz <= 0:
-            raise ValueError("dataset_hz and control_hz must be positive.")
-        if self.dataset_hz % self.control_hz != 0:
-            raise ValueError("dataset_hz must be divisible by control_hz for deterministic action_stride.")
-        expected_stride = self.dataset_hz // self.control_hz
-        if self.action_stride != expected_stride:
-            raise ValueError(f"action_stride must be {expected_stride} for dataset_hz/control_hz.")
-        max_strided_actions = (self.chunk_size + self.action_stride - 1) // self.action_stride
+        if isinstance(self.dataset_hz, bool) or not isinstance(self.dataset_hz, int) or self.dataset_hz <= 0:
+            raise ValueError("dataset_hz must be a positive integer.")
         if self.n_action_steps is not None:
-            if self.n_action_steps <= 0:
-                raise ValueError("n_action_steps must be positive or null.")
-            if self.n_action_steps > max_strided_actions:
+            if (
+                isinstance(self.n_action_steps, bool)
+                or not isinstance(self.n_action_steps, int)
+                or self.n_action_steps <= 0
+            ):
+                raise ValueError("n_action_steps must be a positive integer or null.")
+            if self.n_action_steps > self.chunk_size:
                 raise ValueError(
-                    "n_action_steps cannot exceed the number of strided actions "
-                    f"({max_strided_actions}) for chunk_size={self.chunk_size} "
-                    f"and action_stride={self.action_stride}."
+                    "n_action_steps cannot exceed the original DECO chunk_size "
+                    f"({self.chunk_size})."
                 )
 
     def _select_model_input_features(self) -> None:

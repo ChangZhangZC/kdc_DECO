@@ -63,6 +63,51 @@
   - 确认 rosbag 转换脚本及数据转换配置相对分支起点保持零差异。
   - 本次未运行 Python、测试、训练、ROS、MuJoCo、部署程序、pip、conda 或任何环境变更命令。
 
+### 将 action-state 三模式动作后端移植到 3View RGB
+
+- **任务**：根据用户确认，将 `deco/fix/action-state` 的动作分发后端选择性移植到 `deco/feature/3view-rgb`，默认实现 `chunk_size=32` 连续执行原始 action 前16步，而不是原来的 `action_stride=3`。
+- **合并边界**：
+  - 未直接 merge/cherry-pick整个 action-state 分支，因为该分支基于旧 RGB-D 视觉前端，直接合并会覆盖当前固定三视角 RGB 架构。
+  - 只移植动作 dispatcher、三模式配置、部署接入与对应静态测试；未带回 depth、RGB-D fusion 或 early cross-attention。
+  - `DecoTimingRecorder` 属于额外部署诊断工具，本次不纳入动作分发核心范围。
+- **新增文件 1**：`kuavo_train/wrapper/policy/deco/action_dispatch.py`
+  - 新增统一 `ActionDispatcher` 接口和三种互斥实现：Receding Horizon、Temporal Ensembling、Stride Action。
+  - Receding Horizon 连续消费原始 chunk 的前 N 步；默认 N=16，输出索引 `0..15`，第17次调用以最新 observation 重新推理。
+  - Temporal Ensembling 每个控制周期预测新 chunk，并对重叠绝对时刻做指数加权。
+  - Stride Action 只作为显式旧行为消融模式，按 `dataset_hz/target_hz` 计算 stride。
+  - dispatcher 记录 `mode/chunk_id/action_index/queue_remaining/model_inference/inference_time_ns`，不修改 action 数值。
+- **修改文件 2**：`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 删除 wrapper 内部硬编码的 `action_chunk[0, ::action_stride]` 与 deque。
+  - `select_action()` 统一委托当前 dispatcher；`reset()` 清空 dispatcher 状态。
+  - 新增 `configure_action_dispatch()` 和 `get_dispatch_info()`，使实机、仿真与 server 使用同一动作后端。
+- **修改文件 3**：`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`、`configs/policy/deco_config.yaml`
+  - 删除活动配置中的 `control_hz` 和 `action_stride`。
+  - 保留 `dataset_hz=30`，将 `n_action_steps` 默认值设为16，并校验其不能超过 `chunk_size`。
+  - 训练 forward、Flow Matching loss、action chunk shape 与模型权重均未改变。
+- **修改文件 4**：`kuavo_deploy/config.py`、`configs/deploy/kuavo_deco_env.yaml`
+  - 新增 `ConfigActionDispatch` 及 Receding Horizon、Temporal Ensembling、Stride Action 三个子配置。
+  - 默认部署配置为 `mode=receding_horizon`、`n_action_steps=16`、`env.ros_rate=30`。
+  - Receding Horizon/Temporal Ensembling 强制环境控制频率等于 checkpoint `dataset_hz`；Stride Action 强制环境频率等于显式 `target_hz`。
+  - 三种模式参数互斥，非法模式、非正参数、超过 chunk 或频率不一致立即报错。
+  - 同步移植 action-state 的 `inf_step` runtime override：`null` 保持 checkpoint 值，正整数同时更新 policy config 与模型真实 `inference_step`。
+- **修改文件 5**：`kuavo_deploy/utils/deco_obs_action.py`
+  - 用 `configure_deco_runtime()` 替换旧 flat `n_action_steps` override。
+  - 在修改 policy 状态前完成 checkpoint chunk/frequency 与部署配置校验。
+  - 保留当前 3View RGB checkpoint 三个 camera key 与环境 observation map 的兼容性检查。
+- **修改文件 6**：`kuavo_deploy/src/eval/real_single_test.py`、`kuavo_deploy/src/eval/sim_auto_test.py`、`kuavo_deploy/kuavo_service/server.py`
+  - 实机、仿真和 server 统一调用新的动作分发配置函数。
+  - server/client 模式下 dispatcher 队列与重新推理状态保留在 server policy 侧，client 继续负责观测发送与 action 接收。
+- **新增文件 7**：`tests/test_deco_action_dispatch.py`、`tests/test_deco_deploy_action_dispatch_config.py`
+  - 静态覆盖16步连续输出、第17步重新推理、完整 chunk、reset、Temporal Ensembling、显式 Stride Action、非法模式、频率不一致及越界配置。
+- **新增文件 8**：`docs/plans/2026-07-26-3view-rgb-action-dispatch.md`
+  - 记录本次动作后端移植的文件边界、时间语义和外部运行验收待办。
+- **修改文件 9**：`README_DECO.md`
+  - 将当前部署频率说明从隐式10Hz `action_stride=3` 更新为默认30Hz Receding Horizon。
+  - 明确只有显式选择 Stride Action 时才允许按 `target_hz` 降频。
+- **No-Runtime 边界**：
+  - 本次仅进行静态代码修改与文本检查，不运行 Python、pytest、训练、ROS、MuJoCo、部署程序或任何环境变更命令。
+  - 外部允许运行环境仍需验证实际30Hz控制周期、重规划阻塞、action jitter、三种末端执行器与 server/client 行为。
+
 ## 2026-06-05
 
 ### 创建本地 Git 版本标签 v2.0

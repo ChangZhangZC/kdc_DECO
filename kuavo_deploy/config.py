@@ -246,6 +246,47 @@ class ConfigInference:
 
 
 @dataclass
+class ConfigRecedingHorizon:
+    """连续消费原始 chunk 前 N 步；None 表示完整 chunk。"""
+
+    n_action_steps: Optional[int] = 16
+
+
+@dataclass
+class ConfigTemporalEnsemble:
+    """原生在线 Temporal Ensembling 的指数衰减系数。"""
+
+    coefficient: float = 0.1
+
+
+@dataclass
+class ConfigStrideAction:
+    """显式降频实验参数；默认部署不会自动启用该策略。"""
+
+    target_hz: int = 10
+    queue_steps: Optional[int] = None
+
+
+@dataclass
+class ConfigActionDispatch:
+    """DECO 三种互斥动作分发策略的部署接口。"""
+
+    mode: str = "receding_horizon"
+    receding_horizon: ConfigRecedingHorizon = field(default_factory=ConfigRecedingHorizon)
+    temporal_ensemble: ConfigTemporalEnsemble = field(default_factory=ConfigTemporalEnsemble)
+    stride_action: ConfigStrideAction = field(default_factory=ConfigStrideAction)
+
+    def __post_init__(self) -> None:
+        # YAML loader 和 asdict() 会把嵌套 dataclass 变成 dict；在配置边界恢复强类型。
+        if isinstance(self.receding_horizon, dict):
+            self.receding_horizon = ConfigRecedingHorizon(**self.receding_horizon)
+        if isinstance(self.temporal_ensemble, dict):
+            self.temporal_ensemble = ConfigTemporalEnsemble(**self.temporal_ensemble)
+        if isinstance(self.stride_action, dict):
+            self.stride_action = ConfigStrideAction(**self.stride_action)
+
+
+@dataclass
 class ConfigDeco:
     """DECO 部署专用配置。
 
@@ -254,11 +295,109 @@ class ConfigDeco:
     """
 
     inference_mode: str = "qiangnao_no_tactile"
+    # None 保持 checkpoint 保存的 Flow Matching 推理步数；正整数仅覆盖在线 denoising 循环。
+    inf_step: Optional[int] = None
     runtime_mode: str = "local_real"
     head_state_source: str = "live_joint_q"
-    # 部署期 runtime override：None 表示使用 checkpoint 中保存的 policy.n_action_steps。
-    # 正整数只改变 select_action() 的执行队列截断，不改变模型结构或权重。
-    n_action_steps: Optional[int] = None
+    action_dispatch: ConfigActionDispatch = field(default_factory=ConfigActionDispatch)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.action_dispatch, dict):
+            self.action_dispatch = ConfigActionDispatch(**self.action_dispatch)
+
+    def validate_action_dispatch_structure(self) -> None:
+        """校验三种 dispatcher 的互斥配置，不依赖 checkpoint 运行参数。"""
+
+        if self.inf_step is not None and (
+            isinstance(self.inf_step, bool)
+            or not isinstance(self.inf_step, int)
+            or self.inf_step <= 0
+        ):
+            raise ValueError("deco.inf_step must be a positive integer or null.")
+
+        dispatch = self.action_dispatch
+        if not isinstance(dispatch, ConfigActionDispatch):
+            raise ValueError("deco.action_dispatch must be a mapping/object.")
+        if not isinstance(dispatch.receding_horizon, ConfigRecedingHorizon):
+            raise ValueError("deco.action_dispatch.receding_horizon must be a mapping/object.")
+        if not isinstance(dispatch.temporal_ensemble, ConfigTemporalEnsemble):
+            raise ValueError("deco.action_dispatch.temporal_ensemble must be a mapping/object.")
+        if not isinstance(dispatch.stride_action, ConfigStrideAction):
+            raise ValueError("deco.action_dispatch.stride_action must be a mapping/object.")
+
+        supported_modes = {"receding_horizon", "temporal_ensemble", "stride_action"}
+        if dispatch.mode not in supported_modes:
+            raise ValueError(
+                f"deco.action_dispatch.mode must be one of {sorted(supported_modes)}, "
+                f"got {dispatch.mode!r}."
+            )
+
+        n_action_steps = dispatch.receding_horizon.n_action_steps
+        if n_action_steps is not None:
+            if isinstance(n_action_steps, bool) or not isinstance(n_action_steps, int) or n_action_steps <= 0:
+                raise ValueError("deco.action_dispatch.receding_horizon.n_action_steps must be positive or null.")
+            if dispatch.mode != "receding_horizon":
+                raise ValueError(
+                    "deco.action_dispatch.receding_horizon.n_action_steps must be null "
+                    "when another mode is active."
+                )
+
+        coefficient = dispatch.temporal_ensemble.coefficient
+        if isinstance(coefficient, bool) or not isinstance(coefficient, (int, float)) or coefficient <= 0:
+            raise ValueError("deco.action_dispatch.temporal_ensemble.coefficient must be positive.")
+
+        target_hz = dispatch.stride_action.target_hz
+        if isinstance(target_hz, bool) or not isinstance(target_hz, int) or target_hz <= 0:
+            raise ValueError("deco.action_dispatch.stride_action.target_hz must be a positive integer.")
+        queue_steps = dispatch.stride_action.queue_steps
+        if queue_steps is not None:
+            if isinstance(queue_steps, bool) or not isinstance(queue_steps, int) or queue_steps <= 0:
+                raise ValueError("deco.action_dispatch.stride_action.queue_steps must be positive or null.")
+            if dispatch.mode != "stride_action":
+                raise ValueError(
+                    "deco.action_dispatch.stride_action.queue_steps must be null "
+                    "when another mode is active."
+                )
+
+    def validate_action_dispatch_timing(self, dataset_hz: int, chunk_size: int, env: ConfigEnv) -> None:
+        """checkpoint 加载后校验数据频率、控制频率与 chunk 边界。"""
+
+        self.validate_action_dispatch_structure()
+        if dataset_hz <= 0 or chunk_size <= 0:
+            raise ValueError("DECO checkpoint dataset_hz and chunk_size must be positive.")
+
+        dispatch = self.action_dispatch
+        if dispatch.mode in {"receding_horizon", "temporal_ensemble"}:
+            if env.ros_rate != dataset_hz:
+                raise ValueError(
+                    f"{dispatch.mode} requires env.ros_rate == checkpoint dataset_hz "
+                    f"({dataset_hz}), got {env.ros_rate}."
+                )
+            n_action_steps = dispatch.receding_horizon.n_action_steps
+            if n_action_steps is not None and n_action_steps > chunk_size:
+                raise ValueError(
+                    "deco.action_dispatch.receding_horizon.n_action_steps cannot exceed "
+                    f"checkpoint chunk_size ({chunk_size})."
+                )
+            return
+
+        target_hz = dispatch.stride_action.target_hz
+        if dataset_hz % target_hz != 0:
+            raise ValueError(
+                "stride_action requires checkpoint dataset_hz to be divisible by target_hz, "
+                f"got dataset_hz={dataset_hz}, target_hz={target_hz}."
+            )
+        if env.ros_rate != target_hz:
+            raise ValueError(
+                f"stride_action requires env.ros_rate == target_hz ({target_hz}), got {env.ros_rate}."
+            )
+        max_actions = (chunk_size + dataset_hz // target_hz - 1) // (dataset_hz // target_hz)
+        queue_steps = dispatch.stride_action.queue_steps
+        if queue_steps is not None and queue_steps > max_actions:
+            raise ValueError(
+                "deco.action_dispatch.stride_action.queue_steps cannot exceed the number "
+                f"of strided actions ({max_actions})."
+            )
 
     def validate(self, env: ConfigEnv, inference: ConfigInference):
         deco_policy = inference.policy_type == "deco"
@@ -275,11 +414,7 @@ class ConfigDeco:
             raise ValueError("deco.runtime_mode must be 'local_real', 'local_sim', 'server', or 'dry_run'.")
         if self.head_state_source not in ["live_joint_q", "fixed_config"]:
             raise ValueError("deco.head_state_source must be 'live_joint_q' or 'fixed_config'.")
-        if self.n_action_steps is not None:
-            if isinstance(self.n_action_steps, bool) or not isinstance(self.n_action_steps, int):
-                raise ValueError("deco.n_action_steps must be a positive integer or null.")
-            if self.n_action_steps <= 0:
-                raise ValueError("deco.n_action_steps must be a positive integer or null.")
+        self.validate_action_dispatch_structure()
 
         if self.inference_mode in ["qiangnao_tactile", "qiangnao_no_tactile"]:
             if env.eef_type != "qiangnao" or env.state_layout != "deco_28d":
