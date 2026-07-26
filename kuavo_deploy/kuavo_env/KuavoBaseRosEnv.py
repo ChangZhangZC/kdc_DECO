@@ -545,7 +545,18 @@ class KuavoBaseRosEnv(gym.Env):
         if self.frame_alignment:
             obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=1/self.ros_rate,ratio=self.ratio)
             if obs_from_buffer is None or not all(v is not None for v in obs_from_buffer.values()):
-                obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=float('inf'),ratio=self.ratio)
+                if is_deco_layout(self.state_layout):
+                    # 3View RGB 中腕部相机会随手臂快速运动。任何一路超出控制周期时，
+                    # 继续复用未对齐旧帧都会破坏视觉—动作对应关系，因此 DECO 显式失败。
+                    raise RuntimeError(
+                        "DECO 3View RGB observations are missing or not aligned within "
+                        f"{1 / self.ros_rate:.3f}s; refusing stale-frame fallback."
+                    )
+                obs_from_buffer = self.obs_buffer.get_aligned_obs(
+                    reference_keys=None,
+                    max_dt=float('inf'),
+                    ratio=self.ratio,
+                )
         else:
             obs_from_buffer = self.obs_buffer.get_latest_obs()
         

@@ -7,6 +7,40 @@
 
 ---
 
+## 当前分支覆盖方案：3View RGB 前端
+
+> **记录日期**：2026-07-26
+> **适用分支**：`deco/feature/3view-rgb`
+> **状态**：代码静态实现已完成；训练、仿真和实机运行验收须在允许执行代码的环境中完成。
+> **覆盖关系**：本节是当前分支的有效架构定义；下方 RGB-D、depth 与 early cross-attention 章节仅作为历史方案和实验记录保留。
+
+### 冻结架构
+
+```text
+固定三路 RGB（head、left wrist、right wrist）
+  -> 同步 letterbox 到 256x256
+  -> [B, 3, 3, 256, 256]
+  -> 沿视角维合并为 [B*3, 3, 256, 256]
+  -> 共享 ResNet34 + img_head
+  -> [B, 3, 64, 512]
+  -> 三个 camera embedding + 每个视角独立的 8x8 二维 RoPE
+  -> 按 [head][left wrist][right wrist] 拼接为 192 visual tokens
+  -> DECO MMAttention + Flow Matching action tokens
+```
+
+- [x] 固定 `rgb_keys` 为恰好三个有序入口，默认顺序为 head、left wrist、right wrist；不提供 N-view 或 head-only fallback。
+- [x] 三路 RGB 共用一套 ResNet34 与 `img_head`，通过三项 camera embedding 区分物理视角。
+- [x] 删除 depth 输入、depth backbone、depth normalization、RGB-D fusion 与前端 early cross-attention。
+- [x] 保留原生 DECO `MMAttention`、state、tactile、Flow Matching loss、action chunk 与 action dispatch。
+- [x] 训练 processor、policy wrapper、原生 DECO 推理入口、实机、仿真及 server/client 部署统一使用三个 key 的固定顺序。
+- [x] 任一路相机缺失、重复、shape 不一致、部署 topic 不可提供或帧同步失败时显式报错，不复制 head、不复用旧帧、不静默降级。
+- [x] 从头训练，默认关闭外部 checkpoint 初始化，不实现旧 RGB-D checkpoint 的 shape 兼容或参数迁移。
+- [x] 保持 `kuavo_data/CvtRosbag2Lerobot_DECO.py`、`configs/data/KuavoRosbag2Lerobot_deco.yaml` 与已有 LeRobot 数据不变；训练仅从数据集读取三路 RGB。
+- [x] 完成 `git diff --check`、禁止项文本检索、关键 tensor shape 与 key 顺序的逐文件静态审查。
+- [ ] 在允许运行代码的环境中验证三路 batch 构造、训练 forward/loss 与 checkpoint 保存加载。
+- [ ] 在仿真和实机分别验证左右腕物理对应、相机丢帧 fail-fast、10Hz action dispatch 与三种末端执行器 profile。
+- [ ] 对比原 `optimal-depth` 方案的 loss、成功率、推理延迟、显存占用与空抓比例。
+
 ## 0. 当前冻结的总体架构
 
 ### 0.1 一句话架构

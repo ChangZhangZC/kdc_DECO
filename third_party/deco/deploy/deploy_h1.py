@@ -87,6 +87,14 @@ def main(args):
         yaml_config = yaml.safe_load(open(args.yaml, 'r'))
         chunk_size = yaml_config['model']['chunk_size']
         model_name = yaml_config['model_name']
+        if model_name == "deco":
+            # 该历史 H1 脚本只提供单个头部拼接画面，无法构造 head/left-wrist/right-wrist
+            # 三个真实 RGB 视角。禁止复制或裁切头图伪造缺失相机；3View RGB 请使用
+            # kuavo_deploy 下已接入三相机校验的实机、仿真或 server/client 入口。
+            raise RuntimeError(
+                "third_party/deco/deploy/deploy_h1.py does not provide the three physical "
+                "RGB cameras required by DECO 3View RGB."
+            )
         temporal_ensembler = ACTTemporalEnsembler(args.temporal_ensembler_alpha, chunk_size)
         temporal_ensembler.reset()
         temporal_ensembler_flag = args.temporal_ensembler

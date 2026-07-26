@@ -19,7 +19,7 @@ hydra:  # Hydra config directory, for parameter checking only
 
 
 # =====================================================
-# env config: DECO RGB-D deployment configuration
+# env config: DECO 3View RGB deployment configuration
 # =====================================================
 env:
   env_name: Kuavo-Sim
@@ -43,16 +43,11 @@ env:
   only_arm: true
 
   image_size: &IMGSIZE [640, 480]
-  depth_range: &DEPTHRANGE [0, 1500]
   obs_key_map:
-    # DECO 默认只使用头部 RGB-D。depth topic 对齐当前数据规划中的 compressed_image 路线。
+    # 固定三视角顺序必须与 policy.rgb_keys 一致：head -> left wrist -> right wrist。
     head_cam_h: ["/cam_h/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
-    # depth_h 第 6 项为 depth_encoding，可选值：
-    # - compressed_image: 普通 CompressedImage 直解；当前默认。
-    # - compressedDepth_png: ROS compressedDepth，需要定位 PNG payload。
-    # - auto: 先尝试 compressed_image，再尝试 compressedDepth_png。
-    # depth_h: ["/cam_h/depth/image_raw/compressed", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
-    depth_h: ["/cam_h/depth/image_raw/compressedDepth", "CompressedImage", 30, *IMGSIZE, *DEPTHRANGE, "compressed_image"]
+    wrist_cam_l: ["/cam_l/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
+    wrist_cam_r: ["/cam_r/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
     joint_q: ["/sensors_data_raw", "sensorsData", 500]
     head_q: ["/sensors_data_raw", "sensorsData", 500]
     qiangnao: ["/dexhand/state", "JointState", 500]
@@ -63,7 +58,8 @@ env:
     tactile: ["/dexhand/touch_state", "dexhandTouchState", 500, 100.0]
 
   # DECO state 由 state_layout 对应 helper 直接拼接，不使用原 ACT/DP 的 arm_state_keys。
-  frame_alignment: false
+  # 三路移动视角必须在 10Hz 控制周期内完成时间对齐；DECO 模式不允许失败后回退旧帧。
+  frame_alignment: true
   ratio: 1.0
 
   # DECO 在线 observation/action space 使用 joint_q、gripper、head_q 三类 limits。

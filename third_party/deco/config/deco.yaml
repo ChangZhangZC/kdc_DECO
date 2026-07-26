@@ -12,7 +12,7 @@ model:
   obs_state: True
   use_task_condition: False
   num_tasks: 10
-  # use_tactile=false: 仅 RGB-D + state 主干。
+  # use_tactile=false: 仅固定三视角 RGB + state 主干。
   # use_tactile=true: 需要外层提供 tac1/tac2，并配置 tactile max。
   use_tactile: False
   # plugin=true 表示启用 DECO 自实现 PI_Adapter 触觉 adapter；不是外部 PEFT LoRA。
@@ -27,7 +27,6 @@ model:
   # - resnet34: Kuavo-DECO 默认容量。
   # - resnet18: 低显存/低延迟备选。
   vision_backbone: resnet34
-  depth_backbone: resnet34
 
 data:
   # Kuavo tactile max 用于 DECO-style tac / tactile_max 归一化。
@@ -39,5 +38,5 @@ data:
   tactile_right_max: null
 
 img:
-  # DECO 原生 256x256 letterbox 尺寸；RGB/depth 归一化由后续 Kuavo wrapper/preprocessor 负责。
+  # 三路 RGB 共用 256x256 letterbox 尺寸；归一化由 Kuavo wrapper/preprocessor 负责。
   img_size: [256, 256]

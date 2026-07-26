@@ -19,9 +19,12 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
 GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
 SUPPORTED_END_EFFECTOR_PROFILES = {QIANGNAO_TACTILE_PROFILE, GRIPPER_NO_TACTILE_PROFILE}
-CROSS_ATTENTION_FUSION = "cross_attention"
-DIRECT_TOKEN_FUSION = "direct_tokens"
-SUPPORTED_VISUAL_FUSION_MODES = {CROSS_ATTENTION_FUSION, DIRECT_TOKEN_FUSION}
+FIXED_RGB_VIEW_COUNT = 3
+DEFAULT_RGB_KEYS = (
+    "observation.images.head_cam_h",
+    "observation.images.wrist_cam_l",
+    "observation.images.wrist_cam_r",
+)
 
 
 def _is_positive_number(value: float | int | None) -> bool:
@@ -33,7 +36,8 @@ def _is_positive_number(value: float | int | None) -> bool:
 class CustomDECOConfigWrapper(PreTrainedConfig):
     """Kuavo-DECO 的 LeRobot policy 配置。
 
-    该配置只保留当前 RGB-D + state + 可选 tactile adapter 路线需要的字段。
+    该配置只保留固定三视角 RGB + state + 可选 tactile adapter 路线需要的字段。
+    三个 RGB key 的顺序固定表示 head、left wrist、right wrist；模型不读取 depth。
     `.safetensors` 加载、两阶段冻结和 DECO 原生 `.pth` 兼容均由 wrapper 处理，
     不再塞回 `third_party/deco` 模型主体。
     """
@@ -55,9 +59,6 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     dim: int = 512
     rope_axes_dim: tuple[int, int] = (256, 256)
     vision_backbone: str = "resnet34"
-    depth_backbone: str = "resnet34"
-    # 控制 ResNet 后、RoPE/stream embedding 前的 RGB-D token 融合方式。
-    visual_fusion_mode: str = CROSS_ATTENTION_FUSION
 
     # 两阶段训练与 tactile adapter。
     training_stage: str = "visual_main"
@@ -71,19 +72,18 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
 
     # 权重入口语义：
     # base/adapter 面向 LeRobot `.safetensors` policy 目录，deco_init_pth_path 仅兼容原生 `.pth`。
-    load_external_init_weights: bool = True
+    load_external_init_weights: bool = False
     base_policy_path: str | None = None
     adapter_model_path: str | None = None
     deco_init_pth_path: str | None = None
 
     # 训练/部署预处理字段。
-    rgb_key: str = "observation.images.head_cam_h"
-    depth_key: str = "observation.depth_h"
+    # key 名称允许按数据集实际 schema 修改，但三个位置的物理语义和顺序不可改变。
+    rgb_keys: tuple[str, str, str] = DEFAULT_RGB_KEYS
     tactile_key: str = "observation.tactile"
     resize_shape: tuple[int, int] = (256, 256)
     use_letterbox: bool = True
     letterbox_fill_rgb: float = 128.0 / 255.0
-    letterbox_fill_depth: float = 0.0
     dataset_hz: int = 30
     control_hz: int = 10
     action_stride: int = 3
@@ -94,7 +94,6 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
             "VISUAL": NormalizationMode.MEAN_STD,
-            "DEPTH": NormalizationMode.MIN_MAX,
             "STATE": NormalizationMode.MEAN_STD,
             "ACTION": NormalizationMode.MEAN_STD,
             "TACTILE": NormalizationMode.IDENTITY,
@@ -119,9 +118,10 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self._merge_default_normalization_mapping()
         self._set_and_validate_temporal_window()
         self._validate_end_effector_profile()
-        self._validate_visual_fusion_mode()
+        self._validate_rgb_keys()
         self._validate_stage_and_tactile()
         self._validate_frequency()
+        self._select_model_input_features()
 
     def _convert_omegaconf_fields(self) -> None:
         for f in fields(self):
@@ -131,6 +131,7 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self.resize_shape = tuple(self.resize_shape)
         self.rope_axes_dim = tuple(self.rope_axes_dim)
         self.optimizer_betas = tuple(self.optimizer_betas)
+        self.rgb_keys = tuple(self.rgb_keys)
 
     def _merge_custom_fields(self) -> None:
         if not isinstance(self.custom, dict):
@@ -146,7 +147,6 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     def _merge_default_normalization_mapping(self) -> None:
         default_map = {
             "VISUAL": NormalizationMode.MEAN_STD,
-            "DEPTH": NormalizationMode.MIN_MAX,
             "STATE": NormalizationMode.MEAN_STD,
             "ACTION": NormalizationMode.MEAN_STD,
             "TACTILE": NormalizationMode.IDENTITY,
@@ -187,12 +187,17 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
             if self.training_stage == "tactile_adapter":
                 raise ValueError("gripper_no_tactile cannot enter tactile_adapter training_stage.")
 
-    def _validate_visual_fusion_mode(self) -> None:
-        if self.visual_fusion_mode not in SUPPORTED_VISUAL_FUSION_MODES:
+    def _validate_rgb_keys(self) -> None:
+        if len(self.rgb_keys) != FIXED_RGB_VIEW_COUNT:
             raise ValueError(
-                "visual_fusion_mode must be 'cross_attention' or 'direct_tokens'. "
-                f"got {self.visual_fusion_mode!r}."
+                f"3View RGB requires exactly {FIXED_RGB_VIEW_COUNT} rgb_keys in "
+                "head/left-wrist/right-wrist order, "
+                f"got {len(self.rgb_keys)}: {self.rgb_keys!r}."
             )
+        if any(not isinstance(key, str) or not key.strip() for key in self.rgb_keys):
+            raise ValueError(f"rgb_keys must contain three non-empty strings, got {self.rgb_keys!r}.")
+        if len(set(self.rgb_keys)) != FIXED_RGB_VIEW_COUNT:
+            raise ValueError(f"rgb_keys must be unique, got {self.rgb_keys!r}.")
 
     def _validate_stage_and_tactile(self) -> None:
         if self.training_stage not in {"visual_main", "tactile_adapter"}:
@@ -237,6 +242,25 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
                     f"and action_stride={self.action_stride}."
                 )
 
+    def _select_model_input_features(self) -> None:
+        """把数据集 feature 收窄为 DECO 真正消费的三路 RGB、state 与可选 tactile。
+
+        已有 LeRobot 数据集可以继续保留 depth 或其他相机字段，但它们不会进入 DECO
+        processor/normalizer，也不会被序列化为 checkpoint 所需输入。
+        """
+
+        if self.end_effector_profile == GRIPPER_NO_TACTILE_PROFILE and self.tactile_feature is not None:
+            raise ValueError("gripper_no_tactile dataset must not include observation.tactile.")
+
+        selected_keys = {*self.rgb_keys, OBS_STATE}
+        if self.use_tactile:
+            selected_keys.add(self.tactile_key)
+        self.input_features = {
+            key: feature
+            for key, feature in self.input_features.items()
+            if key in selected_keys
+        }
+
     @property
     def image_features(self) -> dict[str, PolicyFeature]:
         return {
@@ -244,10 +268,6 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
             for key, ft in self.input_features.items()
             if ft.type in {FeatureType.VISUAL, getattr(FeatureType, "RGB", FeatureType.VISUAL)}
         }
-
-    @property
-    def depth_features(self) -> dict[str, PolicyFeature]:
-        return {key: ft for key, ft in self.input_features.items() if ft.type is FeatureType.DEPTH}
 
     @property
     def tactile_feature(self) -> PolicyFeature | None:
@@ -258,30 +278,30 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         return None
 
     def validate_features(self) -> None:
-        if self.rgb_key not in self.input_features:
-            raise ValueError(f"Missing RGB input feature: {self.rgb_key}")
-        if self.depth_key not in self.input_features:
-            raise ValueError(f"Missing depth input feature: {self.depth_key}")
+        for key in self.rgb_keys:
+            if key not in self.input_features:
+                raise ValueError(f"Missing 3View RGB input feature: {key}")
         if OBS_STATE not in self.input_features:
             raise ValueError(f"Missing state input feature: {OBS_STATE}")
         if ACTION not in self.output_features:
             raise ValueError(f"Missing action output feature: {ACTION}")
 
-        rgb_shape = tuple(self.input_features[self.rgb_key].shape)
-        depth_shape = tuple(self.input_features[self.depth_key].shape)
+        rgb_shapes = [tuple(self.input_features[key].shape) for key in self.rgb_keys]
         state_shape = tuple(self.input_features[OBS_STATE].shape)
         action_shape = tuple(self.output_features[ACTION].shape)
-        if len(rgb_shape) != 3 or rgb_shape[0] != 3:
-            raise ValueError(f"{self.rgb_key} must be RGB image shape (3,H,W), got {rgb_shape}")
-        if len(depth_shape) != 3 or depth_shape[0] not in {1, 3}:
-            raise ValueError(f"{self.depth_key} must be depth image shape (1,H,W) or (3,H,W), got {depth_shape}")
+        for key, rgb_shape in zip(self.rgb_keys, rgb_shapes):
+            if len(rgb_shape) != 3 or rgb_shape[0] != 3:
+                raise ValueError(f"{key} must be RGB image shape (3,H,W), got {rgb_shape}")
+        if len({shape[-2:] for shape in rgb_shapes}) != 1:
+            raise ValueError(
+                "All 3View RGB features must share spatial shape, "
+                f"got {dict(zip(self.rgb_keys, rgb_shapes))}."
+            )
         if state_shape != (self.action_dim,):
             raise ValueError(f"observation.state must be ({self.action_dim},), got {state_shape}")
         if action_shape != (self.action_dim,):
             raise ValueError(f"action must be ({self.action_dim},), got {action_shape}")
 
-        if self.end_effector_profile == GRIPPER_NO_TACTILE_PROFILE and self.tactile_feature is not None:
-            raise ValueError("gripper_no_tactile dataset must not include observation.tactile.")
         if self.use_tactile:
             tactile = self.tactile_feature
             if tactile is None:

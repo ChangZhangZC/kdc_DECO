@@ -1,5 +1,68 @@
 # AI Execution Logs
 
+## 2026-07-26
+
+### 实现固定三视角 3View RGB 前端并完成分支更名
+
+- **任务**：将 `deco/feature/optimal-depth` 更名为 `deco/feature/3view-rgb`，以已有 LeRobot 数据集中的 head、left wrist、right wrist 三路 RGB 替代 RGB-D 前端；删除 depth 与 early cross-attention，同时覆盖训练、原生推理和 Kuavo 实机/仿真/server-client 部署路径。
+- **分支操作**：
+  - 将本地 `deco/feature/optimal-depth` 分支重命名并切换为 `deco/feature/3view-rgb`。
+  - 创建远端 `deco/feature/3view-rgb` 并设置为本地 upstream。
+  - 在新远端分支创建成功后删除远端旧名称 `deco/feature/optimal-depth`，避免旧名称与新实现并存。
+- **修改文件 1**：`configs/policy/deco_config.yaml`
+  - 将单路 `rgb_key` 改为固定顺序的三个 `rgb_keys`：head、left wrist、right wrist。
+  - 删除 depth backbone、depth key、depth letterbox fill、depth normalization、RGB-D fusion 与 early cross-attention 配置。
+  - 保持从头训练为默认行为，关闭外部 checkpoint 初始化。
+- **修改文件 2**：`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 新增固定三视角数量与默认 key 定义；校验三个 key 必须非空、互不重复且顺序完整。
+  - feature validation 要求三路输入均为 `[3,H,W]` RGB 且空间尺寸一致，任一路缺失或 shape 不一致立即报错。
+  - 将 policy 输入 feature 白名单收窄为三路 RGB、state 与按需启用的 tactile；已有数据集中的 depth 或其他相机不会进入 DECO processor/normalizer 或 checkpoint 输入 schema。
+  - 删除 depth/cross-attention 字段、派生属性及其校验；保留 state、action、tactile 和部署频率相关约束。
+- **修改文件 3**：`kuavo_train/wrapper/policy/deco/DECOProcessor.py`
+  - 将 processor 收窄为 `deco_3view_rgb_letterbox_processor`，只处理三路 RGB。
+  - 三路图像统一使用 bilinear letterbox，并序列化保存三个 key、resize、letterbox 开关和 RGB fill。
+- **修改文件 4**：`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`
+  - 训练与推理按配置顺序读取三路 RGB，并统一堆叠为 `[B,3,C,H,W]`。
+  - 增加运行前 shape、batch、通道和空间尺寸检查；不读取、不归一化、不传递数据集中可能存在的 depth。
+  - 保持 action queue、Flow Matching loss、state/tactile 输入及末端执行器 profile 逻辑不变。
+- **修改文件 4A**：`kuavo_train/train_policy.py`、`kuavo_train/train_policy_with_accelerate.py`
+  - 单卡与 Accelerate 训练入口在 DECO 模式下只把 `policy_cfg.rgb_keys` 交给 RGB augmentation，不再遍历数据集中未被模型使用的 depth 或额外相机。
+  - ACT、Diffusion 等其他 policy 继续沿用原有 `dataset.meta.camera_keys` 行为。
+- **修改文件 5**：`third_party/deco/models/deco/deco.py`
+  - 保留一套共享 `img_encoder` 与 `img_head`，将三路图像沿 batch 维合并编码，再恢复为 `[B,3,64,512]`。
+  - 用三个 camera embedding 区分 head、left wrist、right wrist；按三个等长相机 token 段分别应用同一套 8x8 二维 RoPE，再拼接为 192 visual tokens。
+  - 删除 depth encoder/head、RGB-depth fusion、early cross-attention 类及相关参数；保留 DECO 主干 `MMAttention`，让视觉与 action token 在主干内联合注意力。
+- **修改文件 6**：`third_party/deco/config/deco.yaml`、`third_party/deco/inference.py`
+  - 原生 DECO 配置删除 depth backbone。
+  - 原生推理预处理固定接收三张 RGB 图并产生 `[1,3,3,H,W]`，不再接收 depth。
+- **修改文件 7**：`configs/deploy/kuavo_deco_env.yaml`
+  - 部署 observation map 固定加入 head、left wrist、right wrist 三个 RGB topic。
+  - 删除 depth topic、depth 解码和深度范围配置；启用三路帧对齐并声明禁止旧帧 fallback。
+- **修改文件 8**：`kuavo_deploy/utils/deco_obs_action.py`
+  - 部署兼容性检查要求 checkpoint 恰好声明三个唯一 `rgb_keys`，并要求环境能够提供每个 key。
+  - 实机、仿真与 server/client 继续共用同一兼容性检查和 observation 组装路径。
+- **修改文件 9**：`kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py`
+  - 3View RGB 模式下帧同步失败立即抛出错误，不再以无限时间容差复用旧帧；其他 policy 保留原行为。
+- **修改文件 10**：`third_party/deco/deploy/deploy_h1.py`
+  - 对只提供单个头部画面并切半的旧 H1 部署入口增加显式 fail-fast，防止伪造三个物理相机输入；Kuavo 3View RGB 部署统一走 `kuavo_deploy`。
+- **修改文件 11**：`kuavo_data/validate_deco_lerobot_dataset.py`
+  - 将已有 LeRobot 数据集预检从单路 RGB + depth 改为固定三路 `expected_rgb_keys`，默认顺序与 policy 一致。
+  - metadata、视频文件布局和首帧 probe 均遍历 head、left wrist、right wrist；校验 key 数量必须为三、非空且互不重复。
+  - 该文件只读取并验证已有数据，不修改 rosbag 转换逻辑或 LeRobot 数据内容。
+- **修改文件 12**：`PLANS.md`
+  - 新增当前分支覆盖方案，记录固定三视角架构、已完成静态实现与外部运行环境中的后续验收项。
+  - 下方旧 RGB-D/depth/early cross-attention 内容作为历史方案保留，不再代表当前分支运行架构。
+- **明确未修改范围**：
+  - 未修改 `kuavo_data/CvtRosbag2Lerobot_DECO.py`。
+  - 未修改 `configs/data/KuavoRosbag2Lerobot_deco.yaml`。
+  - 未修改任何已有 LeRobot 数据文件，也未增加 rosbag 转换逻辑。
+- **静态验证方式**：
+  - 按仓库 No-Runtime 规约执行 `git diff --check`、文本检索、配置/key 顺序核对及关键 tensor shape 的逐文件静态审查。
+  - 确认活动训练、模型和部署路径不再引用 `depth_key/depth_keys`、depth backbone、RGB-D fusion 或 early cross-attention。
+  - 确认三路输入、共享 backbone、三个 camera embedding、三个 RoPE 分段和 192-token 拼接关系一致。
+  - 确认 rosbag 转换脚本及数据转换配置相对分支起点保持零差异。
+  - 本次未运行 Python、测试、训练、ROS、MuJoCo、部署程序、pip、conda 或任何环境变更命令。
+
 ## 2026-06-05
 
 ### 创建本地 Git 版本标签 v2.0

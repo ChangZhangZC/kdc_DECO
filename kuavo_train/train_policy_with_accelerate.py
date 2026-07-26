@@ -288,7 +288,16 @@ def main(cfg: DictConfig):
     )
     accelerator.wait_for_everyone()
     # Training loop
-    aug_step = insert_before_normalizer(preprocessor, AugmentationProcessorStep(image_transforms, dataset.meta.camera_keys))  # just for training
+    # DECO 只增强 checkpoint 明确声明的三路 RGB；数据集中保留的 depth/其他相机不进入视觉前端。
+    augmentation_camera_keys = (
+        list(policy_cfg.rgb_keys)
+        if isinstance(policy_cfg, CustomDECOConfigWrapper)
+        else dataset.meta.camera_keys
+    )
+    aug_step = insert_before_normalizer(
+        preprocessor,
+        AugmentationProcessorStep(image_transforms, augmentation_camera_keys),
+    )  # just for training
     
     if hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False

@@ -52,8 +52,6 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             dim=config.dim,
             rope_axes_dim=config.rope_axes_dim,
             vision_backbone=config.vision_backbone,
-            depth_backbone=config.depth_backbone,
-            visual_fusion_mode=config.visual_fusion_mode,
         )
         self._action_queue: deque[Tensor] = deque()
         self._weight_load_reports: list[dict[str, int | str]] = []
@@ -249,11 +247,10 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
         self._action_queue.clear()
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
-        rgb, depth, state, action, task_idx = self._unpack_batch(batch, require_action=True)
+        rgb, state, action, task_idx = self._unpack_batch(batch, require_action=True)
         tac1, tac2 = self._prepare_tactile(batch)
         out, noise = self.model(
             rgb,
-            depth,
             obs=state,
             act=action,
             task_idx=task_idx,
@@ -266,11 +263,10 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
-        rgb, depth, state, _, task_idx = self._unpack_batch(batch, require_action=False)
+        rgb, state, _, task_idx = self._unpack_batch(batch, require_action=False)
         tac1, tac2 = self._prepare_tactile(batch)
         return self.model(
             rgb,
-            depth,
             obs=state,
             act=None,
             task_idx=task_idx,
@@ -296,9 +292,8 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
         batch: dict[str, Tensor],
         *,
         require_action: bool,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor | None, Tensor | None]:
-        rgb = self._ensure_batched_tensor(batch[self.config.rgb_key], image=True)
-        depth = self._ensure_batched_tensor(batch[self.config.depth_key], image=True)
+    ) -> tuple[Tensor, Tensor, Tensor | None, Tensor | None]:
+        rgb = self._stack_rgb_views(batch)
         state = self._ensure_batched_tensor(batch[OBS_STATE], image=False)
 
         action = None
@@ -314,7 +309,37 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
                 task_idx = torch.zeros(rgb.shape[0], dtype=torch.long, device=rgb.device)
             elif task_idx.ndim == 0:
                 task_idx = task_idx.unsqueeze(0)
-        return rgb, depth, state, action, task_idx
+        return rgb, state, action, task_idx
+
+    def _stack_rgb_views(self, batch: dict[str, Tensor]) -> Tensor:
+        """按 head、left wrist、right wrist 固定顺序组装三路 RGB。
+
+        输出 shape 为 [B, 3, C, H, W]。这里严格沿用配置顺序，不根据 key
+        名称重新排序，确保训练、仿真和实机共享同一 camera identity。
+        """
+
+        views: list[Tensor] = []
+        batch_size: int | None = None
+        spatial_shape: tuple[int, int] | None = None
+        for key in self.config.rgb_keys:
+            if key not in batch:
+                raise ValueError(f"Missing 3View RGB input feature: {key}")
+            tensor = self._ensure_batched_tensor(batch[key], image=True)
+            if tensor.ndim != 4 or tensor.shape[1] != 3:
+                raise ValueError(
+                    f"{key} must be RGB tensor [B,3,H,W] or [3,H,W], "
+                    f"got {tuple(tensor.shape)}"
+                )
+            if batch_size is None:
+                batch_size = tensor.shape[0]
+                spatial_shape = tuple(tensor.shape[-2:])
+            elif tensor.shape[0] != batch_size or tuple(tensor.shape[-2:]) != spatial_shape:
+                raise ValueError(
+                    "All 3View RGB inputs must share batch/spatial shape; "
+                    f"{key} got {tuple(tensor.shape)}."
+                )
+            views.append(tensor)
+        return torch.stack(views, dim=1)
 
     def _ensure_batched_tensor(self, value: Tensor, *, image: bool) -> Tensor:
         tensor = value

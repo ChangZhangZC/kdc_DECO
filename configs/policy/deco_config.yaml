@@ -33,7 +33,7 @@ training:
   # 学习率调度由 policy.scheduler_name / policy.scheduler_warmup_steps 统一控制；
   # 训练层不再重复放 scheduler_*，避免同一含义出现两份配置。
 
-  # RGB 随机增强只作用于 RGB；DECOProcessor 会先对 RGB/depth 做同步 letterbox。
+  # 三路 RGB 随机增强只作用于视觉输入；DECOProcessor 会先分别做确定性 letterbox。
   # tfs.<name>.type 可填写 kuavo_train/utils/transforms.py 中注册的图像增强类型；
   # 当前默认集合含义：
   # - Identity: 保留原图。
@@ -107,7 +107,7 @@ policy:
   _target_: kuavo_train.wrapper.policy.deco.DECOConfigWrapper.CustomDECOConfigWrapper
 
   # 可选值：
-  # - visual_main: 第一阶段 RGB-D + state 主干训练；默认关闭 tactile。
+  # - visual_main: 第一阶段 3View RGB + state 主干训练；默认关闭 tactile。
   # - tactile_adapter: 第二阶段触觉 adapter 微调；仅 qiangnao_tactile 可用，必须加载第一阶段权重。
   training_stage: visual_main
   # use_tactile=true 表示模型 forward 读取 observation.tactile；只允许 qiangnao_tactile。
@@ -136,20 +136,17 @@ policy:
   # - resnet34: 默认容量，更贴近当前 Kuavo-DECO 方案。
   # - resnet18: 低显存/低延迟备选，通常用于 ablation 或资源受限场景。
   vision_backbone: resnet34
-  depth_backbone: resnet34
-  # RGB-D 视觉融合模式：
-  # - cross_attention: 当前默认路线，RGB/depth ResNet token 先做双向 cross attention，再以两路 token 入 DECO 主干。
-  # - direct_tokens: v2.0 空抓问题消融路线，RGB/depth ResNet token 跳过 early cross attention，直接加 stream embedding / RoPE 后入 DECO 主干。
-  visual_fusion_mode: direct_tokens
 
-  # DECO 专用 RGB-D preprocessor：raw RGB-D -> letterbox -> RGB augmentation -> normalizer。
-  rgb_key: observation.images.head_cam_h
-  depth_key: observation.depth_h
+  # 固定三视角 RGB 顺序：head -> left wrist -> right wrist。
+  # key 名称可按已有 LeRobot 数据集 schema 修改，但数量、顺序和物理语义必须保持不变。
+  rgb_keys:
+    - observation.images.head_cam_h
+    - observation.images.wrist_cam_l
+    - observation.images.wrist_cam_r
   tactile_key: observation.tactile
   resize_shape: [256, 256]
   use_letterbox: true
   letterbox_fill_rgb: 0.5019607843 # raw RGB 灰色 padding 128/255
-  letterbox_fill_depth: 0.0
 
   # 30Hz 数据语义动作，部署侧以 10Hz 消费队列。
   dataset_hz: 30
@@ -163,15 +160,11 @@ policy:
 
   # NormalizationMode 可选值：
   # - MEAN_STD: 使用 dataset stats 做均值方差归一化，适合 RGB/state/action。
-  # - MIN_MAX: 使用 dataset stats 做 min/max 归一化，当前用于 depth。
   # - IDENTITY: 不做 LeRobot 统计归一化，当前用于 tactile，避免触觉被当作普通 STATE。
   normalization_mapping:
     VISUAL:
       _target_: lerobot.configs.types.NormalizationMode
       value: MEAN_STD
-    DEPTH:
-      _target_: lerobot.configs.types.NormalizationMode
-      value: MIN_MAX
     STATE:
       _target_: lerobot.configs.types.NormalizationMode
       value: MEAN_STD

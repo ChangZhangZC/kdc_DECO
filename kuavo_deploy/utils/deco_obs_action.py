@@ -215,6 +215,7 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
     _assert_equal("policy.action_dim", policy_config.action_dim, expected["action_dim"])
     _assert_equal("policy.use_tactile", policy_config.use_tactile, expected["use_tactile"])
     _assert_equal("policy.use_tactile_lora", policy_config.use_tactile_lora, expected["use_tactile_lora"])
+    _validate_deco_3view_rgb_obs_keys(policy_config, env_config)
 
 
 def apply_deco_runtime_overrides(policy_config: Any, deploy_config: Any) -> None:
@@ -258,3 +259,35 @@ def apply_deco_runtime_overrides(policy_config: Any, deploy_config: Any) -> None
 def _assert_equal(name: str, actual: Any, expected: Any) -> None:
     if actual != expected:
         raise ValueError(f"{name} must be {expected!r} for DECO deployment, got {actual!r}.")
+
+
+def _validate_deco_3view_rgb_obs_keys(policy_config: Any, env_config: Any) -> None:
+    """确认部署环境能够按 checkpoint 顺序提供固定三路 RGB。
+
+    Policy key 使用 LeRobot 完整 observation 名称，env.obs_key_map 使用短相机名；
+    本函数只做显式一一映射，不复制 head 图像，也不提供缺相机降级路径。
+    """
+
+    rgb_keys = tuple(getattr(policy_config, "rgb_keys", ()) or ())
+    if len(rgb_keys) != 3:
+        raise ValueError(
+            "DECO 3View RGB checkpoint must define exactly three rgb_keys in "
+            f"head/left-wrist/right-wrist order, got {rgb_keys!r}."
+        )
+    if len(set(rgb_keys)) != 3:
+        raise ValueError(f"DECO 3View RGB checkpoint rgb_keys must be unique, got {rgb_keys!r}.")
+
+    prefix = "observation.images."
+    short_keys: list[str] = []
+    for key in rgb_keys:
+        if not key.startswith(prefix):
+            raise ValueError(f"DECO RGB key must start with {prefix!r}, got {key!r}.")
+        short_keys.append(key[len(prefix):])
+
+    obs_key_map = getattr(env_config, "obs_key_map", {}) or {}
+    missing = [key for key in short_keys if key not in obs_key_map]
+    if missing:
+        raise ValueError(
+            "DECO deployment obs_key_map is missing 3View RGB keys required by checkpoint: "
+            f"{missing}. checkpoint rgb_keys={rgb_keys!r}."
+        )

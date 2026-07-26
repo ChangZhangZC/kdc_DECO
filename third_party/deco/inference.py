@@ -2,8 +2,10 @@ import torch
 import importlib
 import numpy as np
 from PIL import Image
-from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2 as transforms
+
+
+FIXED_RGB_VIEW_COUNT = 3
 
 
 class letterbox():
@@ -64,7 +66,7 @@ def normalize_obs_if_configured(obs, yaml_config):
     raise ValueError(f"Unsupported obs norm_type: {norm_type}")
 
 
-def preprocess(rgb, depth, obs, tac1, tac2, yaml_config, letterbox_flag=False):
+def preprocess(rgb_views, obs, tac1, tac2, yaml_config, letterbox_flag=False):
     # norm obs
     obs = torch.tensor(obs, dtype=torch.float32)
     obs = normalize_obs_if_configured(obs, yaml_config)
@@ -83,32 +85,25 @@ def preprocess(rgb, depth, obs, tac1, tac2, yaml_config, letterbox_flag=False):
         tac2 = torch.zeros(15, dtype=torch.float32)
     tac1, tac2 = tac1.unsqueeze(0), tac2.unsqueeze(0)
 
-    # preprocess image
+    # 固定三路 RGB 顺序：head、left wrist、right wrist。该原生参考入口与
+    # Kuavo wrapper 使用同一约束，不接受 depth，也不提供缺相机 fallback。
+    if not isinstance(rgb_views, (list, tuple)) or len(rgb_views) != FIXED_RGB_VIEW_COUNT:
+        raise ValueError(
+            f"3View RGB inference requires a list/tuple of {FIXED_RGB_VIEW_COUNT} images, "
+            f"got {type(rgb_views).__name__}."
+        )
     img_config = yaml_config['img']
     if letterbox_flag:
         resize = letterbox(img_config['img_size'][0])
     else:
         resize = transforms.Resize(img_config['img_size'])
     test_transform = build_rgb_transform(img_config, resize)
-    rgb = Image.fromarray(rgb)
-    rgb = test_transform(rgb).unsqueeze(0) # pil2tensor and unsqueeze (b, 3, h, w)
-    depth_array = np.asarray(depth)
-    if depth_array.ndim == 3:
-        # 第一版 Kuavo depth 在磁盘中可能是 3-channel repeat，推理时恢复单通道语义。
-        depth_array = depth_array[..., 0]
-    depth_img = Image.fromarray(depth_array)
-    if letterbox_flag:
-        depth_resize = letterbox(img_config['img_size'][0], fill=0, interpolation=Image.NEAREST)
-    else:
-        depth_resize = transforms.Resize(img_config['img_size'], interpolation=InterpolationMode.NEAREST)
-    depth_transform = transforms.Compose([
-        depth_resize,
-        transforms.ToImage(),
-        transforms.ToDtype(torch.float32, scale=True),
-    ])
-    depth = depth_transform(depth_img).unsqueeze(0)
+    rgb = torch.stack(
+        [test_transform(Image.fromarray(np.asarray(view))) for view in rgb_views],
+        dim=0,
+    ).unsqueeze(0)
 
-    return rgb, depth, obs, tac1, tac2
+    return rgb, obs, tac1, tac2
 
 
 def get_tactile_max(yaml_config):
@@ -142,16 +137,32 @@ def postprocess(action, yaml_config):
     return action
 
 
-def predict_action(model, device, yaml_config, rgb, depth, obs, task_idx=0, tac1=None, tac2=None):
+def predict_action(model, device, yaml_config, rgb_views, obs, task_idx=0, tac1=None, tac2=None):
     task_idx = torch.tensor(task_idx, dtype=torch.long).unsqueeze(0).to(device)
     if yaml_config['img']['img_size'] == [256, 256]:
         letterbox = True
     else:
         letterbox = False
     with torch.no_grad():
-        rgb, depth, obs, tac1, tac2 = preprocess(rgb, depth, obs, tac1, tac2, yaml_config, letterbox_flag=letterbox)
-        rgb, depth, obs, tac1, tac2 = rgb.to(device), depth.to(device), obs.to(device), tac1.to(device), tac2.to(device)
-        action = model(rgb, depth, obs=obs, act=None, task_idx=task_idx, tac1=tac1, tac2=tac2, action_mask=None, training=False)
+        rgb, obs, tac1, tac2 = preprocess(
+            rgb_views,
+            obs,
+            tac1,
+            tac2,
+            yaml_config,
+            letterbox_flag=letterbox,
+        )
+        rgb, obs, tac1, tac2 = rgb.to(device), obs.to(device), tac1.to(device), tac2.to(device)
+        action = model(
+            rgb,
+            obs=obs,
+            act=None,
+            task_idx=task_idx,
+            tac1=tac1,
+            tac2=tac2,
+            action_mask=None,
+            training=False,
+        )
         action = action.cpu().squeeze(0) # (1, chunksize, dim) --> (chunksize, dim)
         action = postprocess(action, yaml_config)  # (chunksize, dim)
         

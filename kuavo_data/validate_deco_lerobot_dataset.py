@@ -4,7 +4,7 @@
 Kuavo-DECO LeRobot 数据集验证脚本。
 
 用途：
-1. 验证已经转换好的 LeRobot 数据集是否符合阶段一 Kuavo-DECO profile schema。
+1. 验证已经转换好的 LeRobot 数据集是否符合 Kuavo-DECO 3View RGB profile schema。
 2. 不读取 rosbag，不依赖 ROS1/rospy/rosbag/kuavo_msgs。
 3. 基础检查只依赖 Python 标准库；若环境中存在 pyarrow/pandas/numpy/cv2，则自动做更深入的
    parquet 数值检查与视频文件首帧检查。
@@ -34,6 +34,11 @@ PROFILE_DIMS = {
     QIANGNAO_TACTILE_PROFILE: 28,
     GRIPPER_NO_TACTILE_PROFILE: 18,
 }
+DEFAULT_RGB_KEYS = (
+    "observation.images.head_cam_h",
+    "observation.images.wrist_cam_l",
+    "observation.images.wrist_cam_r",
+)
 
 
 @dataclass
@@ -51,6 +56,7 @@ class DecoDatasetValidator:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.resolve_profile_expectations()
+        self.resolve_rgb_expectations()
         self.root = Path(args.root).expanduser().resolve()
         self.report_path = Path(args.report).expanduser().resolve() if args.report else self.root / "deco_validation_report.md"
         self.results: list[CheckResult] = []
@@ -73,6 +79,22 @@ class DecoDatasetValidator:
             self.args.expected_tactile_dim = 30
         if self.args.require_tactile is None:
             self.args.require_tactile = self.args.end_effector_profile == QIANGNAO_TACTILE_PROFILE
+
+    def resolve_rgb_expectations(self) -> None:
+        """校验固定三路 RGB key，顺序语义为 head、left wrist、right wrist。"""
+
+        self.args.expected_rgb_keys = tuple(self.args.expected_rgb_keys)
+        if len(self.args.expected_rgb_keys) != 3:
+            raise ValueError(
+                "3View RGB dataset validation requires exactly three --expected-rgb-keys "
+                "in head/left-wrist/right-wrist order."
+            )
+        if any(not key.strip() for key in self.args.expected_rgb_keys):
+            raise ValueError("--expected-rgb-keys must contain three non-empty strings.")
+        if len(set(self.args.expected_rgb_keys)) != 3:
+            raise ValueError(
+                f"--expected-rgb-keys must be unique, got {self.args.expected_rgb_keys!r}."
+            )
 
     def add(self, name: str, status: str, detail: str) -> None:
         self.results.append(CheckResult(name=name, status=status, detail=detail))
@@ -132,12 +154,12 @@ class DecoDatasetValidator:
             return
 
         features = self.info.get("features", {})
-        required = {
+        required: dict[str, list[int]] = {
             "observation.state": [self.args.expected_state_dim],
             "action": [self.args.expected_action_dim],
-            self.args.expected_rgb_key: [3, self.args.expected_height, self.args.expected_width],
-            self.args.expected_depth_key: [3, self.args.expected_height, self.args.expected_width],
         }
+        for rgb_key in self.args.expected_rgb_keys:
+            required[rgb_key] = [3, self.args.expected_height, self.args.expected_width]
         if self.args.require_tactile:
             required["observation.tactile"] = [self.args.expected_tactile_dim]
 
@@ -187,7 +209,7 @@ class DecoDatasetValidator:
         self.check_file_exists("meta/tasks.parquet", tasks_file)
         self.check_file_exists("meta/stats.json", stats_file)
 
-        for key in (self.args.expected_rgb_key, self.args.expected_depth_key):
+        for key in self.args.expected_rgb_keys:
             video_files = sorted((self.root / "videos" / key).glob("chunk-*/*.mp4"))
             self.check_file_count(f"video files for {key}", video_files)
 
@@ -337,7 +359,7 @@ class DecoDatasetValidator:
             self.add("video probe", SKIP, f"cv2 unavailable: {exc}")
             return
 
-        for key in (self.args.expected_rgb_key, self.args.expected_depth_key):
+        for key in self.args.expected_rgb_keys:
             files = sorted((self.root / "videos" / key).glob("chunk-*/*.mp4"))
             if not files:
                 self.add(f"video probe {key}", FAIL, "no mp4 files")
@@ -369,6 +391,7 @@ class DecoDatasetValidator:
             f"- Dataset root: `{self.root}`",
             f"- End-effector profile: `{self.args.end_effector_profile}`",
             f"- Expected FPS: `{self.args.expected_fps}`",
+            f"- RGB keys (head/left wrist/right wrist): `{list(self.args.expected_rgb_keys)}`",
             "",
             "| Check | Status | Detail |",
             "| --- | --- | --- |",
@@ -414,8 +437,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-fps", type=int, default=30)
     parser.add_argument("--expected-width", type=int, default=640)
     parser.add_argument("--expected-height", type=int, default=480)
-    parser.add_argument("--expected-rgb-key", default="observation.images.head_cam_h")
-    parser.add_argument("--expected-depth-key", default="observation.depth_h")
+    parser.add_argument(
+        "--expected-rgb-keys",
+        nargs=3,
+        default=list(DEFAULT_RGB_KEYS),
+        metavar=("HEAD_KEY", "LEFT_WRIST_KEY", "RIGHT_WRIST_KEY"),
+        help="Exactly three RGB feature keys in head, left-wrist, right-wrist order.",
+    )
     parser.add_argument("--expected-state-dim", type=int, default=None)
     parser.add_argument("--expected-action-dim", type=int, default=None)
     parser.add_argument("--expected-tactile-dim", type=int, default=None)
