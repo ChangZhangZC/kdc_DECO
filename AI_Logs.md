@@ -152,6 +152,31 @@
 - **No-Runtime 边界**：
   - 仅执行 Git 状态与 ignore 规则静态检查，未运行任何代码、测试或环境变更命令。
 
+### 对照已验证分支精简 Hydra PolicyFeature 修复
+
+- **背景**：
+  - 用户指出上一版为单个 `AttributeError` 新增的通用 feature 规范化器行数过多，要求对照其他已能训练的分支。
+  - 静态比较 `deco/fix/action-state`、`deco/feature/muti-visual`、`deco/feature/letools-visual`、`deco/main` 与 `deco/dev` 后确认：这些分支都在 `hydra.utils.instantiate()` 返回后，由 `train_policy.py` 或 `train_policy_with_accelerate.py` 的 `_normalize_feature_dict()` 恢复 `PolicyFeature`。
+- **根因复核**：
+  - 3View RGB 新增的 `_select_model_input_features()` 在 `__post_init__` 内调用 `tactile_feature`，比既有外层类型恢复更早访问 `ft.type`。
+  - 因此不需要在 DECO config 内复制一套通用转换框架，只需保证构造期间不访问 feature 对象属性。
+- **修改文件 1**：`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`
+  - 删除上一版新增的 `_normalize_policy_feature_fields()` 与 `_normalize_policy_feature_dict()`。
+  - `gripper_no_tactile` 的 tactile 检查由访问 `self.tactile_feature` 改为直接检查 `self.tactile_key in self.input_features`。
+  - 三路 RGB/state 白名单仍在构造期间按 key 筛选；Hydra instantiate 返回后继续复用单卡与 Accelerate 训练入口已有的类型恢复逻辑。
+- **修改文件 2**：`tests/test_deco_config_feature_normalization.py`
+  - 删除通用转换器和畸形输入专属测试。
+  - 保留用户实际 schema：18D state、三路 RGB、三路 depth、18D action。
+  - 静态覆盖 `__post_init__` 不访问 `dict.type`、depth 按 key 被过滤，以及训练入口恢复 `PolicyFeature` 后 `validate_features()` 的契约。
+- **修改文件 3**：`PLANS.md`
+  - 将当前分支的修复描述更新为最终最小实现，不再宣称 config 内部提前恢复全部 feature 类型。
+- **方案取舍**：
+  - 优点是生产逻辑仅保留一处必要判断，与多个已验证训练分支保持一致。
+  - 限制是直接绕过标准训练入口、手工向 config 传 Hydra 字典的外部调用方仍需自行恢复 `PolicyFeature`；正式单卡/Accelerate 训练路径不受此限制。
+- **No-Runtime 边界**：
+  - 按仓库规则只执行分支对比、diff、文本检索与静态逻辑审查。
+  - 未运行 Python、pytest、训练或任何环境变更命令。
+
 ## 2026-06-05
 
 ### 创建本地 Git 版本标签 v2.0
