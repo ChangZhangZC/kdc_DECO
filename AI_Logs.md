@@ -1,5 +1,71 @@
 # AI Execution Logs
 
+## 2026-08-05
+
+### 移除 DECO 清洗入口的深度配置初始化依赖
+- **任务**：根据用户确认，删除 `dataset.use_depth`、`dataset.depth_range` 及其背后的共享初始化调用链；本次不修改 `PLANS.md`。
+- **修改文件 1**：`kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 新增 `initialize_deco_rgb_parameters()`，仅初始化当前三视角 RGB 转换实际使用的 `TRAIN_HZ`、`RESIZE_W`、`RESIZE_H`。
+  - Hydra `main()` 不再调用通用 `kuavo.init_parameters(cfg)`，从而不再进入 `config_dataset` 的 `use_depth/depth_range/default_camera_names` 读取链路。
+  - 深度 topic、对齐和写入路径仍保持此前的禁用状态。
+- **修改文件 2**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 删除 `dataset.use_depth` 与 `dataset.depth_range`；YAML 不再保留为共享 RGB-D 初始化器而设置的兼容字段。
+- **未修改文件**：`PLANS.md`。
+- **静态检查**：本次仅进行文本与补丁审查；未运行 Python、ROS、转换、训练或测试。
+
+### DECO 数据转换接入固定三视角 RGB
+- **任务**：根据用户确认，将腕部 RGB 相机接入 DECO 数据清洗脚本，并与当前 3View RGB 前端的键名、顺序和时间对齐语义保持一致。
+- **修改文件 1**：`kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 将单路 `rgb_key` 替换为固定顺序的 `head_cam_h`、`wrist_cam_l`、`wrist_cam_r`；配置顺序不符合该约定时明确报错，防止 camera embedding 与物理相机错配。
+  - 复用 `CvtRosbag2Lerobot.py` 的 topic 映射：`/cam_h/color/image_raw/compressed`、`/cam_l/color/image_raw/compressed`、`/cam_r/color/image_raw/compressed`。
+  - 三路 RGB 均进入 rosbag 读取、必需字段检查、最近邻时间对齐、LeRobot feature 创建和逐帧写入；head RGB 作为固定 30Hz 时间轴，左右腕 RGB 对齐到该时间轴。
+  - 深度信息仍保持禁用，不修改 state、action、profile 或可选 tactile 的已有逻辑。
+- **修改文件 2**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 新增 `deco.rgb_keys` 与 `deco.rgb_topics`，固定三路相机的 key/topic 映射并以中文注释说明不可交换顺序。
+  - 将共享初始化所需的 `dataset.use_depth` 显式设为 `false`，保留 `depth_range` 仅满足 `kuavo.init_parameters()` 的无条件读取；两者均不重新启用 DECO 的 depth 转换路径。
+- **修改文件 3**：`PLANS.md`
+  - 勾选 DECO 转换链路完成 3View RGB schema、顺序与 head 时间轴对齐的同步任务。
+- **静态检查**：本次仅修改与文本审查；未运行 Python、ROS、转换、训练或测试。
+
+### DECO 数据转换链路禁用深度信息
+- **任务**：根据用户确认，当前版本训练不使用深度信息；在不删除历史实现、且不执行 Python、ROS、训练或环境变更命令的前提下，静态禁用 DECO 数据转换中的 depth 路径。
+- **修改文件 1**：`kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 将 depth 常量、初始化、topic 候选、decoder/fallback 接入、rosbag topic 解析、必需字段检查、对齐 fallback 与 metadata 写入全部改为带中文说明的注释。
+  - 将 LeRobot `observation.depth_h` feature 与每帧 `depth_to_compatible_image(...)` 写入改为注释；转换后的数据集仅保留 RGB、state、action 以及 profile 允许时的 tactile。
+  - 历史 depth 解码 helper 保留在文件中但不再从有效转换路径调用，便于后续按完整链路恢复，而不会要求 rosbag 提供深度 topic。
+- **修改文件 2**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 注释 `use_depth`、`depth_range`、depth key/topic/encoding/raw fallback 配置，并增加中文注释说明当前这些字段不会被转换流程读取。
+- **修改文件 3**：`PLANS.md`
+  - 在当前冻结的 3View RGB 架构下勾选转换链路禁用 depth 的同步任务，消除计划与脚本行为的不一致。
+- **静态检查**：仅进行了文本级调用路径审查；未运行转换脚本、Python、ROS、训练或测试。
+
+## 2026-07-31
+
+### 删除无实际运行作用的 DECO runtime_mode 配置
+
+- **任务**：根据用户确认，删除 `deco.runtime_mode`，避免该字段使使用者误以为它会选择仿真、真机、server/client 或 dry-run 执行链路。
+- **静态确认结果**：
+  - 全仓库活动代码中，该字段仅由 `ConfigDeco` 保存并执行枚举值校验。
+  - 该字段不参与 Gym 环境创建、脚本入口选择、policy 加载、ROS topic 选择、动作下发或 dry-run 安全控制。
+  - 仿真与真机环境仍由 `env.env_name` 选择；本地真机、仿真自动测试和 server/client 模式仍由实际启动的脚本入口选择。
+- **修改文件 1**：`kuavo_deploy/config.py`
+  - 删除 `ConfigDeco.runtime_mode` dataclass 字段。
+  - 删除 `local_real`、`local_sim`、`server`、`dry_run` 的无效枚举校验。
+- **修改文件 2**：`configs/deploy/kuavo_deco_env.yaml`
+  - 删除 `runtime_mode: local_sim`。
+  - 删除围绕该字段的模式列表与“不会自动选择脚本入口”说明。
+- **修改文件 3**：`README_DECO.md`
+  - 删除配置字段表及全部仿真、真机示例中的 `deco.runtime_mode`。
+  - 明确运行模式由实际启动的脚本入口决定。
+- **修改文件 4**：`PLANS.md`
+  - 在当前 3View RGB 冻结架构清单中记录并勾选本次无效字段清理。
+- **兼容性说明**：
+  - `env.env_name`、`deco.inference_mode`、`deco.head_state_source`、动作分发配置以及所有数据、模型和动作链路均未修改。
+  - 历史日志中关于 `runtime_mode` 的旧记录作为历史事实保留，不回写或删除。
+- **No-Runtime 边界**：
+  - 本次仅执行静态文本检索、补丁审查和 Git diff 检查。
+  - 未运行 Python、pytest、训练、ROS、MuJoCo、部署程序或任何环境变更命令。
+
 ## 2026-07-26
 
 ### 实现固定三视角 3View RGB 前端并完成分支更名

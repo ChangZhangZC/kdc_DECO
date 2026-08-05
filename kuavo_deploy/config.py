@@ -297,7 +297,6 @@ class ConfigDeco:
     inference_mode: str = "qiangnao_no_tactile"
     # None 保持 checkpoint 保存的 Flow Matching 推理步数；正整数仅覆盖在线 denoising 循环。
     inf_step: Optional[int] = None
-    runtime_mode: str = "local_real"
     head_state_source: str = "live_joint_q"
     action_dispatch: ConfigActionDispatch = field(default_factory=ConfigActionDispatch)
 
@@ -410,8 +409,6 @@ class ConfigDeco:
             raise ValueError(
                 "deco.inference_mode must be 'qiangnao_tactile', 'qiangnao_no_tactile', or 'gripper_no_tactile'."
             )
-        if self.runtime_mode not in ["local_real", "local_sim", "server", "dry_run"]:
-            raise ValueError("deco.runtime_mode must be 'local_real', 'local_sim', 'server', or 'dry_run'.")
         if self.head_state_source not in ["live_joint_q", "fixed_config"]:
             raise ValueError("deco.head_state_source must be 'live_joint_q' or 'fixed_config'.")
         self.validate_action_dispatch_structure()

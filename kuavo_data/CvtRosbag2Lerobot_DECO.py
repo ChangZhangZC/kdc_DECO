@@ -6,10 +6,10 @@ Kuavo rosbag -> LeRobot DECO 数据集转换脚本。
 本文件是 DECO 阶段一的数据入口，刻意与原始 CvtRosbag2Lerobot.py 并行存在：
 1. 保留原 Kuavo/ACT/DP 工具链中的 rosbag 读取、坏时间戳覆盖、compressedDepth 解码、
    动作范围保护、失败 bag 记录等保护性逻辑。
-2. 只在 DECO 需要的核心 schema 上做收敛：RGB-D、profile 化 state/action、
+2. 只在 DECO 需要的核心 schema 上做收敛：RGB、profile 化 state/action、
    qiangnao 可选 30 维 tactile、训练数据 30Hz 时间轴，以及头部自由度的固定策略。
-3. 当前版本为了兼容 LeRobot 图像/视频写入器，将 depth 以 3 通道 image/video 形式保存；
-   后续 DECO wrapper 再把它还原为单通道 depth tensor 送入 depth backbone。
+3. 当前训练版本不使用深度信息：保留历史 depth 实现仅供后续恢复，转换流程不会读取、
+   对齐或写入任何 depth topic / feature。
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ import shutil
 import sys
 from typing import Any
 
-import cv2
+# 当前无深度转换路径不需要 OpenCV；保留注释以标记历史 depth 解码依赖。
+# import cv2
 import hydra
 import numpy as np
 import torch
@@ -62,9 +63,12 @@ logging.basicConfig(level=logging.INFO, handlers=[RichHandler(rich_tracebacks=Tr
 log = logging.getLogger(__name__)
 
 
-DECO_RGB_KEY = "head_cam_h"
-DECO_DEPTH_KEY = "depth_h"
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# 三视角顺序必须与 DECO 训练前端保持一致：head -> left wrist -> right wrist。
+# 该顺序同时决定模型的 camera embedding 和 visual token 拼接顺序，禁止在清洗阶段重排。
+DECO_RGB_KEYS = ("head_cam_h", "wrist_cam_l", "wrist_cam_r")
+# 当前训练不使用深度；以下常量仅由保留的历史 depth helper 参考，不能接回主转换流程。
+# DECO_DEPTH_KEY = "depth_h"
+# PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
 GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
@@ -150,6 +154,21 @@ def cfg_select(cfg: DictConfig, key: str, default: Any = None) -> Any:
     """集中读取 Hydra 配置，避免在主逻辑中散落 try/except。"""
 
     return OmegaConf.select(cfg, key, default=default)
+
+
+def initialize_deco_rgb_parameters(cfg: DictConfig) -> None:
+    """
+    初始化 DECO 三视角 RGB 清洗实际需要的共享尺寸与采样率。
+
+    不调用 kuavo.init_parameters()：后者服务于通用 ACT/DP RGB-D 链路，
+    会间接读取 dataset.use_depth、dataset.depth_range 和默认相机列表。
+    当前 DECO 转换器显式管理三路 RGB topic，因此只设置颜色图解码与
+    LeRobot dataset 创建所需的 TRAIN_HZ、RESIZE_W、RESIZE_H 三项。
+    """
+
+    kuavo.TRAIN_HZ = int(cfg_select(cfg, "dataset.train_hz", 30))
+    kuavo.RESIZE_W = int(cfg_select(cfg, "dataset.resize.width", 640))
+    kuavo.RESIZE_H = int(cfg_select(cfg, "dataset.resize.height", 480))
 
 
 def resolve_end_effector_profile(cfg: DictConfig) -> str:
@@ -585,13 +604,40 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         self.profile = resolve_end_effector_profile(cfg)
         self.eef_type = str(cfg_select(cfg, "dataset.eef_type", "qiangnao"))
         self.include_tactile = profile_writes_tactile(self.profile, cfg)
-        self.rgb_key = f"observation.images.{cfg_select(cfg, 'deco.rgb_key', DECO_RGB_KEY)}"
-        self.depth_key = f"observation.{cfg_select(cfg, 'deco.depth_key', DECO_DEPTH_KEY)}"
-        self.depth_encoding = str(cfg_select(cfg, "deco.depth_encoding", "compressed_image"))
-        self.allow_raw_depth_fallback = bool(cfg_select(cfg, "deco.allow_raw_depth_fallback", False))
-        self.depth_topic_candidates = self.build_depth_topic_candidates(cfg)
-        self._active_depth_topic: str | None = None
-        self._active_depth_encoding: str | None = None
+        # 固定读取三路 RGB，避免数据集 schema 与 3View RGB policy 的输入顺序不一致。
+        configured_rgb_keys = list(cfg_select(cfg, "deco.rgb_keys", list(DECO_RGB_KEYS)))
+        if configured_rgb_keys != list(DECO_RGB_KEYS):
+            raise ValueError(
+                "DECO 当前只支持固定三视角顺序 "
+                "['head_cam_h', 'wrist_cam_l', 'wrist_cam_r']；"
+                f"实际配置为 {configured_rgb_keys!r}"
+            )
+        self.rgb_keys = [f"observation.images.{rgb_key}" for rgb_key in configured_rgb_keys]
+
+        # topic 映射复用 CvtRosbag2Lerobot.py：head=/cam_h，left wrist=/cam_l，right wrist=/cam_r。
+        # 以完整 LeRobot key 为索引，防止 frame 写入时遗漏或交换左右腕画面。
+        configured_rgb_topics = cfg_select(cfg, "deco.rgb_topics", None)
+        if configured_rgb_topics is None:
+            # 使用 DictConfig 保持与 cfg_select/OmegaConf 的统一读取语义。
+            configured_rgb_topics = OmegaConf.create({
+                "head_cam_h": "/cam_h/color/image_raw/compressed",
+                "wrist_cam_l": "/cam_l/color/image_raw/compressed",
+                "wrist_cam_r": "/cam_r/color/image_raw/compressed",
+            })
+        self.rgb_topics = {
+            f"observation.images.{rgb_key}": str(cfg_select(configured_rgb_topics, rgb_key, ""))
+            for rgb_key in configured_rgb_keys
+        }
+        missing_rgb_topics = [rgb_key for rgb_key, topic in self.rgb_topics.items() if not topic]
+        if missing_rgb_topics:
+            raise ValueError(f"DECO RGB topic 配置缺失：{missing_rgb_topics}")
+        # 当前训练版本禁用深度输入：不初始化 depth key、decoder、topic 候选或 raw fallback。
+        # self.depth_key = f"observation.{cfg_select(cfg, 'deco.depth_key', DECO_DEPTH_KEY)}"
+        # self.depth_encoding = str(cfg_select(cfg, "deco.depth_encoding", "compressed_image"))
+        # self.allow_raw_depth_fallback = bool(cfg_select(cfg, "deco.allow_raw_depth_fallback", False))
+        # self.depth_topic_candidates = self.build_depth_topic_candidates(cfg)
+        # self._active_depth_topic: str | None = None
+        # self._active_depth_encoding: str | None = None
         self.force_scale = float(cfg_select(cfg, "deco.tactile_force_scale", 100.0))
         self.train_hz = int(cfg_select(cfg, "dataset.train_hz", 30))
         self.sample_drop = int(cfg_select(cfg, "dataset.sample_drop", 0))
@@ -695,9 +741,9 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
     def build_topic_process_map(self, cfg: DictConfig) -> dict[str, tuple[str, Any]]:
         """集中定义 DECO 所需 topic，便于后续和配置文件逐项核对。"""
 
-        rgb_topic = str(cfg_select(cfg, "deco.rgb_topic", "/cam_h/color/image_raw/compressed"))
-        depth_topic, depth_encoding = self.depth_topic_candidates[0]
-        raw_depth_topic = str(cfg_select(cfg, "deco.raw_depth_topic", "/camera/depth/image_rect_raw"))
+        # 当前训练版本不订阅 depth topic，也不启用 raw depth fallback。
+        # depth_topic, depth_encoding = self.depth_topic_candidates[0]
+        # raw_depth_topic = str(cfg_select(cfg, "deco.raw_depth_topic", "/camera/depth/image_rect_raw"))
         tactile_topic = str(cfg_select(cfg, "deco.tactile_topic", "/dexhand/touch_state"))
         hand_state_topic = str(cfg_select(cfg, "deco.hand_state_topic", "/dexhand/state"))
         hand_action_topic = str(cfg_select(cfg, "deco.hand_action_topic", "/control_robot_hand_position"))
@@ -705,16 +751,20 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         leju_claw_action_topic = str(cfg_select(cfg, "deco.leju_claw_action_topic", "/leju_claw_command"))
         rq2f85_state_topic = str(cfg_select(cfg, "deco.rq2f85_state_topic", "/gripper/state"))
         rq2f85_action_topic = str(cfg_select(cfg, "deco.rq2f85_action_topic", "/gripper/command"))
-        depth_process_fn = self._depth_process_fn_for_encoding(depth_encoding)
+        # depth_process_fn = self._depth_process_fn_for_encoding(depth_encoding)
 
         topic_map: dict[str, tuple[str, Any]] = {
-            self.rgb_key: (rgb_topic, self._msg_processer.process_color_image),
-            self.depth_key: (depth_topic, depth_process_fn),
+            rgb_key: (self.rgb_topics[rgb_key], self._msg_processer.process_color_image)
+            for rgb_key in self.rgb_keys
+        }
+        topic_map.update({
+            # 深度数据当前不参与 rosbag 读取、时间对齐或 LeRobot 数据集写入。
+            # self.depth_key: (depth_topic, depth_process_fn),
             "observation.state": ("/sensors_data_raw", self._msg_processer.process_joint_state),
             "action.joint_cmd": ("/joint_cmd", self._msg_processer.process_joint_cmd),
             "action.kuavo_arm_traj": ("/kuavo_arm_traj", self._msg_processer.process_kuavo_arm_traj),
             "action.kuavo_arm_traj_alt": ("/kuavo_arm_traj_synced", self._msg_processer.process_kuavo_arm_traj),
-        }
+        })
         if self.profile == QIANGNAO_TACTILE_PROFILE:
             topic_map["observation.qiangnao"] = (hand_state_topic, self._msg_processer.process_dex_state)
             topic_map["action.qiangnao"] = (hand_action_topic, self._msg_processer.process_qiangnao_cmd)
@@ -731,8 +781,8 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
                 raise ValueError(f"gripper_no_tactile 不支持 dataset.eef_type={self.eef_type!r}")
         else:
             raise ValueError(f"未知 DECO profile：{self.profile}")
-        if self.allow_raw_depth_fallback and self.depth_encoding != "raw_16uc1":
-            topic_map["observation.depth_h_raw"] = (raw_depth_topic, self.process_raw_depth_image)
+        # if self.allow_raw_depth_fallback and self.depth_encoding != "raw_16uc1":
+        #     topic_map["observation.depth_h_raw"] = (raw_depth_topic, self.process_raw_depth_image)
         return topic_map
 
     def resolve_depth_topic_for_bag(self, bag: Any) -> tuple[str, Any, str]:
@@ -886,9 +936,10 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
 
         bag = self.load_raw_rosbag(bag_path)
         try:
-            depth_topic, depth_process_fn, _ = self.resolve_depth_topic_for_bag(bag)
             topic_process_map = dict(self._topic_process_map)
-            topic_process_map[self.depth_key] = (depth_topic, depth_process_fn)
+            # 当前训练版本不解析 bag 中的 depth topic，也不覆盖 topic map。
+            # depth_topic, depth_process_fn, _ = self.resolve_depth_topic_for_bag(bag)
+            # topic_process_map[self.depth_key] = (depth_topic, depth_process_fn)
 
             process_data: dict[str, list[dict[str, Any]]] = {
                 key: [] for key in topic_process_map.keys()
@@ -942,8 +993,10 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
 
         arm_action_key = self.select_arm_action_source(process_data)
         required_keys = [
-            self.rgb_key,
-            self.depth_key,
+            # 三路 RGB 均为 3View 前端的必需输入；任一路缺失均显式失败。
+            *self.rgb_keys,
+            # 当前训练仅要求 RGB；depth 不再作为帧对齐的必需输入。
+            # self.depth_key,
             "observation.state",
             arm_action_key,
         ]
@@ -956,10 +1009,11 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         else:
             raise ValueError(f"未知 DECO profile：{self.profile}")
 
-        if self.allow_raw_depth_fallback and not process_data.get(self.depth_key):
-            raw_depth = process_data.get("observation.depth_h_raw", [])
-            if raw_depth:
-                process_data[self.depth_key] = raw_depth
+        # 当前训练不使用 raw depth fallback。
+        # if self.allow_raw_depth_fallback and not process_data.get(self.depth_key):
+        #     raw_depth = process_data.get("observation.depth_h_raw", [])
+        #     if raw_depth:
+        #         process_data[self.depth_key] = raw_depth
 
         missing_keys = [key for key in required_keys if not process_data.get(key)]
         if missing_keys:
@@ -967,7 +1021,8 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
 
         required_sequences = {key: process_data[key] for key in required_keys}
         target_timestamps = build_target_timestamps(
-            process_data[self.rgb_key],
+            # 固定以 head RGB 构建 30Hz 时间轴；左右腕 RGB 与其他模态均最近邻对齐到该时间轴。
+            process_data[self.rgb_keys[0]],
             required_sequences,
             train_hz=self.train_hz,
             sample_drop=self.sample_drop,
@@ -981,8 +1036,9 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
             "end_effector_profile": self.profile,
             "eef_type": self.eef_type,
             "include_tactile": self.include_tactile,
-            "depth_topic": self._active_depth_topic,
-            "depth_encoding": self._active_depth_encoding,
+            # 当前训练不输出 depth 元数据，防止下游误判数据集包含深度模态。
+            # "depth_topic": self._active_depth_topic,
+            # "depth_encoding": self._active_depth_encoding,
         }
         return aligned
 
@@ -1019,17 +1075,19 @@ def create_empty_deco_dataset(
         }
 
     camera_features = {
-        "observation.images.head_cam_h": {
+        f"observation.images.{rgb_key}": {
             "dtype": mode,
             "shape": (3, kuavo.RESIZE_H, kuavo.RESIZE_W),
             "names": ["channels", "height", "width"],
-        },
-        "observation.depth_h": {
-            "dtype": mode,
-            "shape": (3, kuavo.RESIZE_H, kuavo.RESIZE_W),
-            "names": ["channels", "height", "width"],
-        },
+        }
+        for rgb_key in DECO_RGB_KEYS
     }
+    # 当前训练版本不创建 observation.depth_h feature；历史 3-channel depth 存储方案保留在注释中。
+    # camera_features["observation.depth_h"] = {
+    #     "dtype": mode,
+    #     "shape": (3, kuavo.RESIZE_H, kuavo.RESIZE_W),
+    #     "names": ["channels", "height", "width"],
+    # }
 
     features = {**motors_features, **camera_features}
     return LeRobotDataset.create(
@@ -1091,7 +1149,8 @@ def populate_dataset(
 ) -> LeRobotDataset:
     """将 rosbag 列表写入 LeRobotDataset。"""
 
-    depth_range = list(cfg_select(cfg, "dataset.depth_range", [0, 1500]))
+    # 当前训练不将深度图写入 frame，因此不读取 dataset.depth_range。
+    # depth_range = list(cfg_select(cfg, "dataset.depth_range", [0, 1500]))
     is_binary = bool(cfg_select(cfg, "dataset.is_binary", False))
     profile = reader.profile
     failed_bags: list[tuple[str, str]] = []
@@ -1156,14 +1215,18 @@ def populate_dataset(
                     raise ValueError(f"未知 DECO profile：{profile}")
 
                 frame = {
-                    "observation.images.head_cam_h": bag_data[reader.rgb_key][frame_idx]["data"],
-                    "observation.depth_h": depth_to_compatible_image(
-                        bag_data[reader.depth_key][frame_idx]["data"], depth_range
-                    ),
+                    # 三路键由 reader.rgb_keys 固定排序，必须与 policy.rgb_keys 完全一致。
+                    rgb_key: bag_data[rgb_key][frame_idx]["data"] for rgb_key in reader.rgb_keys
+                }
+                frame.update({
+                    # 当前训练不写入 observation.depth_h；深度归一化与 3-channel 兼容存储同步禁用。
+                    # "observation.depth_h": depth_to_compatible_image(
+                    #     bag_data[reader.depth_key][frame_idx]["data"], depth_range
+                    # ),
                     "observation.state": torch.from_numpy(state).float(),
                     "action": torch.from_numpy(clamp_deco_arm_action(action, profile)).float(),
                     "task": task,
-                }
+                })
                 if reader.include_tactile:
                     tactile = as_float_array(
                         "observation.tactile",
@@ -1253,7 +1316,8 @@ def port_deco_rosbag(
 def main(cfg: DictConfig) -> None:
     """Hydra CLI 入口。"""
 
-    kuavo.init_parameters(cfg)
+    # DECO 使用独立 RGB 初始化，彻底避免共享 RGB-D 初始化器的 depth 配置依赖。
+    initialize_deco_rgb_parameters(cfg)
 
     raw_dir = str(cfg.rosbag.rosbag_dir)
     version = str(cfg.rosbag.lerobot_dir)

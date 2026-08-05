@@ -6,25 +6,13 @@ hydra:
     subdir: ${hydra:job.override_dirname}
 
 
-# Kuavo rosbag -> LeRobot 数据转换配置，DECO 专用版本。
-# 设计原则：
-# 1. 尽量复用现有 ACT/DP 清洗链路中的 topic 和 decoder。
-# 2. 仅在 DECO profile schema、30Hz 时间轴、可选 30 维触觉、state/action 重组处做专用适配。
-# 3. 当前机器遵守 No-Runtime 约束，不在 Codex 中直接运行转换。
-# 4. 标注为“固定约束/信息字段”的配置用于向用户说明 DECO schema，不代表可以随意改成另一条链路。
-
 rosbag:
-  # rosbag 文件目录，目录下应包含一个或多个 .bag 文件。
+
   rosbag_dir: /path/to/your/rosbag
-  # 使用的 rosbag 数量；null 表示使用目录下全部 bag。
   num_used: null
-  # LeRobot 数据集输出 root。推荐使用绝对路径并直接指向训练配置 root 会读取的最终目录。
-  # 推荐形态：/your/path/to/your/lerobotdata_deco/lerobot
-  # 若填写相对路径，脚本会按 <rosbag_dir>/../<lerobot_dir>/lerobot 生成，以兼容原 ACT/DP 转换脚本的目录习惯。
   lerobot_dir: /your/path/to/your/lerobotdata_deco/lerobot
 
 dataset:
-  # 固定约束：DECO 当前只训练上半身操作，不使用下肢/base action。
   only_arm: true
 
   # 可选值：
@@ -34,24 +22,17 @@ dataset:
   eef_type: qiangnao
   # 固定约束：DECO profile 当前要求双臂 schema；left/right 单臂配置仍属于原 ACT/DP 数据链路。
   which_arm: both
-
-  # 固定约束/信息字段：Kuavo-DECO 是 RGB-D 路线，转换脚本始终要求 head RGB + aligned depth。
-  # 保留该字段是为了对齐原 ACT/DP 配置习惯；不要把它改成 false 作为“无 depth”开关。
-  use_depth: true
-  depth_range: [0, 1500]
-
   task_description: "Pick and Place"
 
   # DECO 训练数据统一下采样为 30Hz；部署 10Hz 在 policy/deploy wrapper 阶段处理。
   train_hz: 30
-  # 信息字段：DECO 实际使用 head_cam_h 的真实时间戳生成 30Hz 目标时间轴，不依赖整数跳帧。
-  # 保留 main_timeline/main_timeline_fps 是为了说明主视觉流语义；不要把它当作 ACT/DP 式跳帧开关。
+  # DECO 固定以 head_cam_h 的真实时间戳生成 30Hz 目标时间轴；left/right wrist RGB 最近邻对齐到该轴。
+  # 三路均为必需输入，任一路缺失会报错；不要把 main_timeline/main_timeline_fps 当作 ACT/DP 式跳帧开关。
   main_timeline: head_cam_h
   main_timeline_fps: 30
   sample_drop: 10
 
-  # 固定约束/信息字段：qiangnao_tactile 使用左右手各 6 DoF；gripper_no_tactile 不消费该字段。
-  # 这里保留 6 是为了提醒 DECO 不沿用 ACT/DP 默认的单维灵巧手开合量。
+  # 固定约束/信息字段：qiangnao_tactile 使用左右手各 6 DoF；gripper_no_tactile 不消费该字段。这里保留 6 是为了提醒 DECO 不沿用 ACT/DP 默认的单维灵巧手开合量。
   dex_dof_needed: 6
 
   is_binary: false
@@ -74,38 +55,16 @@ deco:
   # - dataset.eef_type=leju_claw/rq2f85 -> gripper_no_tactile，18D state/action，不写入 tactile。
   end_effector_profile: auto
 
-  # 输出 schema 固定由 end_effector_profile 推导，不提供单独维度开关：
-  # - qiangnao_tactile: observation.state/action 为 28D，observation.tactile 为 30D。
-  # - gripper_no_tactile: observation.state/action 为 18D，且没有 observation.tactile。
-
-  # 默认复用现有 Kuavo/ACT-DP 清洗链路。
-  rgb_key: head_cam_h
-  rgb_topic: /cam_h/color/image_raw/compressed
-  depth_key: depth_h
-  # depth_topic/depth_encoding 表示首选 depth 候选，而不是唯一候选。
-  # 脚本会自动补充 /compressed 与 /compressedDepth 的成对 fallback：
-  # - 若首选是 /cam_h/depth/image_raw/compressed，
-  #   会额外尝试 /cam_h/depth/image_raw/compressedDepth + compressedDepth_png。
-  # - 若首选是 /cam_h/depth/image_raw/compressedDepth，
-  #   会额外尝试 /cam_h/depth/image_raw/compressed + compressed_image。
-  # - 同名 topic 会去重，最终按候选顺序选择当前 bag 中第一个存在的 depth topic。
-  depth_topic: /cam_h/depth/image_raw/compressed
-  # depth_encoding 只描述首选 depth_topic 的解码方式；它不等于 topic fallback 开关。
-  # 可选值：
-  # - compressed_image: 普通 sensor_msgs/CompressedImage，data 可直接 cv2.imdecode；当前默认。
-  # - compressedDepth_png: ROS compressedDepth 封装，data 前缀有配置头，需要定位 PNG payload 后解码。
-  # - auto: 对同一个 topic 先尝试 compressed_image，失败后再尝试 compressedDepth_png。
-  # - raw_16uc1: raw depth fallback；只有 allow_raw_depth_fallback=true 且对应 topic 存在时才应使用。
-  # 注意：如果首选 topic 存在但 depth_encoding 写错，脚本不会因为解码失败自动切到下一个 topic；
-  # 不确定封装格式时应使用 depth_encoding: auto。
-  depth_encoding: compressed_image
-
-  # raw_16uc1 仅作为候选 fallback；未经 Inspector/validator 复核时不要启用。
-  raw_depth_topic: /camera/depth/image_rect_raw
-  allow_raw_depth_fallback: false
-
-  # 固定信息：为兼容现有 LeRobot image/video writer，第一版 depth 在磁盘中保存为 3-channel depth image；
-  # wrapper 阶段再从该 depth image 取单通道并送入 1-channel depth backbone。当前不提供 YAML 开关切换存储格式。
+  # 固定三视角顺序必须与 configs/policy/deco_config.yaml 中的 policy.rgb_keys 一致。
+  # 该映射复用 CvtRosbag2Lerobot.py：head=/cam_h、left wrist=/cam_l、right wrist=/cam_r。
+  rgb_keys:
+    - head_cam_h
+    - wrist_cam_l
+    - wrist_cam_r
+  rgb_topics:
+    head_cam_h: /cam_h/color/image_raw/compressed
+    wrist_cam_l: /cam_l/color/image_raw/compressed
+    wrist_cam_r: /cam_r/color/image_raw/compressed
 
   # 原清洗链路的 action 来源优先级。
   arm_action_priority:
@@ -126,7 +85,7 @@ deco:
   tactile_force_scale: 100.0
 
   # 固定信息：头部 state 使用 episode 内 joint_q[26:28] 均值；头部 action 当前补零。
-  head_action_fill: [0.0, 0.0]
+  head_action_fill: [0.0, 25.0]
 
   # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
   overwrite: false
@@ -134,4 +93,3 @@ deco:
   # 继承原脚本保护性检查：检测 arm trajectory timestamp gap。
   # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
   arm_traj_gap_threshold_s: null
-

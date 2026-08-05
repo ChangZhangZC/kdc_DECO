@@ -379,7 +379,6 @@ configs/deploy/kuavo_deco_env.yaml
 | `env.state_layout`       | `deco_28d` 用于强脑灵巧手，`deco_18d` 用于二夹爪                          |
 | `env.depth_h`            | `compressedDepth` 用于模拟，`compressed` 用用于实机部署                   |
 | `deco.inference_mode`    | `qiangnao_tactile`、`qiangnao_no_tactile` 或 `gripper_no_tactile`         |
-| `deco.runtime_mode`      | `local_real`、`local_sim`、`server` 或 `dry_run`                          |
 | `deco.head_state_source` | `live_joint_q` 或 `fixed_config` ，固定头部自由度时，默认`fixed_config`   |
 | `inference.policy_type`  | 本地推理填 `deco`；server/client 调用侧填 `client`                        |
 | `inference.task`         | 对应 `outputs/train/<task>/`                                              |
@@ -439,7 +438,6 @@ env:
 
 deco:
   inference_mode: gripper_no_tactile
-  runtime_mode: local_sim
 
 inference:
   policy_type: deco
@@ -463,7 +461,6 @@ env:
 
 deco:
   inference_mode: qiangnao_no_tactile
-  runtime_mode: local_sim
 
 inference:
   policy_type: deco
@@ -487,7 +484,6 @@ env:
 
 deco:
   inference_mode: qiangnao_tactile
-  runtime_mode: local_sim
 
 inference:
   policy_type: deco
@@ -501,14 +497,11 @@ inference:
 
 ### 4.3 实际部署
 
-实际部署使用同一份 `configs/deploy/kuavo_deco_env.yaml`，核心差异是把环境切到真机，并确认真机 ROS topic、末端执行器和 checkpoint profile 一致：
+实际部署使用同一份 `configs/deploy/kuavo_deco_env.yaml`，核心差异是把环境切到真机，并确认真机 ROS topic、末端执行器和 checkpoint profile 一致。运行模式由实际启动的脚本入口决定，不由 YAML 中的额外模式字段选择：
 
 ```yaml
 env:
   env_name: Kuavo-Real
-
-deco:
-  runtime_mode: local_real
 ```
 
 本地真机推理沿用 Kuavo 原有脚本：
@@ -538,7 +531,6 @@ env:
 
 deco:
   inference_mode: gripper_no_tactile
-  runtime_mode: local_real
 
 inference:
   policy_type: deco
@@ -563,7 +555,6 @@ env:
 
 deco:
   inference_mode: qiangnao_no_tactile
-  runtime_mode: local_real
 
 inference:
   policy_type: deco
@@ -588,7 +579,6 @@ env:
 
 deco:
   inference_mode: qiangnao_tactile
-  runtime_mode: local_real
 
 inference:
   policy_type: deco

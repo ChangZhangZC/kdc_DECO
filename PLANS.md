@@ -31,6 +31,8 @@
 - [x] 固定 `rgb_keys` 为恰好三个有序入口，默认顺序为 head、left wrist、right wrist；不提供 N-view 或 head-only fallback。
 - [x] 三路 RGB 共用一套 ResNet34 与 `img_head`，通过三项 camera embedding 区分物理视角。
 - [x] 删除 depth 输入、depth backbone、depth normalization、RGB-D fusion 与前端 early cross-attention。
+- [x] 当前训练版本的 DECO rosbag 转换链路已同步禁用 depth topic 读取、时间对齐、LeRobot feature 创建与帧写入；历史实现以中文注释保留，输出仅包含 RGB、state、action 与可选 tactile。
+- [x] DECO rosbag 转换链路已固定写入 `head_cam_h`、`wrist_cam_l`、`wrist_cam_r` 三路 RGB；按 head 时间轴对齐并与 3View RGB policy 的键名和顺序一致。
 - [x] 保留原生 DECO `MMAttention`、state、tactile、Flow Matching loss、action chunk 与 action dispatch。
 - [x] 训练 processor、policy wrapper、原生 DECO 推理入口、实机、仿真及 server/client 部署统一使用三个 key 的固定顺序。
 - [x] 任一路相机缺失、重复、shape 不一致、部署 topic 不可提供或帧同步失败时显式报错，不复制 head、不复用旧帧、不静默降级。
@@ -42,6 +44,7 @@
 - [x] 修复 Hydra 将嵌套 `PolicyFeature` 展平为普通字典后，3View RGB 配置在 `__post_init__` 提前访问 `.type` 的问题；构造期间仅按 key 过滤 depth，随后复用训练入口已有的 input/output feature 类型恢复逻辑。
 - [x] 删除 `.gitignore` 中过宽的 `DECO/` 规则，避免误忽略路径中名为 `deco` 的训练 wrapper 和后续新增文件。
 - [x] 完成 `git diff --check`、禁止项文本检索、关键 tensor shape 与 key 顺序的逐文件静态审查。
+- [x] 删除不参与入口选择、动作下发或安全控制的 `deco.runtime_mode` 字段；仿真、真机与 server/client 模式统一由实际启动入口决定。
 - [ ] 在允许运行代码的环境中验证三路 batch 构造、训练 forward/loss 与 checkpoint 保存加载。
 - [ ] 在仿真和实机分别验证左右腕物理对应、相机丢帧 fail-fast、30Hz Receding Horizon 与三种末端执行器 profile。
 - [ ] 测量 Receding Horizon 重规划周期的推理阻塞、实际控制频率与 action jitter。

@@ -105,14 +105,6 @@ deco:
   inf_step: null
 
   # 可选值：
-  # - local_real: 本地单进程真机推理，沿用 real_single_test.py 的 pre/postprocessor 路径。
-  # - local_sim: 本地单进程仿真推理，沿用 sim_auto_test.py 的 pre/postprocessor 路径。
-  # - server: server/client 模式；server 只负责 processed observation -> raw policy action。
-  # - dry_run: 真实传感器输入，策略输出只记录不下发。
-  # 注意：runtime_mode 是部署意图记录字段，不会自动选择脚本入口；实际入口仍由用户运行的 eval/server 脚本决定。
-  runtime_mode: local_sim
-
-  # 可选值：
   # - live_joint_q:
   #   从 /sensors_data_raw.joint_data.joint_q[26:28] 实时读取头部 yaw/pitch。
   #   优点是贴近机器人当前状态；缺点是可能带入传感器微小抖动。
