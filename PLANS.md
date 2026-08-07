@@ -216,7 +216,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 输出 DECO 强制 28 维排列：`左臂 0-6 -> 左手 7-12 -> 右臂 13-19 -> 右手 20-25 -> 头部 26-27`。
   - [x] arm action 继承现有清洗逻辑：优先使用 `/kuavo_arm_traj_synced`，否则 `/kuavo_arm_traj`，`/joint_cmd` 只作为 fallback 或一致性对照。
   - [x] hand action 继承现有清洗逻辑：使用 `/control_robot_hand_position` 的左右手目标位置；DECO 配置中固定使用左右手各 6 DoF，不使用 ACT/DP 默认的 `dex_dof_needed: 1` 压缩策略。
-  - [x] `observation.state[26:28]` 使用每个 episode 的 `joint_q[26:28]` 实测固定均值；`action[26:28]` 当前固定补 `[0.0, 0.0]`，表示阶段一暂不控制头部。
+  - [x] `observation.state[26:28]` 逐帧保留对齐后的 `/sensors_data_raw.joint_q[26:28]`，`action[26:28]` 逐帧保留独立对齐后的 `/joint_cmd.joint_q[26:28]`；两者均不固定填充或相互复制。
   - [x] 新增 `gripper_no_tactile` 18D 顺序：`左臂 0-6 -> 左夹爪 7 -> 右臂 8-14 -> 右夹爪 15 -> 头部 16-17`。
   - [x] `leju_claw` 与 `rq2f85` 在清洗入口保留不同 topic 和归一化尺度，但进入 DECO 后共享 `gripper_no_tactile` 18D schema。
 - [ ] **1.7 单 rosbag 转换试跑与数据一致性检查**
@@ -230,7 +230,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [ ] 检查维度：RGB `(3,H,W)`、depth `(1,H,W)` 或等价 depth shape；`qiangnao_tactile` 为 state/action `(28,)`、tactile `(30,)`；`gripper_no_tactile` 为 state/action `(18,)` 且无 tactile。
   - [ ] 检查 depth 来源与编码：确认 `/cam_h/depth/image_raw/compressed` 可通过 `compressed_image` decoder 解码为 `uint16` depth，且 `/cam_h/depth/image_raw/compressedDepth` 可通过 `compressedDepth_png` decoder 定位 PNG payload 后解码；若启用 raw `16UC1` fallback，则额外检查对应消息封装和 `height/width/step/is_bigendian/data` 解析正确。
   - [ ] 检查时间轴：episode 目标频率约为 30Hz，RGB/depth/state/action/tactile 时间戳对齐误差在可配置阈值内。
-  - [ ] 检查语义：profile 对应 action 重排顺序、头部 state 均值广播、头部 action 补零；若存在触觉，则检查 normal force 除以 100 后为牛顿量纲。
+  - [ ] 检查语义：profile 对应 action 重排顺序、头部 state 来自逐帧 `/sensors_data_raw`、头部 action 来自逐帧 `/joint_cmd`；若存在触觉，则检查 normal force 除以 100 后为牛顿量纲。
   - [ ] 输出中文 validation report，列出 pass/fail、异常 episode、缺失字段、shape mismatch 和时间对齐误差。
 
 ---
@@ -455,11 +455,11 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [ ] **6.2 30Hz 数据 / 10Hz 控制一致性验证**
   - [ ] 检查 `dataset_hz=30` 与 `control_hz=10` 的 stride 关系，避免动作节奏过密或过稀。
   - [ ] 检查 action chunk 长度是否足够覆盖部署控制队列需求。
-  - [ ] 分别检查 `deco_28d` 的头部 action 维度 26-27 与 `deco_18d` 的头部 action 维度 16-17 当前补零策略不会被部署端误解释为真实头部控制。
+  - [ ] 分别检查 `deco_28d` 的头部 action 维度 26-27 与 `deco_18d` 的头部 action 维度 16-17；当前数据来自逐帧 `/joint_cmd`，但部署端仍只保留预测维度而不下发头部控制。
   - [ ] 检查 `head_state_source=live_joint_q/fixed_config` 对在线 state 分布的影响，确认部署输入与训练数据头部姿态语义一致。
 - [ ] **6.3 闭环测试验证**
   - [ ] 第一轮关闭触觉进入仿真或真机 dry-run：覆盖 `qiangnao_no_tactile` 与 `gripper_no_tactile`，只验证 RGB-D + state + action 的 DECO 主干闭环。
-  - [ ] 仿真好结果标准：无 NaN/Inf、无关节越界、动作输出平滑、左右手/左右臂映射正确、头部 action 补零不引入异常、10Hz action queue 节奏稳定。
+  - [ ] 仿真好结果标准：无 NaN/Inf、无关节越界、动作输出平滑、左右手/左右臂映射正确、头部预测维度不干扰现有下发路径、10Hz action queue 节奏稳定。
   - [ ] 任务行为好结果标准：末端运动方向符合示教趋势，抓取或接触前动作不过早抖动，成功率和轨迹平滑度至少接近同数据上的 ACT/DP 基线。
   - [ ] RGB-D 感知验证：检查 RGB 与 depth 是否对齐，depth 是否进入正确 backbone，RGB 增强不会错误作用到 depth。
   - [ ] 第二轮开启触觉 LoRA：使用 `qiangnao_tactile` 加载二阶段 tactile adapter checkpoint，再做仿真、离线 replay 或低风险真机验证。

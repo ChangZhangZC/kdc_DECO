@@ -1,5 +1,74 @@
 # AI Execution Logs
 
+## 2026-08-07
+
+### 提交 DECO 数据清洗端整理结果
+
+- **提交目的**：根据用户确认，将已经收口的数据清洗端配置、转换逻辑与配套说明整理为独立 Git 提交。
+- **提交范围**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`、`kuavo_data/CvtRosbag2Lerobot_DECO.py`、`README_DECO.md`、`PLANS.md` 与 `AI_Logs.md`。
+- **提交信息**：`refactor(data): 收敛 DECO 数据清洗配置与头部语义`。
+- **排除范围**：不纳入 `AGENTS.md`、Content PDF、`kuavo_data/inspect_deco_stage1_schema.py`、`kuavo_data/validate_deco_lerobot_dataset.py`、`重启训练脚本.md` 等当前工作区中的用户修改或删除；其中 validator 的上一轮修改记录作为操作历史保留，但该文件当前删除状态不进入本提交。
+- **验证边界**：提交前仅执行目标文件 diff、暂存区作用域与 `git diff --check` 静态检查；遵守 No-Runtime 规约，不运行 Python、数转、validator、训练、ROS、仿真、部署或测试。
+
+### DECO 头部 action 改为逐帧保留 `/joint_cmd`
+
+- **任务边界**：根据用户确认，本次只修改数据清洗端；不修改训练入口、policy、checkpoint 结构或部署端头部下发逻辑。
+- **修改文件 1**：`kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 删除 `deco.head_action_fill` 的读取与固定头部 action 填充逻辑。
+  - 新增 `extract_head_action()`，要求完整 `/joint_cmd.joint_q` 至少为 28 维，并逐帧提取 `[26:28]` 作为 yaw/pitch action。
+  - 28D `qiangnao_tactile` 与 18D `gripper_no_tactile` 两类 action 均改用独立对齐后的 `/joint_cmd.joint_q[26:28]`；不复制 observation，也不对头部 action 做固定填充或单位转换。
+  - 将 `action.joint_cmd` 提升为所有 rosbag 的必需数据：即使双臂仍优先使用 `/kuavo_arm_traj_synced` 或 `/kuavo_arm_traj`，头部也始终从 `/joint_cmd` 取值。缺少该 topic 或消息不足 28 维时显式失败，避免生成语义不完整的数据集。
+  - 保持头部 observation 逻辑不变，继续逐帧保留对齐后的 `/sensors_data_raw.joint_q[26:28]`。
+- **修改文件 2**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 删除 `deco.head_action_fill` 字段。
+  - 头部 observation/action 的固定来源说明统一保留在转换脚本顶部架构区，YAML 不再提供相关可配置字段。
+- **修改文件 3**：`kuavo_data/validate_deco_lerobot_dataset.py`
+  - 删除“头部 action 必须为零”和“头部 state 必须近似固定”的过时 validator 参数与判定。
+  - 改为汇总头部 state/action 的逐维 min、max、std；有限值仍由通用向量检查保证。
+- **同步文档**：更新 `README_DECO.md` 与 `PLANS.md` 的当前头部数据来源说明；历史方案记录保持不变。
+- **明确未修改**：`configs/policy/`、`kuavo_train/`、`configs/deploy/`、`kuavo_deploy/` 与模型实现均未修改；部署端当前仍保留头部 action 但不下发。
+- **静态检查**：仅进行文本检索、函数签名/调用参数核对、必需 topic 与时间对齐链路审查、目标文件 `git diff --check`；未运行 Python、validator、数转、训练、ROS、仿真、部署或测试。
+
+### 精简 DECO 数转配置并集中说明固定数据架构
+
+- **任务**：根据用户确认，清理 DECO 数据转换 YAML 中无实际分支逻辑的字段，删除用户可配置的 task description 链路，精简重复设备注释，并在转换脚本顶部汇总当前固定架构。
+- **老数据与老 checkpoint 兼容性**：
+  - 保留 policy config/wrapper/model 中已有的 `use_task_condition` 与 `num_tasks` 兼容字段，不改动 checkpoint 配置反序列化和权重结构。
+  - 当前 DECO 配置保持 `use_task_condition=false`；wrapper 在该状态下不读取 batch 中的 `task_index`，因此老数据已有的 `task/task_index` 不会影响当前训练或部署。
+  - LeRobot `add_frame()` 强制要求每帧含 `task`；新数据改为内部固定占位 `kuavo_deco`，仅满足 LeRobot schema，不再从数转 YAML 读取任务描述。
+- **修改文件 1**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 删除 `dataset.only_arm`、`dataset.which_arm`、`dataset.task_description`、`dataset.main_timeline`、`dataset.main_timeline_fps`、`dataset.delta_action`和 `dataset.relative_start`。
+  - 保留 `dataset.dex_dof_needed: 6` 作为固定 schema 信息字段，明确其不是自由度裁剪开关。
+  - 精简 `eef_type` 与 `end_effector_profile` 的重复设备说明，只保留 28D/18D schema 映射。
+  - 按用户最终边界保持 `dataset.train_hz`、policy `dataset_hz` 以及训练/部署频率逻辑完全不变，未执行重命名或自动注入。
+- **修改文件 2**：`kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 重写文件顶部“固定数据架构”，集中说明双臂+双末端+头部数据范围、三路 RGB 顺序、28D/18D 精确索引、绝对 action、头部语义、`train_hz` 和 task 兼容语义。
+  - 新增 `DECO_LEROBOT_TASK = "kuavo_deco"`，删除 `task` 在 `main -> port_deco_rosbag -> populate_dataset` 之间的参数传递。
+  - 新增 `validate_deco_architecture_info()`，对 `dataset.dex_dof_needed` 执行固定整数 `6` 的 fail-fast 校验，不用该字段动态改变 state/action 维度。
+- **修改文件 3**：`README_DECO.md`
+  - 删除 `dataset.task_description` 及无效固定字段的用户配置说明。
+  - 将过时 RGB-D/depth 选项替换为当前固定 3View RGB 说明，并补充新老数据的 task 兼容边界。
+- **静态检查**：
+  - 复核 DECO 配置和转换脚本已无被删除字段的活动读取。
+  - 复核 `populate_dataset()` / `port_deco_rosbag()` 的定义与调用参数一致，每帧仍提供 LeRobot 必需的 `task`。
+  - 复核 policy config、单卡/多卡训练入口、policy wrapper 与 DECO 模型零修改，老 checkpoint 的兼容字段保持原样。
+  - 遵守 No-Runtime 规约，未运行 Python、pytest、数转、训练、ROS、部署或环境变更命令。
+
+### DECO 头部 observation 改为逐帧保留原始数值
+
+- **任务**：根据用户确认，数据清洗阶段不再对头部 observation 求 episode 均值或广播固定值，每帧直接保留对齐后 `/sensors_data_raw` 中的 `joint_q[26:28]`。
+- **修改文件 1**：`kuavo_data/CvtRosbag2Lerobot_DECO.py`
+  - 删除 `compute_head_episode_mean()` 及 `populate_dataset()` 中的 episode 头部均值计算。
+  - `build_deco_state()` 的 28D schema 末两维改为直接使用当前帧 `joint_q_array[26:28]`。
+  - `build_deco_gripper_state()` 的 18D schema 末两维同步改为当前帧 `joint_q_array[26:28]`。
+  - 两类 schema 均不对头部 observation 做平滑、求均、固定填充或单位转换；只保留现有的 30Hz 时间轴最近邻对齐和 float32 存储。
+  - 本次不修改头部 action；`deco.head_action_fill` 与 `[0.0, 25.0]` 固定填充保持原样。
+- **修改文件 2**：`configs/data/KuavoRosbag2Lerobot_deco.yaml`
+  - 更新头部注释，明确 observation 为逐帧 `joint_q[26:28]` 原值，action 仍使用现有固定填充。
+- **修改文件 3**：`PLANS.md`
+  - 将当前头部 state 语义从“episode 均值广播”更新为“逐帧原值”，并校正头部 action 当前填充值为 `[0.0, 25.0]`。
+- **静态检查**：本次仅进行文本检索、调用参数核对和 diff 检查；未运行 Python、pytest、数转、训练、ROS 或部署程序。
+
 ## 2026-08-05
 
 ### 移除 DECO 清洗入口的深度配置初始化依赖

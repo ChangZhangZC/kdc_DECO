@@ -96,24 +96,24 @@ configs/data/KuavoRosbag2Lerobot_deco.yaml
 | `rosbag.rosbag_dir`         | rosbag 输入目录        | 目录内应包含一个或多个 `.bag` 文件                                   |
 | `rosbag.num_used`           | 转录 rosbag 数目       | `null` 表示使用目录下全部 bag                                        |
 | `rosbag.lerobot_dir`        | rosbag 输出目录        | 推荐写最终 LeRobot dataset root，例如 `/data/task_x_deco/lerobot`    |
-| `dataset.task_description`  | 任务名称描述           | 写入 LeRobot task metadata                                           |
 | `dataset.eef_type`          | 末端执行器类型         | 可填 `qiangnao`、`leju_claw`、`rq2f85`。                             |
+| `dataset.train_hz`          | 输出数据集目标帧率     | 当前默认 30Hz；所有模态对齐到 head RGB 时间轴                  |
+| `dataset.dex_dof_needed`    | 固定 schema 信息      | 当前只允许 `6`，不是自由度裁剪开关                               |
 | `deco.end_effector_profile` | 一般保持 `auto`        | 手动指定时必须与 `dataset.eef_type` 匹配                             |
 | `deco.write_tactile`        | 是否转录触觉信息的开关 | `qiangnao_tactile` 可写入 tactile；二夹爪 profile 会强制忽略 tactile |
 | `deco.overwrite`            | 覆盖已有输出目录       | 默认 `false`，避免误删或覆盖已有数据                                 |
 
 ### 2.3 末端执行器选项
 
-`dataset.eef_type` 是给用户最主要的选择入口：
+`dataset.eef_type` 是末端执行器选择入口：
 
-- `qiangnao`：强脑灵巧手。`deco.end_effector_profile=auto` 会映射为 `qiangnao_tactile`，输出 28D `observation.state` / `action`，可选写入 30D `observation.tactile`。
-- `leju_claw`：Leju 二指夹爪。`auto` 会映射为 `gripper_no_tactile`，输出 18D state/action，不写入 tactile。
-- `rq2f85`：Robotiq/RQ2F85 二指夹爪或仿真夹爪。`auto` 同样映射为 `gripper_no_tactile`，输出 18D state/action，不写入 tactile。
+- `qiangnao` -> `qiangnao_tactile`：28D state/action，可选写入 30D tactile。
+- `leju_claw` / `rq2f85` -> `gripper_no_tactile`：18D state/action，不写入 tactile。
 
 `deco.end_effector_profile` 可选：
 
 - `auto`：推荐值，根据 `dataset.eef_type` 自动推导。
-- `qiangnao_tactile`：显式指定强脑灵巧手 profile，要求 `dataset.eef_type=qiangnao`。
+- `qiangnao_tactile`：显式指定 28D profile，要求 `dataset.eef_type=qiangnao`。
 - `gripper_no_tactile`：显式指定二夹爪无触觉 profile，要求 `dataset.eef_type=leju_claw` 或 `rq2f85`。
 
 输出维度由 profile 决定，不要手动制造新的维度组合：
@@ -128,33 +128,18 @@ gripper_no_tactile:
   no observation.tactile
 ```
 
-### 2.4 Depth 选项
+### 2.4 视觉输入
 
-默认 depth 配置是：
+当前 DECO 固定使用 head、left wrist、right wrist 三路 RGB，不读取或写入 depth。三路顺序同时决定 policy 的 camera embedding 语义，不能交换。
 
-```yaml
-deco:
-  depth_topic: /cam_h/depth/image_raw/compressed
-  depth_encoding: compressed_image
-```
+### 2.5 固定架构与兼容性
 
-这里的 depth_topic 是首选 depth topic，不是唯一 topic。转换脚本会根据当前 bag 中实际存在的 topic 构造候选并按顺序选择：
-1. 优先使用 depth_topic + depth_encoding。
-2. 如果首选 topic 以 /compressed 结尾，脚本会额外尝试对应的 /compressedDepth + compressedDepth_png。
-3. 如果首选 topic 以 /compressedDepth 结尾，脚本会额外尝试对应的 /compressed + compressed_image。
-
-为了兼容当前 LeRobot image/video writer，会把 depth 保存为 3-channel depth image；DECO wrapper 在训练时再取单通道送入 1-channel depth backbone。这个存储策略不是严格 metric depth 保真方案，后续如果要保留毫米尺度，需要同步升级 converter、训练 config 和部署入口。
-
-### 2.5 不建议随意修改的字段
-
-下面字段在 YAML 中保留主要是为了说明 DECO 固定约束，不是普通用户开关：
-
-- `dataset.only_arm: true`：DECO 当前只训练上半身操作。
-- `dataset.which_arm: both`：DECO 28D/18D schema 都是双臂。
-- `dataset.use_depth: true`：Kuavo-DECO 当前是 RGB-D 路线，不是纯 RGB 路线。
-- `dataset.train_hz: 30`：训练数据统一为30Hz；默认 Receding Horizon 也按30Hz连续执行原始 chunk。
-- `dataset.dex_dof_needed: 6`：强脑灵巧手使用左右手各 6 DoF，不沿用 ACT/DP 单维开合量。
-- `dataset.delta_action: false`、`dataset.relative_start: false`：当前 DECO 输出绝对 joint/action schema。
+- 数据固定包含双臂、双末端执行器和头部，不包含腿部、腰部或底盘。
+- 28D/18D 精确拼接顺序记录在转换脚本顶部的“固定数据架构”中。
+- 头部 observation 来自逐帧对齐的 `/sensors_data_raw.joint_q[26:28]`，头部 action 来自逐帧对齐的 `/joint_cmd.joint_q[26:28]`；两者均不使用固定填充。
+- 当前只输出绝对 joint/action，不支持 delta action 或 relative-start action。
+- `dataset.dex_dof_needed: 6` 仅声明并校验固定 schema，修改为其他值会立即报错。
+- 数转 YAML 不再提供 `task_description`。新数据仅为满足 LeRobot 格式写入固定 task 占位；旧数据的 `task/task_index` 在 `use_task_condition=false` 时同样不进入 DECO 模型。
 
 
 ## 3. 模型训练

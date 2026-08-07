@@ -13,50 +13,27 @@ rosbag:
   lerobot_dir: /your/path/to/your/lerobotdata_deco/lerobot
 
 dataset:
-  only_arm: true
-
-  # 可选值：
-  # - qiangnao: 强脑灵巧手；auto profile 会映射为 qiangnao_tactile，state/action 为 28D，可选写入 30D tactile。
-  # - leju_claw: Leju 二指夹爪；auto profile 会映射为 gripper_no_tactile，state/action 为 18D，不写入 tactile。
-  # - rq2f85: Robotiq/RQ2F85 二指夹爪或仿真夹爪；auto profile 会映射为 gripper_no_tactile，state/action 为 18D，不写入 tactile。
+  # 末端执行器类型：qiangnao 使用 28D 灵巧手 schema；leju_claw 与 rq2f85 使用 18D 夹爪 schema。
   eef_type: qiangnao
-  # 固定约束：DECO profile 当前要求双臂 schema；left/right 单臂配置仍属于原 ACT/DP 数据链路。
-  which_arm: both
-  task_description: "Pick and Place"
 
-  # DECO 训练数据统一下采样为 30Hz；部署 10Hz 在 policy/deploy wrapper 阶段处理。
+  # DECO 训练数据统一下采样为 30Hz，从 head_cam_h 主时间轴首尾各丢弃的原始帧数。
   train_hz: 30
-  # DECO 固定以 head_cam_h 的真实时间戳生成 30Hz 目标时间轴；left/right wrist RGB 最近邻对齐到该轴。
-  # 三路均为必需输入，任一路缺失会报错；不要把 main_timeline/main_timeline_fps 当作 ACT/DP 式跳帧开关。
-  main_timeline: head_cam_h
-  main_timeline_fps: 30
   sample_drop: 10
 
-  # 固定约束/信息字段：qiangnao_tactile 使用左右手各 6 DoF；gripper_no_tactile 不消费该字段。这里保留 6 是为了提醒 DECO 不沿用 ACT/DP 默认的单维灵巧手开合量。
+  # 固定信息字段：qiangnao 左右手各使用 6 DoF。当前只允许填写 6。
   dex_dof_needed: 6
 
   is_binary: false
-  # 信息字段：下面两个字段来自原 ACT/DP 配置模板；当前 DECO 转换不支持 delta/relative action 路线。
-  # 保留为 false 是为了明确当前输出为绝对 joint/action schema。
-  delta_action: false
-  relative_start: false
 
+  # Sim 640*480, Real 840*480
   resize:
     width: 640
     height: 480
 
 deco:
-  # 可选值：
-  # - auto: 根据 dataset.eef_type 自动推导 profile，推荐默认值。
-  # - qiangnao_tactile: 显式指定强脑灵巧手 profile；要求 dataset.eef_type=qiangnao。
-  # - gripper_no_tactile: 显式指定二夹爪无触觉 profile；要求 dataset.eef_type=leju_claw 或 rq2f85。
-  # auto 推导规则：
-  # - dataset.eef_type=qiangnao -> qiangnao_tactile，28D state/action，可写入 30D tactile。
-  # - dataset.eef_type=leju_claw/rq2f85 -> gripper_no_tactile，18D state/action，不写入 tactile。
+  # auto 根据 eef_type 选择 qiangnao_tactile 或 gripper_no_tactile schema。
   end_effector_profile: auto
 
-  # 固定三视角顺序必须与 configs/policy/deco_config.yaml 中的 policy.rgb_keys 一致。
-  # 该映射复用 CvtRosbag2Lerobot.py：head=/cam_h、left wrist=/cam_l、right wrist=/cam_r。
   rgb_keys:
     - head_cam_h
     - wrist_cam_l
@@ -66,7 +43,6 @@ deco:
     wrist_cam_l: /cam_l/color/image_raw/compressed
     wrist_cam_r: /cam_r/color/image_raw/compressed
 
-  # 原清洗链路的 action 来源优先级。
   arm_action_priority:
     - /kuavo_arm_traj_synced
     - /kuavo_arm_traj
@@ -77,19 +53,12 @@ deco:
   rq2f85_state_topic: /gripper/state
   rq2f85_action_topic: /gripper/command
 
-  # 触觉 topic 与量纲换算。仅 qiangnao_tactile 可写入 tactile；
-  # gripper_no_tactile 会强制忽略 tactile，不能用全零 tactile 伪装无触觉。
-  write_tactile: true
+  write_tactile: true  # 仅 qiangnao_tactile 可写入 tactile。
   tactile_topic: /dexhand/touch_state
-  # Kuavo 原始 normal_force / tactile_force_scale -> 牛顿量纲；默认 /100 与当前数据转换和部署保持一致。
-  tactile_force_scale: 100.0
-
-  # 固定信息：头部 state 使用 episode 内 joint_q[26:28] 均值；头部 action 当前补零。
-  head_action_fill: [0.0, 25.0]
+  tactile_force_scale: 100.0   # normal_force / tactile_force_scale -> 牛顿量纲；默认 /100
 
   # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
   overwrite: false
 
-  # 继承原脚本保护性检查：检测 arm trajectory timestamp gap。
   # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
   arm_traj_gap_threshold_s: null
