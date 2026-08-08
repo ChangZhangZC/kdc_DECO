@@ -2,6 +2,35 @@
 
 ## 2026-08-08
 
+### 提交 README 与 Three Views RGB 架构文档整理
+
+- **提交范围**：提交 `README_DECO.md`、`PLANS.md`、已合并后删除的 `docs/plans/2026-07-26-3view-rgb-action-dispatch.md` 以及本日志。
+- **提交信息**：`docs(deco): 收束 README 与三视角架构说明`。
+- **排除范围**：不纳入 `AGENTS.md`、Content PDF、两个数据检查脚本及 `重启训练脚本.md` 的现有修改或删除。
+- **验证边界**：提交前仅进行目标 Markdown 差异审查与 `git diff --check`；遵守 No-Runtime 规约，不运行代码、测试、训练、ROS、仿真或部署。
+
+### 按当前代码状态重构并清理 README_DECO.md
+
+- **任务目标**：在 DECO 模型架构基本收口后，结合 `deco/feature/3view-rgb` 分支、当前工作区和最近的数据/训练/部署配置收敛结果，清理 `README_DECO.md` 中已经与代码不符的历史状态，使文档只描述当前受支持链路。
+- **总体架构同步**：将文档统一为固定 head、left wrist、right wrist 三视角 RGB + state + 可选 tactile 的当前架构；删除旧 RGB-D、depth topic、Depth backbone、RGB-depth fusion 和部署 depth 配置说明，明确当前 converter、processor、normalizer 与 policy 均不消费 depth。
+- **数据链路更新**：依据 `configs/data/KuavoRosbag2Lerobot_deco.yaml` 与 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，重写三路 RGB key/topic、30Hz 主时间轴、28D/18D profile、30D tactile、绝对 action、头部逐帧 observation/action 和 profile 自动推导说明。
+- **训练配置更新**：依据 `configs/policy/deco_config.yaml`、`DECOConfigWrapper.py` 与 `train_policy.py`，明确 `action_dim` 和三个训练布尔值由 profile/阶段派生；整理 Visual Main、Tactile Adapter、历史 `.pth` warm start、`base_policy_path`、`adapter_model_path` 与完整 resume 的合法边界和互斥关系。
+- **部署配置更新**：依据 `configs/deploy/kuavo_deco_env.yaml`、`kuavo_deploy/config.py` 与 `deco_obs_action.py`，将四个无歧义 inference mode 作为部署 schema 唯一入口，说明 loader 自动派生末端类型、18D/28D layout、双臂约束与灵巧手 DoF；使用当前 `head_control` 和嵌套 `inference.checkpoint` 字段替换历史写法。
+- **动作分发同步**：仅保留 `receding_horizon` 与 `temporal_ensemble` 两种互斥模式，明确两者都要求 `env.ros_rate == checkpoint.dataset_hz`，并将已删除的 `stride_action` 列为不再支持的历史能力。
+- **文档结构清理**：合并重复的仿真、真机和末端 profile 示例，新增当前架构边界、推荐工作流、常见误配与未提供能力章节；删除对已移除 Inspector/Validator 的使用依赖，仅保留当前不存在独立检查入口的状态说明。
+- **用户改动保护**：修改建立在 `README_DECO.md` 已暂存的 stride 清理内容之上，未回退或覆盖工作区中其他已暂存、未暂存或删除状态。
+- **静态验证边界**：逐项对照当前 YAML、dataclass、converter、training wrapper、deployment loader 和 checkpoint 路径代码，执行目标 Markdown 的文本检索、差异审查与 `git diff --check`；遵守 No-Runtime 规约，未运行 Python、测试、训练、ROS、仿真、部署或环境修改命令。
+
+### 合并并收束 Three Views RGB 技术架构文档
+
+- **任务目标**：将根目录 `PLANS.md` 与 `docs/plans/2026-07-26-3view-rgb-action-dispatch.md` 合并为一份面向当前代码状态的技术架构说明，作为 Kuavo-DECO Three Views RGB 路线的唯一架构真理源。
+- **重写 `PLANS.md`**：删除旧文档中已经被覆盖的 RGB-D、depth backbone、RGB-depth early cross-attention、10Hz控制解耦和阶段性 checklist 描述，改为按当前代码职责组织的端到端技术文档。
+- **架构图与数据流**：新增 Three Views RGB 数据输入、共享 ResNet、camera embedding、二维 RoPE、192个 visual tokens、DECO MMAttention、Flow Matching action decoder、32步 action chunk、dispatcher 与机器人执行层的完整架构图和形状说明。
+- **动作后端收束**：吸收独立 action dispatch 计划，明确 `chunk_size=32` 是模型结构参数；默认 Receding Horizon 在30Hz连续执行前16步后重新推理，Temporal Ensembling 为互斥备选；两者均要求 `env.ros_rate == checkpoint.dataset_hz`。
+- **训练与部署边界**：补充18D/28D profile、Visual Main/Tactile Adapter 两阶段训练、30D触觉归一化、run-root资产、本地与server/client pre/postprocessor归属、fixed/policy头部控制及配置/代码职责映射。
+- **清理独立计划**：删除内容已完整并入 `PLANS.md` 的 `docs/plans/2026-07-26-3view-rgb-action-dispatch.md`，避免同一架构在两处继续维护。
+- **保留验证边界**：将尚未完成的训练、仿真、实机和性能验证集中保留在文档末尾；本次仅进行 Markdown 静态修改和一致性核对，不运行 Python、测试、训练、ROS、仿真或部署程序。
+
 ### 提交 DECO 动作分发模式收敛改动
 
 - **提交范围**：仅包含 `stride_action` 删除链路、两种 dispatcher 的配置与调用收敛、`ros_rate` checkpoint 匹配备注、相关 README/计划文档以及本日志；不纳入工作区中既有的其他修改或删除。
