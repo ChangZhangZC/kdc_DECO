@@ -38,9 +38,9 @@
 - [x] 任一路相机缺失、重复、shape 不一致、部署 topic 不可提供或帧同步失败时显式报错，不复制 head、不复用旧帧、不静默降级。
 - [x] 从头训练，默认关闭外部 checkpoint 初始化，不实现旧 RGB-D checkpoint 的 shape 兼容或参数迁移。
 - [x] 保持 `kuavo_data/CvtRosbag2Lerobot_DECO.py`、`configs/data/KuavoRosbag2Lerobot_deco.yaml` 与已有 LeRobot 数据不变；训练仅从数据集读取三路 RGB。
-- [x] 移植 `deco/fix/action-state` 的三模式动作后端：`receding_horizon`、`temporal_ensemble`、`stride_action`。
+- [x] 动作后端收敛为两种互斥模式：`receding_horizon` 与 `temporal_ensemble`。
 - [x] 默认 `chunk_size=32`、`n_action_steps=16`，以30Hz连续执行原始 action index `0..15`，约0.533s后使用最新观测重新推理。
-- [x] `action_stride=3` 不再属于默认路径；仅显式选择 `stride_action` 时允许按目标频率降采样。
+- [x] 删除部署期 stride 降频；两种保留模式均按 checkpoint 的 `dataset_hz` 下发动作。
 - [x] 修复 Hydra 将嵌套 `PolicyFeature` 展平为普通字典后，3View RGB 配置在 `__post_init__` 提前访问 `.type` 的问题；构造期间仅按 key 过滤 depth，随后复用训练入口已有的 input/output feature 类型恢复逻辑。
 - [x] 删除 `.gitignore` 中过宽的 `DECO/` 规则，避免误忽略路径中名为 `deco` 的训练 wrapper 和后续新增文件。
 - [x] 完成 `git diff --check`、禁止项文本检索、关键 tensor shape 与 key 顺序的逐文件静态审查。
@@ -96,14 +96,14 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - `.pth` 仅作为导入 DECO 原生权重或历史 PyTorch checkpoint 的兼容入口；Kuavo-DECO 正式训练、续训和部署资产采用原 Kuavo 约定：`outputs/train/<task>/<method>/<timestamp>/` 是完整 run 根目录，`epoch<epoch>/` 只是其中被选择的权重子目录，`epochbest/` 单独拷贝不是完整部署包。
 - `train_policy.py` 的核心训练循环、optimizer step、epoch loop 和 dataloader loop 不应为 DECO 改写；阶段四只允许做最小策略注册（例如在 policy registry/dict 中加入 `deco`）以及必要的 processor/factory 轻量接入。
 - 原始采集流可能为 100Hz 或更高；LeRobot 训练数据统一重采样到 **30Hz**。
-- 推理阶段的“10Hz”指机器人控制频率，不是 DECO denoising step，也不是视觉历史帧数；部署 wrapper 通过动作队列/stride 将 30Hz 语义动作转换为 10Hz 控制输出。
+- 部署控制频率必须与 checkpoint 的 `dataset_hz` 一致；当前数据为30Hz时，两种 dispatcher 均按30Hz消费动作，不再做部署期 stride 降频。
 
 ### 0.3 关键解释
 
 - `chunk_size` 表示 DECO 一次预测的 action chunk 长度，不表示视觉帧数。
 - `inf_step` 表示 Flow Matching 推理时的去噪步数，不表示机器人控制频率。
 - `train_hz` 属于洗数据阶段，决定 LeRobot 数据集中相邻样本的时间间隔。
-- `control_hz` 属于部署/wrapper 阶段，决定真机或仿真消费动作的频率。
+- `env.ros_rate` 属于部署阶段，必须与 checkpoint 的 `dataset_hz` 一致。
 - `use_tactile_lora` 是 Kuavo 配置层面对 DECO 原生 `plugin` 的语义化开关；开启后才使用 tactile PI_Adapter 低秩微调。
 - `end_effector_profile=qiangnao_tactile` 表示 DECO 使用灵巧手 schema：左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2，共 28D，可选择进入 tactile adapter 二阶段。
 - `end_effector_profile=gripper_no_tactile` 表示 DECO 使用二夹爪 schema：左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2，共 18D；该 profile 禁止 `use_tactile=true`、`use_tactile_lora=true` 和 `training_stage=tactile_adapter`。
@@ -128,8 +128,8 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - 当前 DECO 视觉前端在 RGB/depth 各自 ResNet 后、进入 `pack_visual_token_sequences()` 之前执行 RGB-depth 双向 cross attention。
 - 这一步发生在显式二维 RoPE 与 stream embedding 之前，因此 RGB token 可以全局 attend 到任意 depth token；在低数据量或弱视觉监督下，它可能提前扰乱 RGB-D 原本的空间对应关系。
 - 对抓取任务而言，RGB 提供纹理、边界和语义，depth 提供几何距离和空间结构。如果 early cross attention 学到错误跨模态关联，后续 action token 看到的视觉 token 可能已经被污染，从而表现为空抓或目标定位偏移。
-- 当前 DECO 部署 wrapper 会先从 30Hz 语义 action chunk 中按 `action_stride=3` 取出 10Hz action，再把完整 strided chunk 放入执行队列。`chunk_size=32` 时队列长度为 11，约 1.1s 后才重新推理。
-- 对抓取后放置这类接触敏感阶段，1.1s 开环执行可能导致策略无法及时根据 toy 已被夹起、物体滑动、篮筐碰撞或末端偏移做闭环修正，从而表现为放置阶段轻微抽搐或“被弹回”。
+- 当前 DECO 默认以30Hz连续执行 action chunk 前16步，约0.533s 后根据最新观测重新推理。
+- 对抓取后放置这类接触敏感阶段，仍需评估 Receding Horizon 开环长度是否影响物体滑动、篮筐碰撞或末端偏移后的及时修正。
 
 ### stream embedding 与 RoPE 语义
 
@@ -147,9 +147,9 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中向 `DECO(...)` 透传 `visual_fusion_mode`，不改变 batch 输入字段、loss、action queue、tactile 逻辑或 pre/postprocessor 顺序。
 - [x] 在 `third_party/deco/models/deco/deco.py` 中保留 `RGBDepthCrossAttentionFusion` 类和当前 cross attention 路径，同时新增 `direct_tokens` 分支：`rgb_tokens/depth_tokens -> pack_visual_token_sequences(...)`。
 - [x] 静态确认两种模式输出 shape 均为 `[B, 2L, dim]`，保证 `MMAttention` 中 `feat_len = total_img_len / 2` 的假设继续成立。
-- [x] 在 `configs/policy/deco_config.yaml` 中新增 `policy.n_action_steps: null`，用于控制每次推理后实际放入执行队列的 10Hz action 数量；`null` 表示保持旧行为，完整消费 strided chunk。
-- [x] 在 `kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py` 中注册并校验 `n_action_steps`，确保其为正数或 `null`，且不超过 `ceil(chunk_size / action_stride)` 得到的 strided action 数量。
-- [x] 在 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 中将 `n_action_steps` 应用于 `strided_actions` 入队前截断；该参数只影响推理队列刷新频率，不改变模型结构、训练 loss、`chunk_size`、`action_delta_indices` 或权重 shape。
+- [x] 使用 `n_action_steps` 控制 Receding Horizon 每次推理后连续消费的原始 action 数量；`null` 表示完整消费 chunk。
+- [x] 在 `DECOConfigWrapper` 与部署配置中校验 `n_action_steps` 为正整数或 `null`，且不超过 `chunk_size`。
+- [x] `n_action_steps` 只影响推理队列刷新频率，不改变模型结构、训练 loss、`chunk_size`、`action_delta_indices` 或权重 shape。
 - [x] 在 `configs/deploy/kuavo_deco_env.yaml` 与 DECO 部署加载入口中新增 `deco.n_action_steps` runtime override，使旧 checkpoint 可在不重新训练的情况下直接做 `null/8/4/2/1` 队列长度消融。
 
 ### 后续实验设计
@@ -158,7 +158,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [ ] Ablation B：`visual_fusion_mode=direct_tokens`，除视觉融合模式外保持相同数据、相同超参数、相同训练轮数和相同部署配置。
 - [ ] `direct_tokens` 优先从头训练，不建议直接严格加载 `cross_attention` checkpoint 续训。
 - [ ] 对比指标重点记录 MuJoCo 成功率、空抓比例、抓取触发时目标与末端的空间关系、末端轨迹是否朝目标收敛、动作是否平滑。
-- [ ] Receding horizon 队列消融：保持当前 checkpoint 与 `chunk_size=32/action_stride=3/control_hz=10` 不变，对比 `n_action_steps=null`（完整 11 步，约 1.1s）、`8`、`4`、`2`、`1`。重点记录模型真实推理频率、动作 jerk、action clip 比例、放置阶段 target-current joint error 和 MuJoCo 成功率。
+- [ ] Receding Horizon 队列消融：保持当前 checkpoint、`chunk_size=32` 与30Hz不变，对比 `n_action_steps=null`、`16`、`8`、`4`、`2`、`1`。重点记录模型真实推理频率、动作 jerk、action clip 比例、放置阶段 target-current joint error 和 MuJoCo 成功率。
 - [ ] `n_action_steps` 消融建议优先搭配 `inf_step=5/10/20` 做小网格测试；若 `n_action_steps=1/2` 造成推理耗时超过 10Hz 控制周期，应优先回退到 `4` 或降低 `inf_step`。
 - [ ] 若 `direct_tokens` 明显改善空抓，后续再评估更温和的融合方式，例如 RoPE 后局部 cross attention、只在主干中融合，或保留 cross attention 但加入局部窗口/位置约束。
 - [ ] 若 `direct_tokens` 无明显改善，则优先复查 RGB-depth 对齐、action 时间偏移、depth normalization、训练/部署 preprocessor 一致性、MuJoCo 相机视角与数据采集视角一致性。
@@ -352,7 +352,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 阶段一 `use_tactile: false` 时，tactile feature 可保留在 dataset batch 中，但 DECO tactile normalization 和 tactile branch 不启用；阶段二 `use_tactile: true` 时才执行 tactile max normalization。
   - [x] `kuavo_train/train_policy.py` 只做最小策略注册或轻量 processor/factory 接入，不改 epoch loop、optimizer step、dataloader loop、checkpoint 保存主流程。
 - [x] **4.1 开发 DECOConfigWrapper**
-  - [x] 注册 DECO 专属超参数：`training_stage`、`chunk_size`、`dim`、`num_attn_blocks`、`inf_step`、`use_tactile`、`vision_backbone`、`depth_backbone`、`control_hz`、`dataset_hz`、`action_stride` 等。
+  - [x] 注册 DECO 专属超参数：`training_stage`、`chunk_size`、`dim`、`num_attn_blocks`、`inf_step`、`use_tactile`、`vision_backbone`、`depth_backbone` 与 `dataset_hz` 等。
   - [x] 默认 `vision_backbone: resnet34`、`depth_backbone: resnet34`；允许切换 `resnet18`。
   - [x] 不再暴露旧视觉模式开关；DECO 主体固定为 RGB/depth 独立 backbone + cross attention + 两路 visual tokens。
   - [x] 注册确定性空间预处理参数：默认 `resize_shape: [256, 256]`、`use_letterbox: true`、`letterbox_fill_rgb: 128/255`、`letterbox_fill_depth: 0`、RGB/depth 插值策略等。
@@ -375,7 +375,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
 - [x] **4.3 开发 DECOPolicyWrapper.select_action**
   - [x] 接收已通过训练一致 preprocessor 处理的 RGB、depth、state、tactile 观测。
   - [x] 调用 DECO Flow Matching 推理得到 30Hz 语义 action chunk。
-  - [x] 部署控制频率为 10Hz 时，使用 `action_stride = dataset_hz // control_hz = 3` 从动作 chunk 中降频取样进入执行队列。
+  - [x] 部署端仅支持 Receding Horizon 与 Temporal Ensembling，并按 checkpoint 的 `dataset_hz` 消费原始 action chunk。
   - [x] 每次 `popleft()` 返回标准 28 维底层控制指令。
   - [x] 支持两类部署权重：`visual_main` 部署关闭 tactile/LoRA，使用第一阶段选定 epoch；`tactile_adapter` 部署开启 tactile/LoRA，使用第二阶段选定 epoch。二者的完整部署资产均按 Kuavo 旧逻辑保留为 run 根目录 + `epoch<epoch>` 权重子目录。
 
@@ -398,7 +398,7 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] 默认配置面向第一阶段主干训练：`use_tactile: false`、`use_tactile_lora: false`、`tactile_left_max: null`、`tactile_right_max: null`；若用户完全不使用触觉，第一阶段 run 根目录 + 选定 epoch 权重可直接部署。
   - [x] 为第二阶段触觉 adapter 训练提供清晰 override 注释：`training_stage: tactile_adapter`、`use_tactile: true`、`use_tactile_lora: true`、`base_policy_path: /path/to/stage1_policy`、`freeze_pretrained_main: true`。
   - [x] 默认 `vision_backbone: resnet34`、`depth_backbone: resnet34`，保留 `resnet18` 作为低延迟备选。
-  - [x] 显式配置频率：`dataset_hz: 30`、`control_hz: 10`、`action_stride: 3`。
+  - [x] 数据频率由 dataset metadata 注入，部署 `env.ros_rate` 必须与 checkpoint 的 `dataset_hz` 一致。
   - [x] 显式说明 `observation.state` 使用 LeRobot stats 归一化，但模型接入方式遵循 DECO 的 `obs_encoder + time embedding`，不使用 ACT state token / VAE 路线。
   - [x] 显式说明 `observation.tactile` 不跟随 STATE `MEAN_STD`；触觉以洗数据后牛顿值为输入，先作为 `TACTILE: IDENTITY` 通过 LeRobot preprocessor，再按 DECO-style `tactile_left_max` / `tactile_right_max` 做归一化并默认 clamp 到 `[0, 1]` 后进入 tactile encoder。
   - [x] 对 `tactile_left_max`、`tactile_right_max` 写中文注释：可临时填 `null` 表示待统计；正式触觉训练时应填写训练集统计最大值、分位数上限或人工审定上限，单位为牛顿，且必须为正数。
@@ -452,14 +452,14 @@ Kuavo rosbag RGB + depth + state + action + optional tactile
   - [x] `kuavo_deploy/kuavo_service/server.py` 按 `policy_type` 静态支持 `act`、`diffusion`、`deco` 三类本地 policy 加载；`deco` 路径加载 `CustomDECOPolicyWrapper` 并复用 checkpoint/config 一致性校验。
   - [x] `kuavo_deploy/kuavo_service/client.py` 保持 ACT 原版 `PolicyClient.select_action(obs_dict)` 接口不变，仅补充 timeout、api_token 与 server error 处理；不在 client 内部引入 preprocessor/postprocessor。
   - [x] 部署侧观测已静态接入与训练字段一致的 RGB、depth、state，以及仅在 `qiangnao_tactile` 下存在的 tactile；实际 ROS topic、shape 和时序仍需阶段 6.2/6.3 在允许运行的环境中验证。
-- [ ] **6.2 30Hz 数据 / 10Hz 控制一致性验证**
-  - [ ] 检查 `dataset_hz=30` 与 `control_hz=10` 的 stride 关系，避免动作节奏过密或过稀。
+- [ ] **6.2 数据频率 / 部署控制频率一致性验证**
+  - [ ] 检查 `env.ros_rate == checkpoint.dataset_hz`，避免动作时间语义发生变化。
   - [ ] 检查 action chunk 长度是否足够覆盖部署控制队列需求。
   - [ ] 分别检查 `deco_28d` 的头部 action 维度 26-27 与 `deco_18d` 的头部 action 维度 16-17；当前数据来自逐帧 `/joint_cmd`，但部署端仍只保留预测维度而不下发头部控制。
   - [ ] 检查 `head_state_source=live_joint_q/fixed_config` 对在线 state 分布的影响，确认部署输入与训练数据头部姿态语义一致。
 - [ ] **6.3 闭环测试验证**
   - [ ] 第一轮关闭触觉进入仿真或真机 dry-run：覆盖 `qiangnao_no_tactile` 与 `gripper_no_tactile`，只验证 RGB-D + state + action 的 DECO 主干闭环。
-  - [ ] 仿真好结果标准：无 NaN/Inf、无关节越界、动作输出平滑、左右手/左右臂映射正确、头部预测维度不干扰现有下发路径、10Hz action queue 节奏稳定。
+  - [ ] 仿真好结果标准：无 NaN/Inf、无关节越界、动作输出平滑、左右手/左右臂映射正确、头部预测维度不干扰现有下发路径、action queue 节奏与数据频率一致。
   - [ ] 任务行为好结果标准：末端运动方向符合示教趋势，抓取或接触前动作不过早抖动，成功率和轨迹平滑度至少接近同数据上的 ACT/DP 基线。
   - [ ] RGB-D 感知验证：检查 RGB 与 depth 是否对齐，depth 是否进入正确 backbone，RGB 增强不会错误作用到 depth。
   - [ ] 第二轮开启触觉 LoRA：使用 `qiangnao_tactile` 加载二阶段 tactile adapter checkpoint，再做仿真、离线 replay 或低风险真机验证。

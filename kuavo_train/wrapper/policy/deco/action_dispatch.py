@@ -14,7 +14,6 @@ PredictChunk = Callable[[Any], Tensor]
 SUPPORTED_ACTION_DISPATCH_MODES = {
     "receding_horizon",
     "temporal_ensemble",
-    "stride_action",
 }
 
 
@@ -139,66 +138,6 @@ class RecedingHorizonDispatcher(ActionDispatcher):
         return action
 
 
-class StrideActionDispatcher(ActionDispatcher):
-    """显式实验模式：按整数 stride 将训练频率的 chunk 降采样到目标控制频率。"""
-
-    mode = "stride_action"
-
-    def __init__(self, dataset_hz: int, target_hz: int, queue_steps: int | None) -> None:
-        if (
-            isinstance(dataset_hz, bool)
-            or not isinstance(dataset_hz, int)
-            or dataset_hz <= 0
-            or isinstance(target_hz, bool)
-            or not isinstance(target_hz, int)
-            or target_hz <= 0
-        ):
-            raise ValueError("stride_action dataset_hz and target_hz must be positive integers.")
-        if dataset_hz % target_hz != 0:
-            raise ValueError("stride_action requires dataset_hz to be divisible by target_hz.")
-        if queue_steps is not None and (
-            isinstance(queue_steps, bool)
-            or not isinstance(queue_steps, int)
-            or queue_steps <= 0
-        ):
-            raise ValueError("stride_action.queue_steps must be a positive integer or null.")
-        self.dataset_hz = dataset_hz
-        self.target_hz = target_hz
-        self.action_stride = dataset_hz // target_hz
-        self.queue_steps = queue_steps
-        super().__init__()
-
-    def _reset_state(self) -> None:
-        self._action_queue: deque[tuple[int, Tensor]] = deque()
-        self._last_inference_time_ns = 0
-
-    def select_action(self, predict_chunk: PredictChunk, observation: Any) -> Tensor:
-        performed_inference = False
-        if not self._action_queue:
-            action_chunk = self._predict(predict_chunk, observation)
-            selected_indices = list(range(0, int(action_chunk.shape[1]), self.action_stride))
-            if self.queue_steps is not None:
-                if self.queue_steps > len(selected_indices):
-                    raise ValueError(
-                        "stride_action.queue_steps cannot exceed the number of strided actions "
-                        f"({len(selected_indices)}), got {self.queue_steps}."
-                    )
-                selected_indices = selected_indices[: self.queue_steps]
-            self._action_queue.extend(
-                (index, action_chunk[0, index])
-                for index in selected_indices
-            )
-            performed_inference = True
-
-        action_index, action = self._action_queue.popleft()
-        self._record_dispatch(
-            action_index=action_index,
-            queue_remaining=len(self._action_queue),
-            model_inference=performed_inference,
-        )
-        return action
-
-
 class TemporalEnsemblingDispatcher(ActionDispatcher):
     """复用原生 DECO/ACT 在线公式，对多个重叠 chunk 的同一绝对时刻预测做指数加权。"""
 
@@ -277,24 +216,15 @@ class TemporalEnsemblingDispatcher(ActionDispatcher):
 def make_action_dispatcher(
     mode: str,
     *,
-    dataset_hz: int,
     n_action_steps: int | None = None,
     temporal_ensemble_coefficient: float = 0.1,
-    stride_target_hz: int = 10,
-    stride_queue_steps: int | None = None,
 ) -> ActionDispatcher:
-    """根据部署配置创建唯一 dispatcher，避免三种策略叠加。"""
+    """根据部署配置创建唯一 dispatcher，避免两种策略叠加。"""
 
     if mode == "receding_horizon":
         return RecedingHorizonDispatcher(n_action_steps=n_action_steps)
     if mode == "temporal_ensemble":
         return TemporalEnsemblingDispatcher(coefficient=temporal_ensemble_coefficient)
-    if mode == "stride_action":
-        return StrideActionDispatcher(
-            dataset_hz=dataset_hz,
-            target_hz=stride_target_hz,
-            queue_steps=stride_queue_steps,
-        )
     raise ValueError(
         f"Unsupported DECO action dispatch mode {mode!r}; "
         f"expected one of {sorted(SUPPORTED_ACTION_DISPATCH_MODES)}."

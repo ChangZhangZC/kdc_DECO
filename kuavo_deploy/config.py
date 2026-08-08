@@ -265,21 +265,12 @@ class ConfigTemporalEnsemble:
 
 
 @dataclass
-class ConfigStrideAction:
-    """显式降频实验参数；默认部署不会自动启用该策略。"""
-
-    target_hz: int = 10
-    queue_steps: Optional[int] = None
-
-
-@dataclass
 class ConfigActionDispatch:
-    """DECO 三种互斥动作分发策略的部署接口。"""
+    """DECO 两种互斥动作分发策略的部署接口。"""
 
     mode: str = "receding_horizon"
     receding_horizon: ConfigRecedingHorizon = field(default_factory=ConfigRecedingHorizon)
     temporal_ensemble: ConfigTemporalEnsemble = field(default_factory=ConfigTemporalEnsemble)
-    stride_action: ConfigStrideAction = field(default_factory=ConfigStrideAction)
 
     def __post_init__(self) -> None:
         # YAML loader 和 asdict() 会把嵌套 dataclass 变成 dict；在配置边界恢复强类型。
@@ -287,8 +278,6 @@ class ConfigActionDispatch:
             self.receding_horizon = ConfigRecedingHorizon(**self.receding_horizon)
         if isinstance(self.temporal_ensemble, dict):
             self.temporal_ensemble = ConfigTemporalEnsemble(**self.temporal_ensemble)
-        if isinstance(self.stride_action, dict):
-            self.stride_action = ConfigStrideAction(**self.stride_action)
 
 
 @dataclass
@@ -367,7 +356,7 @@ class ConfigDeco:
             self.action_dispatch = ConfigActionDispatch(**self.action_dispatch)
 
     def validate_action_dispatch_structure(self) -> None:
-        """校验三种 dispatcher 的互斥配置，不依赖 checkpoint 运行参数。"""
+        """校验两种 dispatcher 的互斥配置，不依赖 checkpoint 运行参数。"""
 
         if self.inf_step is not None and (
             isinstance(self.inf_step, bool)
@@ -383,10 +372,8 @@ class ConfigDeco:
             raise ValueError("deco.action_dispatch.receding_horizon must be a mapping/object.")
         if not isinstance(dispatch.temporal_ensemble, ConfigTemporalEnsemble):
             raise ValueError("deco.action_dispatch.temporal_ensemble must be a mapping/object.")
-        if not isinstance(dispatch.stride_action, ConfigStrideAction):
-            raise ValueError("deco.action_dispatch.stride_action must be a mapping/object.")
 
-        supported_modes = {"receding_horizon", "temporal_ensemble", "stride_action"}
+        supported_modes = {"receding_horizon", "temporal_ensemble"}
         if dispatch.mode not in supported_modes:
             raise ValueError(
                 f"deco.action_dispatch.mode must be one of {sorted(supported_modes)}, "
@@ -407,19 +394,6 @@ class ConfigDeco:
         if isinstance(coefficient, bool) or not isinstance(coefficient, (int, float)) or coefficient <= 0:
             raise ValueError("deco.action_dispatch.temporal_ensemble.coefficient must be positive.")
 
-        target_hz = dispatch.stride_action.target_hz
-        if isinstance(target_hz, bool) or not isinstance(target_hz, int) or target_hz <= 0:
-            raise ValueError("deco.action_dispatch.stride_action.target_hz must be a positive integer.")
-        queue_steps = dispatch.stride_action.queue_steps
-        if queue_steps is not None:
-            if isinstance(queue_steps, bool) or not isinstance(queue_steps, int) or queue_steps <= 0:
-                raise ValueError("deco.action_dispatch.stride_action.queue_steps must be positive or null.")
-            if dispatch.mode != "stride_action":
-                raise ValueError(
-                    "deco.action_dispatch.stride_action.queue_steps must be null "
-                    "when another mode is active."
-                )
-
     def validate_action_dispatch_timing(self, dataset_hz: int, chunk_size: int, env: ConfigEnv) -> None:
         """checkpoint 加载后校验数据频率、控制频率与 chunk 边界。"""
 
@@ -428,36 +402,16 @@ class ConfigDeco:
             raise ValueError("DECO checkpoint dataset_hz and chunk_size must be positive.")
 
         dispatch = self.action_dispatch
-        if dispatch.mode in {"receding_horizon", "temporal_ensemble"}:
-            if env.ros_rate != dataset_hz:
-                raise ValueError(
-                    f"{dispatch.mode} requires env.ros_rate == checkpoint dataset_hz "
-                    f"({dataset_hz}), got {env.ros_rate}."
-                )
-            n_action_steps = dispatch.receding_horizon.n_action_steps
-            if n_action_steps is not None and n_action_steps > chunk_size:
-                raise ValueError(
-                    "deco.action_dispatch.receding_horizon.n_action_steps cannot exceed "
-                    f"checkpoint chunk_size ({chunk_size})."
-                )
-            return
-
-        target_hz = dispatch.stride_action.target_hz
-        if dataset_hz % target_hz != 0:
+        if env.ros_rate != dataset_hz:
             raise ValueError(
-                "stride_action requires checkpoint dataset_hz to be divisible by target_hz, "
-                f"got dataset_hz={dataset_hz}, target_hz={target_hz}."
+                f"{dispatch.mode} requires env.ros_rate == checkpoint dataset_hz "
+                f"({dataset_hz}), got {env.ros_rate}."
             )
-        if env.ros_rate != target_hz:
+        n_action_steps = dispatch.receding_horizon.n_action_steps
+        if n_action_steps is not None and n_action_steps > chunk_size:
             raise ValueError(
-                f"stride_action requires env.ros_rate == target_hz ({target_hz}), got {env.ros_rate}."
-            )
-        max_actions = (chunk_size + dataset_hz // target_hz - 1) // (dataset_hz // target_hz)
-        queue_steps = dispatch.stride_action.queue_steps
-        if queue_steps is not None and queue_steps > max_actions:
-            raise ValueError(
-                "deco.action_dispatch.stride_action.queue_steps cannot exceed the number "
-                f"of strided actions ({max_actions})."
+                "deco.action_dispatch.receding_horizon.n_action_steps cannot exceed "
+                f"checkpoint chunk_size ({chunk_size})."
             )
 
     def validate(self, env: ConfigEnv, inference: ConfigInference):

@@ -215,8 +215,7 @@ def configure_deco_runtime(policy: Any, deploy_config: Any, env_config: Any) -> 
     """用部署 YAML 配置 DECO 推理步数与唯一 dispatcher，并冻结时间语义。
 
     该函数只改变在线 denoising 次数和 chunk 消费方式，不修改模型结构、loss 或权重 shape。
-    Receding Horizon 与 Temporal Ensembling 连续消费 checkpoint 的 dataset_hz；
-    Stride Action 只有在配置中显式选择时才启用。
+    Receding Horizon 与 Temporal Ensembling 都按 checkpoint 的 dataset_hz 消费动作。
     """
 
     policy_config = getattr(policy, "config", None)
@@ -243,8 +242,6 @@ def configure_deco_runtime(policy: Any, deploy_config: Any, env_config: Any) -> 
         dispatch.mode,
         n_action_steps=dispatch.receding_horizon.n_action_steps,
         temporal_ensemble_coefficient=dispatch.temporal_ensemble.coefficient,
-        stride_target_hz=dispatch.stride_action.target_hz,
-        stride_queue_steps=dispatch.stride_action.queue_steps,
     )
     runtime_info = policy.get_dispatch_info()
     runtime_info["inf_step"] = int(model.inference_step)

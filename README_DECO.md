@@ -578,15 +578,12 @@ inference:
 
 ### 4.4 动作分发模式
 
-当前 3View RGB 分支支持三种互斥的 `deco.action_dispatch.mode`：
+当前 3View RGB 分支支持两种互斥的 `deco.action_dispatch.mode`：
 
 - `receding_horizon`：默认模式。以30Hz连续执行原始 chunk 前 N 步；当前
   `chunk_size=32`、`n_action_steps=16`，约0.533秒后使用最新观测重新推理。
 - `temporal_ensemble`：每个30Hz控制周期重新预测完整 chunk，并对同一绝对时刻的
   重叠预测做指数加权。启用时应把 `receding_horizon.n_action_steps` 设为 `null`。
-- `stride_action`：仅作为显式降频消融。启用时应把
-  `receding_horizon.n_action_steps` 设为 `null`，并令 `env.ros_rate` 等于
-  `stride_action.target_hz`。
 
 默认配置：
 
@@ -601,9 +598,6 @@ deco:
       n_action_steps: 16
     temporal_ensemble:
       coefficient: 0.1
-    stride_action:
-      target_hz: 10
-      queue_steps: null
 ```
 
 ## 5. 推荐工作流
@@ -686,6 +680,6 @@ deco:
 - 不要在 `tactile_left_max/right_max` 仍为 `null` 或没有量纲确认时开启 `use_tactile=true`。
 - 不要只拷贝 `epochbest/` 做部署；完整部署资产是整个 `run_<timestamp>/` 目录。
 - 不要把部署 `deco.inference_mode` 当作脚本选择器；实际入口仍由运行的 `script.py`、`script_auto_test.py` 或 `server.py` 决定。
-- 默认 `receding_horizon`/`temporal_ensemble` 要求部署 `env.ros_rate=30`；只有显式选择
-  `stride_action` 时，才允许按 `target_hz` 降频，并同步设置相同的 `env.ros_rate`。
+- `receding_horizon` 和 `temporal_ensemble` 都要求
+  `env.ros_rate == checkpoint.dataset_hz`，不支持部署期 stride 降频。
 - 不要让 server/client 两侧都执行 preprocessor 或 postprocessor。

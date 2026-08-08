@@ -53,11 +53,9 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
             rope_axes_dim=config.rope_axes_dim,
             vision_backbone=config.vision_backbone,
         )
-        # 默认直接连续消费 30Hz chunk 的前 N 步；只有部署配置显式选择
-        # stride_action 时才启用降频，不再由 action_stride 隐式改变时间语义。
+        # 默认按数据集频率连续消费 chunk 前 N 步；部署期可切换为 Temporal Ensembling。
         self._action_dispatcher = make_action_dispatcher(
             "receding_horizon",
-            dataset_hz=config.dataset_hz,
             n_action_steps=config.n_action_steps,
         )
         self._weight_load_reports: list[dict[str, int | str]] = []
@@ -273,18 +271,13 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
         *,
         n_action_steps: int | None = None,
         temporal_ensemble_coefficient: float = 0.1,
-        stride_target_hz: int = 10,
-        stride_queue_steps: int | None = None,
     ) -> None:
         """应用纯部署期动作分发配置，不改变 DECO forward、loss 或权重 shape。"""
 
         self._action_dispatcher = make_action_dispatcher(
             mode,
-            dataset_hz=self.config.dataset_hz,
             n_action_steps=n_action_steps,
             temporal_ensemble_coefficient=temporal_ensemble_coefficient,
-            stride_target_hz=stride_target_hz,
-            stride_queue_steps=stride_queue_steps,
         )
         # 该字段记录 Receding Horizon 的有效连续执行长度，供日志和 checkpoint 配置查看。
         self.config.n_action_steps = n_action_steps if mode == "receding_horizon" else None

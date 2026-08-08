@@ -2,6 +2,29 @@
 
 ## 2026-08-08
 
+### 提交 DECO 动作分发模式收敛改动
+
+- **提交范围**：仅包含 `stride_action` 删除链路、两种 dispatcher 的配置与调用收敛、`ros_rate` checkpoint 匹配备注、相关 README/计划文档以及本日志；不纳入工作区中既有的其他修改或删除。
+- **提交信息**：`refactor(deploy): 移除 DECO stride 动作模式`。
+- **验证边界**：提交前执行目标文件差异审查、旧 stride 标识符检索、调用签名核对与定向 `git diff --check`；遵守 No-Runtime 规约，不运行 Python、ROS、仿真、部署或测试。
+
+### 标注 DECO 部署 ros_rate 的固定匹配语义
+
+- **修改文件**：在 `configs/deploy/kuavo_deco_env.yaml` 的 `env.ros_rate` 前增加中文备注。
+- **字段语义**：明确该字段是必须与所加载 checkpoint 的 `dataset_hz` 完全一致的固定匹配项，不能单独用于调节模型推理频率；Receding Horizon 的模型重新推理节奏仍由 `n_action_steps` 控制。
+- **验证边界**：仅检查目标 YAML 注释位置和差异格式，不运行 Python、ROS、仿真或部署程序。
+
+### 删除 stride_action 动作分发链路
+
+- **任务目标**：按用户批准，从 DECO 部署动作下发链路中完整删除 `stride_action`，仅保留 `receding_horizon` 与 `temporal_ensemble` 两种互斥模式；不改变模型训练、checkpoint 结构、action 维度或头部 fixed/policy 控制逻辑。
+- **部署配置**：修改 `configs/deploy/kuavo_deco_env.yaml`，从 `deco.action_dispatch.mode` 可选项与配置块中删除 `stride_action`、`target_hz` 和 `queue_steps`。
+- **配置模型与校验**：修改 `kuavo_deploy/config.py`，删除 `ConfigStrideAction`、对应嵌套配置恢复、结构校验和 stride 频率/队列长度校验；两种保留模式统一要求 `env.ros_rate == checkpoint.dataset_hz`，Receding Horizon 继续校验 `n_action_steps <= chunk_size`。
+- **动作分发实现**：修改 `kuavo_train/wrapper/policy/deco/action_dispatch.py`，删除 `StrideActionDispatcher`、支持模式注册和 factory 分支，并从 factory 接口移除 `dataset_hz`、`stride_target_hz`、`stride_queue_steps` 参数。
+- **运行时调用链**：修改 `kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py` 与 `kuavo_deploy/utils/deco_obs_action.py`，移除所有 stride 参数传递；wrapper 初始化与部署重配置只构造 Receding Horizon 或 Temporal Ensembling dispatcher。
+- **文档同步**：修改 `README_DECO.md`、`PLANS.md` 与 `docs/plans/2026-07-26-3view-rgb-action-dispatch.md`，删除10Hz stride 降频用法和三模式描述，明确部署控制频率必须匹配 checkpoint 数据频率。`AI_Logs.md` 中既有历史记录继续保留，作为已发生改动的审计轨迹，不代表当前可用功能。
+- **兼容边界**：模型权重与 checkpoint 配置不受影响；仍填写 `mode: stride_action` 或携带旧 `stride_action` 配置块的部署 YAML 不再受支持，需要迁移到两种保留模式之一。
+- **验证边界**：沿 `YAML -> ConfigActionDispatch -> configure_deco_runtime -> CustomDECOPolicyWrapper.configure_action_dispatch -> make_action_dispatcher -> select_action` 完成全链路静态核对，并执行禁止项文本检索、调用签名检查及目标差异格式检查；遵守 No-Runtime 规约，不运行 Python、pytest、ROS、仿真或部署程序。
+
 ### 精简部署 YAML 注释并提交部署侧改动
 
 - **注释整理**：精简 `configs/deploy/kuavo_deco_env.yaml` 中 inference mode、头部模式、动作分发、checkpoint 与条件配置区的重复说明；保留可选值、单位、互斥条件和路径等必要信息，所有配置键和值保持不变。
