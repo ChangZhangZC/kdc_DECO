@@ -2,6 +2,13 @@
 
 ## 2026-08-08
 
+### 合并 DECO 分支层级
+
+- **第一步**：在独立临时 worktree 中使用 `git merge --ff-only deco/dev`，将 `deco/main` 从 `774487f` 快进到 `9ba6a87`；未产生冲突或额外 merge commit。
+- **第二步**：将记录本次操作的 3View RGB 最新提交以 `--ff-only` 合并到 `deco/dev`，保持 `deco/main -> deco/dev -> deco/feature/3view-rgb` 的阶段性提交关系。
+- **工作区保护**：分支切换和合并均在临时 worktree 完成；根工作区中 `AGENTS.md`、Content PDF、两个数据检查脚本及 `重启训练脚本.md` 的既有修改或删除不参与合并提交。
+- **验证边界**：仅通过 Git 祖先关系、分支 tip、提交图和工作区状态做静态验证；遵守 No-Runtime 规约，不运行 Python、测试、训练、ROS、仿真或部署。
+
 ### 提交 README 与 Three Views RGB 架构文档整理
 
 - **提交范围**：提交 `README_DECO.md`、`PLANS.md`、已合并后删除的 `docs/plans/2026-07-26-3view-rgb-action-dispatch.md` 以及本日志。
