@@ -1,52 +1,10 @@
-# ===============================
-# Kuavo-DECO Deploy Config File
-# ===============================
-#
-# DECO 部署资产采用 Kuavo 原有 run 目录语义：
-# outputs/train/<task>/<method>/<timestamp>/ 是完整 run 根目录，
-# epoch 字段只用于选择其中的 epoch<epoch> 权重子目录。
-# policy_preprocessor.json / policy_postprocessor.json 保存在 run 根目录，
-# 因此不要只拷贝或只填写 epochbest/ 作为完整部署资产。
-
-# 信息字段：该文件通常通过 load_kuavo_config(path) 读取，不依赖 Hydra 启动；
-# 保留 hydra 段是为了对齐原 Kuavo deploy YAML 的目录记录习惯。
-hydra:  # Hydra config directory, for parameter checking only
-  run:
-    dir: ./outputs/kuavo_deploy_hydra_save/singlerun/${now:%Y%m%d_%H%M%S}
-  sweep:
-    dir: ./outputs/kuavo_deploy_hydra_save/multirun/${now:%Y%m%d_%H%M%S}
-    subdir: ${hydra:job.override_dirname}
-
-
-# =====================================================
-# env config: DECO 3View RGB deployment configuration
-# =====================================================
 env:
   env_name: Kuavo-Sim
-  # 固定约束：DECO 第一版只支持 joint-space action；eef/base 控制不属于 DECO action_dim。
-  control_mode: joint
-  # 可选值：
-  # - qiangnao: 强脑灵巧手；必须搭配 state_layout=deco_28d 和 qiangnao_dof_needed=6。
-  # - leju_claw: Leju 二指夹爪；必须搭配 deco.inference_mode=gripper_no_tactile 和 state_layout=deco_18d。
-  # - rq2f85: Robotiq/RQ2F85 二指夹爪或仿真夹爪；必须搭配 deco.inference_mode=gripper_no_tactile 和 state_layout=deco_18d。
-  eef_type: rq2f85
-  # 固定约束：DECO 28D/18D 在线 schema 当前都要求双臂。
-  which_arm: both
-  # 可选值：
-  # - deco_28d: 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2，用于 qiangnao_tactile / qiangnao_no_tactile。
-  # - deco_18d: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2，用于 gripper_no_tactile。
-  state_layout: deco_18d
-  head_init: [-0.000115, 0.262111]
-  # Receding Horizon / Temporal Ensembling 连续消费 30Hz 语义动作。
-  # 只有显式选择 stride_action 时，才同步改成 stride_action.target_hz。
   ros_rate: 30
 
-  # 固定约束：DECO 部署不下发下肢/base action。
-  only_arm: true
-
+  # SIM 640*480, real 840*480
   image_size: &IMGSIZE [640, 480]
   obs_key_map:
-    # 固定三视角顺序必须与 policy.rgb_keys 一致：head -> left wrist -> right wrist。
     head_cam_h: ["/cam_h/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
     wrist_cam_l: ["/cam_l/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
     wrist_cam_r: ["/cam_r/color/image_raw/compressed", "CompressedImage", 30, *IMGSIZE]
@@ -55,23 +13,17 @@ env:
     qiangnao: ["/dexhand/state", "JointState", 500]
     leju_claw: ["/leju_claw_state", "lejuClawState", 500]
     rq2f85: ["/gripper/state", "JointState", 500]
-    # tactile 第四项是 normal_force 的量纲换算系数；保持与数据转换阶段 /100 一致。
-    # 只有 deco.inference_mode=qiangnao_tactile 时才会真正订阅该 topic。
+    # 第四项为 normal_force 缩放系数，与数转阶段一致。
     tactile: ["/dexhand/touch_state", "dexhandTouchState", 500, 100.0]
 
-  # DECO state 由 state_layout 对应 helper 直接拼接，不使用原 ACT/DP 的 arm_state_keys。
-  # 三路移动视角必须在当前30Hz控制周期内完成时间对齐；DECO 模式不允许失败后回退旧帧。
   frame_alignment: true
   ratio: 1.0
 
-  # DECO 在线 observation/action space 使用 joint_q、gripper、head_q 三类 limits。
   limits:
     joint_q:
       min: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
       max: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
-    # gripper limits:
-    # - deco_28d 使用前 12 个值，表示左右灵巧手各 6 DoF，范围为归一化开合量 [0, 1]。
-    # - deco_18d 使用前 2 个值，表示左右二指夹爪，范围为归一化开合量 [0, 1]。
+    # 28D 使用 12 维，18D 使用前 2 维。
     gripper:
       min: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
       max: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
@@ -79,58 +31,39 @@ env:
       min: [-1.0, -1.0]
       max: [1.0, 1.0]
 
-  # 固定约束：DECO 灵巧手部署需要读取左右手各 6 维；ACT/DP 默认单维开合量不适用。
-  qiangnao_dof_needed: 6
-
   is_binary: false
 
 
-# =====================================================
-# deco config: DECO-only runtime mode and schema choices
-# =====================================================
 deco:
-  # 可选值：
-  # - qiangnao_tactile:
-  #   28D 灵巧手 + 30D observation.tactile。需要加载已经保存 use_tactile=true、
-  #   use_tactile_lora=true 的二阶段 tactile adapter checkpoint。
-  # - qiangnao_no_tactile:
-  #   28D 灵巧手，但不订阅、不输入 observation.tactile。需要加载已经保存
-  #   use_tactile=false、use_tactile_lora=false 的视觉主干 checkpoint。
-  # - gripper_no_tactile:
-  #   18D 二爪夹，不订阅、不输入 observation.tactile。env.eef_type 可选择
-  #   leju_claw 或 rq2f85，二者共享 18D state/action schema，仅 topic 与下发缩放不同。
-  inference_mode: gripper_no_tactile
+  # 可选：qiangnao_tactile | qiangnao_no_tactile |
+  #      leju_claw_no_tactile | rq2f85_no_tactile
+  # 自动推导末端类型、18D/28D、触觉开关和灵巧手 DoF。
+  inference_mode: rq2f85_no_tactile
 
-  # null 表示使用 checkpoint 保存值；正整数表示部署期覆盖 denoising steps
+  # null 使用 checkpoint 值；正整数为部署覆盖值。
   inf_step: null
 
-  # 可选值：
-  # - live_joint_q:
-  #   从 /sensors_data_raw.joint_data.joint_q[26:28] 实时读取头部 yaw/pitch。
-  #   优点是贴近机器人当前状态；缺点是可能带入传感器微小抖动。
-  # - fixed_config:
-  #   使用 env.head_init 作为固定头部 state。优点是稳定；缺点是必须确认与训练数据头部姿态一致。
-  head_state_source: fixed_config
+  head_control:
+    # fixed 使用 fixed_value；policy 使用实时 state 和模型预测 action。
+    mode: fixed
+    # 所有头部值单位均为 rad。
+    initial_value: [-0.000115, 0.262111]
+    # fixed 直接下发该物理值；policy 模式必须填 null。
+    fixed_value: [-0.000115, 0.262111]
 
-  # 三种动作分发策略互斥；server/client 模式下必须写在 server 的部署配置中。
   action_dispatch:
-    # 可选值：receding_horizon | temporal_ensemble | stride_action
-    # 切换到后两种模式时，必须同时把 receding_horizon.n_action_steps 设为 null。
+    # 可选：receding_horizon | temporal_ensemble | stride_action
     mode: receding_horizon
 
     receding_horizon:
-      # 连续执行原始 action[0:16]，约 0.533s 后根据最新观测重新推理。
-      # null 表示完整消费原始 32-step chunk。
+      # null 表示消费完整 chunk。
       n_action_steps: 16
 
     temporal_ensemble:
-      # 每个 30Hz 控制周期重新预测完整 chunk，并对同一绝对时刻做指数加权。
       coefficient: 0.1
 
     stride_action:
-      # 仅用于显式旧行为消融；启用时必须设置 env.ros_rate == target_hz。
       target_hz: 10
-      # null 表示完整消费降采样队列；正整数限制每个 chunk 的入队数量。
       queue_steps: null
 
 
@@ -138,32 +71,32 @@ deco:
 # inference config: DECO policy selection and run-root path
 # =====================================================
 inference:
-  go_bag_path: /path/to/your/go.bag
-  # 可选值：
-  # - deco: 本地加载 Kuavo-DECO policy。
-  # - client: eval/client 调用侧连接 kuavo_service/server.py；pre/postprocessor 仍在调用侧。
+  # deco 本地推理；client 连接远端推理服务。
   policy_type: "deco"
-  # policy_type=client 时使用。默认连接本机 server；跨机器部署时填写 server IP/域名。
-  client_host: "localhost"
-  client_port: 5555
-  client_timeout_ms: 15000
-  # 若 server 使用 --api-token，则这里填写环境变量名，不把 token 明文写入 YAML。
-  # 示例：export KUAVO_INFERENCE_API_TOKEN='your-token'，然后填 KUAVO_INFERENCE_API_TOKEN。
-  client_api_token_env: ""
-  eval_episodes: 100
-  seed: 42
-  start_seed: 42
   device: "cuda"
 
-  # 这里按 Kuavo 原有三层填写 outputs 下的 run 根目录：
-  # outputs/train/<task>/<method>/<timestamp>/
-  # 例如 task: "your_task", method: "deco", timestamp: "run_20260518_120000"。
-  task: "your_task"
-  method: "deco"
-  timestamp: "your_run_timestamp"
+  checkpoint:
+    # outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
+    task: "your_task"
+    method: "deco"
+    timestamp: "your_run_timestamp"
+    epoch: best
 
-  # 权重文件仍从 run 根目录下的 epoch 子目录读取：
-  # outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
-  # 但 processor 从 run 根目录读取，所以 epochbest/ 单独拷贝不是完整部署包。
-  epoch: best
-  max_episode_steps: 200
+  # 仅真机初始化使用。
+  real_device:
+    go_bag_path: /path/to/your/go.bag
+
+  # 仅 policy_type=client 使用。
+  client:
+    host: "localhost"
+    port: 5555
+    timeout_ms: 15000
+    # token 环境变量名。
+    api_token_env: ""
+
+  # 评估参数。
+  evaluation:
+    eval_episodes: 100
+    seed: 42
+    start_seed: 42
+    max_episode_steps: 200

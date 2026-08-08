@@ -8,7 +8,8 @@ import numpy as np
 
 QIANGNAO_TACTILE_MODE = "qiangnao_tactile"
 QIANGNAO_NO_TACTILE_MODE = "qiangnao_no_tactile"
-GRIPPER_NO_TACTILE_MODE = "gripper_no_tactile"
+LEJU_CLAW_NO_TACTILE_MODE = "leju_claw_no_tactile"
+RQ2F85_NO_TACTILE_MODE = "rq2f85_no_tactile"
 
 DECO_28D_LAYOUT = "deco_28d"
 DECO_18D_LAYOUT = "deco_18d"
@@ -53,12 +54,12 @@ def resolve_deco_head_state(
     *,
     head_state_source: str,
     live_head_q: Any | None,
-    head_init: Any | None,
+    fixed_head_q: Any | None,
 ) -> np.ndarray:
     """根据部署配置选择 DECO state 中的头部 2 维。
 
     live_joint_q: 使用在线 /sensors_data_raw.joint_data.joint_q[26:28]。
-    fixed_config: 使用部署配置 env.head_init。
+    fixed_config: 使用部署配置 deco.head_control.fixed_value。
     """
 
     if head_state_source == HEAD_STATE_LIVE_JOINT_Q:
@@ -66,9 +67,9 @@ def resolve_deco_head_state(
             raise ValueError("head_state_source='live_joint_q' requires online head_q observation.")
         return _require_dim(live_head_q, "head_q", 2)
     if head_state_source == HEAD_STATE_FIXED_CONFIG:
-        if head_init is None:
-            raise ValueError("head_state_source='fixed_config' requires env.head_init.")
-        return _require_dim(head_init, "head_init", 2)
+        if fixed_head_q is None:
+            raise ValueError("head_state_source='fixed_config' requires deco.head_control.fixed_value.")
+        return _require_dim(fixed_head_q, "fixed_head_q", 2)
     raise ValueError("head_state_source must be 'live_joint_q' or 'fixed_config'.")
 
 
@@ -77,7 +78,7 @@ def build_deco_28d_state(
     arm_joints: Any,
     dexhand_state: Any,
     live_head_q: Any | None,
-    head_init: Any | None,
+    fixed_head_q: Any | None,
     head_state_source: str,
 ) -> np.ndarray:
     """构造 DECO 灵巧手 28D state。
@@ -90,7 +91,7 @@ def build_deco_28d_state(
     head = resolve_deco_head_state(
         head_state_source=head_state_source,
         live_head_q=live_head_q,
-        head_init=head_init,
+        fixed_head_q=fixed_head_q,
     )
     return np.concatenate((arms[:7], hands[:6], arms[7:14], hands[6:12], head), axis=0).astype(np.float32)
 
@@ -100,7 +101,7 @@ def build_deco_18d_state(
     arm_joints: Any,
     gripper_state: Any,
     live_head_q: Any | None,
-    head_init: Any | None,
+    fixed_head_q: Any | None,
     head_state_source: str,
 ) -> np.ndarray:
     """构造 DECO 二爪夹 18D state。
@@ -118,16 +119,13 @@ def build_deco_18d_state(
     head = resolve_deco_head_state(
         head_state_source=head_state_source,
         live_head_q=live_head_q,
-        head_init=head_init,
+        fixed_head_q=fixed_head_q,
     )
     return np.concatenate((arms[:7], gripper[:1], arms[7:14], gripper[1:2], head), axis=0).astype(np.float32)
 
 
 def decode_deco_28d_action(action: Any) -> DecodedDECOAction:
-    """反解 DECO 灵巧手 28D action。
-
-    头部 action 仅保留用于记录和检查，第一版不下发头部控制。
-    """
+    """反解 DECO 灵巧手 28D action，包括最终两维头部 yaw/pitch。"""
 
     act = _require_dim(action, "deco_28d_action", 28)
     left_arm = act[:7]
@@ -144,10 +142,7 @@ def decode_deco_28d_action(action: Any) -> DecodedDECOAction:
 
 
 def decode_deco_18d_action(action: Any) -> DecodedDECOAction:
-    """反解 DECO 二爪夹 18D action。
-
-    头部 action 仅保留用于记录和检查，第一版不下发头部控制。
-    """
+    """反解 DECO 二爪夹 18D action，包括最终两维头部 yaw/pitch。"""
 
     act = _require_dim(action, "deco_18d_action", 18)
     left_arm = act[:7]
@@ -191,10 +186,13 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
             "use_tactile": False,
             "use_tactile_lora": False,
         }
-    elif inference_mode == GRIPPER_NO_TACTILE_MODE:
+    elif inference_mode in {LEJU_CLAW_NO_TACTILE_MODE, RQ2F85_NO_TACTILE_MODE}:
+        expected_eef = (
+            "leju_claw" if inference_mode == LEJU_CLAW_NO_TACTILE_MODE else "rq2f85"
+        )
         expected = {
             "state_layout": DECO_18D_LAYOUT,
-            "eef_type": {"leju_claw", "rq2f85"},
+            "eef_type": expected_eef,
             "end_effector_profile": "gripper_no_tactile",
             "action_dim": 18,
             "use_tactile": False,
@@ -204,12 +202,7 @@ def validate_deco_policy_compatibility(policy_config: Any, deploy_config: Any, e
         raise ValueError(f"Unsupported DECO inference_mode: {inference_mode}")
 
     _assert_equal("env.state_layout", env_config.state_layout, expected["state_layout"])
-    expected_eef = expected["eef_type"]
-    if isinstance(expected_eef, set):
-        if env_config.eef_type not in expected_eef:
-            raise ValueError(f"env.eef_type must be one of {sorted(expected_eef)}, got {env_config.eef_type}.")
-    else:
-        _assert_equal("env.eef_type", env_config.eef_type, expected_eef)
+    _assert_equal("env.eef_type", env_config.eef_type, expected["eef_type"])
 
     _assert_equal("policy.end_effector_profile", policy_config.end_effector_profile, expected["end_effector_profile"])
     _assert_equal("policy.action_dim", policy_config.action_dim, expected["action_dim"])

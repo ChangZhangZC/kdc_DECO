@@ -2,6 +2,43 @@
 
 ## 2026-08-08
 
+### 精简部署 YAML 注释并提交部署侧改动
+
+- **注释整理**：精简 `configs/deploy/kuavo_deco_env.yaml` 中 inference mode、头部模式、动作分发、checkpoint 与条件配置区的重复说明；保留可选值、单位、互斥条件和路径等必要信息，所有配置键和值保持不变。
+- **提交范围**：`configs/deploy/kuavo_deco_env.yaml`、`kuavo_deploy/config.py`、`kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py`、`kuavo_deploy/utils/deco_obs_action.py` 与 `AI_Logs.md`。
+- **提交信息**：`refactor(deploy): 收敛 DECO 配置与头部控制`。
+- **排除范围**：不纳入 `AGENTS.md`、Content PDF、两个数据检查脚本及 `重启训练脚本.md` 的现有用户修改或删除。
+- **验证边界**：提交前仅执行目标文件差异审查、暂存区范围检查与 `git diff --check`；遵守 No-Runtime 规约，不运行 Python、ROS、仿真、部署或测试。
+
+### 收敛 DECO 部署配置并接入固定/策略头部控制
+
+- **任务目标**：按用户确认清理 `configs/deploy/kuavo_deco_env.yaml` 的固定信息字段和无效 Hydra 段，以 `deco.inference_mode` 作为末端控制器与 18D/28D schema 的唯一选择入口；同时新增固定头部与 policy 头部两种互斥部署模式，并在本地/client、仿真/真机共用的最终动作出口完成头部下发。
+- **修改文件 1：`configs/deploy/kuavo_deco_env.yaml`**
+  - 删除不会被 `load_kuavo_config()` 消费的顶层 `hydra` 段。
+  - 删除 DECO 固定或可推导的 `env.control_mode`、`which_arm`、`only_arm`、`eef_type`、`state_layout`、`qiangnao_dof_needed` 与旧 `head_init`；`obs_key_map` 按用户要求继续保持原数组结构，三类 `limits` 完整保留。
+  - 将末端模式收敛为 `qiangnao_tactile`、`qiangnao_no_tactile`、`leju_claw_no_tactile`、`rq2f85_no_tactile` 四个无歧义选项，由加载器推导具体末端、18D/28D、触觉订阅和灵巧手 DoF。
+  - 新增 `deco.head_control`：`fixed` 模式使用最终机器人坐标系中的 `fixed_value`；`policy` 模式使用实时头部 observation 和模型预测 action。两类头部值统一使用弧度，并明确 `25° = 0.436332 rad`。
+  - 将 inference 字段整理为公共 policy/device、`checkpoint`、真机 `real_device`、远端 `client` 与 `evaluation` 配置区，其中后三者按运行入口条件生效。
+- **修改文件 2：`kuavo_deploy/config.py`**
+  - 新增 `ConfigHeadControl`，对 mode、两维有限值、fixed/policy 互斥以及 `limits.head_q` 物理范围执行 fail-fast 校验；固定物理值越界时不静默裁剪。
+  - 新增嵌套 inference 配置展开逻辑，下游继续读取原 `ConfigInference` 属性，避免大范围改动评估、真机脚本和 client 代码；旧扁平字段继续兼容。
+  - 新增 DECO profile 自动推导逻辑，固定 `joint + both arms + only_arm`，并从唯一 inference mode 生成 `eef_type`、`state_layout` 和 `qiangnao_dof_needed`；旧 `gripper_no_tactile + env.eef_type` 配置会转换为新的具体二指夹模式。
+  - 兼容旧 `head_state_source` 配置并转换到 `head_control`；新旧字段同时存在且冲突时显式失败。
+  - fixed 模式在构建运行时 observation map 时过滤 `head_q`，避免创建不被使用的头部订阅与时间对齐依赖；YAML 中的 `obs_key_map` 模板本身未改变。
+- **修改文件 3：`kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py`**
+  - DECO reset 统一使用 `head_control.initial_value`。
+  - fixed 模式使用 `fixed_value` 构造 observation，并在每个控制周期直接调用 `robot.control_head(yaw, pitch)`；该配置值不进入 policy action，也不经过 normalization/postprocessor。
+  - policy 模式保留实时 `joint_q[26:28]` observation，在 action 已由调用侧 postprocessor 恢复物理量纲后，反解 28D 的 `[26:28]` 或 18D 的 `[16:18]` 并下发。
+  - 新增头部目标维度与 NaN/Inf 检查，并记录启动模式、observation 来源和最终弧度指令；ACT/DP 继续保持原有 reset-only 头部语义。
+- **修改文件 4：`kuavo_deploy/utils/deco_obs_action.py`**
+  - 增加两个具体二指夹 inference mode 常量，并按具体末端校验 checkpoint 的共享 `gripper_no_tactile` profile。
+  - 更新 18D/28D action 反解说明，明确最后两维为可下发的头部 yaw/pitch。
+  - 将固定 observation 参数语义从旧 `env.head_init` 更新为 `deco.head_control.fixed_value`。
+- **兼容边界与静态验证**：
+  - 新旧 inference 配置层级、旧 `gripper_no_tactile` 和当前仓库旧 `head_state_source` 均保留加载兼容；模型 checkpoint 的 action 维度、归一化统计和 processor 文件不修改。
+  - 静态沿 `YAML -> load_kuavo_config -> profile 推导 -> obs_key_map 过滤 -> state 拼接 -> policy/postprocessor -> env.step -> exec_deco_action -> robot.control_head` 全链路核对 fixed/policy 行为。
+  - 对四个目标代码文件执行定向 `git diff --check`，未发现空白错误；遵守 No-Runtime 规约，未运行 Python、pytest、ROS、仿真、模型加载或部署程序，因此实际 SDK 头部控制仍需在允许运行的仿真/机器人环境验证。
+
 ### 收敛 DECO 训练配置、两阶段契约与三类权重入口
 
 - **任务目标**：按用户确认，将 DECO 训练侧严格收敛为 `visual_main` 与 `tactile_adapter` 两种模式；保留三类权重入口，但明确各自用途、位置、互斥关系以及与完整 resume 的区别。本次同步修改配置背后的单卡、多卡、权重加载、冻结和采样代码路径，不修改 README，留待用户后续统一整理。
