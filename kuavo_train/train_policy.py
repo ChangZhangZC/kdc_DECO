@@ -120,7 +120,7 @@ def build_pre_post_processors(policy_cfg, dataset_stats):
         return make_deco_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
     return make_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
 
-def build_policy_config(cfg, input_features, output_features):
+def build_policy_config(cfg, input_features, output_features, dataset_hz):
     def _normalize_feature_dict(d: Any) -> dict[str, PolicyFeature]:
         if isinstance(d, DictConfig):
             d = OmegaConf.to_container(d, resolve=True)
@@ -132,15 +132,28 @@ def build_policy_config(cfg, input_features, output_features):
             for k, v in d.items()
         }
 
-    policy_cfg = instantiate(
-        cfg.policy,
-        input_features=input_features,
-        output_features=output_features,
-        device=cfg.training.device,
-    )
-                
+    instantiate_kwargs = {
+        "input_features": input_features,
+        "output_features": output_features,
+        "device": cfg.training.device,
+    }
+    # DECO 的时间语义必须来自当前 LeRobot 数据集，而不是由用户在 policy YAML
+    # 重复填写；ACT/DP 保持原有实例化参数，避免改变其他 policy 的接口。
+    if str(cfg.policy_name).lower() == "deco":
+        instantiate_kwargs["dataset_hz"] = dataset_hz
+
+    policy_cfg = instantiate(cfg.policy, **instantiate_kwargs)
+
     policy_cfg.input_features = _normalize_feature_dict(policy_cfg.input_features)
     policy_cfg.output_features = _normalize_feature_dict(policy_cfg.output_features)
+    if isinstance(policy_cfg, CustomDECOConfigWrapper):
+        # 在构造 policy 前统一约束完整 resume 与三类权重初始化入口，避免
+        # tactile_adapter 冻结一个未加载主干权重的随机模型。
+        policy_cfg.configure_training_initialization(
+            resume=bool(cfg.training.resume),
+            resume_timestamp=cfg.training.get("resume_timestamp"),
+            deco_init_pth_path=cfg.training.get("deco_init_pth_path"),
+        )
     return policy_cfg
 
 class AugmentationProcessorStep(ProcessorStep):
@@ -240,7 +253,7 @@ def main(cfg: DictConfig):
     print(f"Output features: {output_features}")
 
     # instantiate the policy
-    policy_cfg = build_policy_config(cfg, input_features, output_features)
+    policy_cfg = build_policy_config(cfg, input_features, output_features, dataset_metadata.fps)
     print("policy_cfg", policy_cfg)
 
     # Build policy
@@ -318,8 +331,9 @@ def main(cfg: DictConfig):
                 
             print(f"Resumed training from epoch {start_epoch}, step {steps}")
         except Exception as e:
-            print("Failed to load checkpoint:", e)
-            return
+            # resume 声明的是同一次训练的完整恢复；加载失败时禁止静默退化为
+            # 随机初始化的新训练，尤其避免 adapter 阶段冻结随机主干。
+            raise RuntimeError(f"Failed to resume training from {resume_path}") from e
     else:
         print("Training from scratch!")
 
@@ -348,12 +362,19 @@ def main(cfg: DictConfig):
         AugmentationProcessorStep(image_transforms, augmentation_camera_keys),
     )  # just for training
     
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    # DECO 的尾帧丢弃数由 chunk_size 派生，因此必须读取实例化后的 policy_cfg；
+    # 对 ACT/DP 则继续兼容其 YAML 中已有的 drop_n_last_frames。
+    drop_n_last_frames = getattr(
+        policy_cfg,
+        "drop_n_last_frames",
+        cfg.policy.get("drop_n_last_frames"),
+    )
+    if drop_n_last_frames is not None:
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
             dataset.meta.episodes["dataset_to_index"],
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            drop_n_last_frames=drop_n_last_frames,
             shuffle=True,
         )
     else:

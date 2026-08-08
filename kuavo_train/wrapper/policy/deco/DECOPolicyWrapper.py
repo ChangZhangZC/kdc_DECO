@@ -68,6 +68,21 @@ class CustomDECOPolicyWrapper(PreTrainedPolicy):
     def _load_configured_weights(self) -> None:
         if not self.config.load_external_init_weights:
             return
+        configured_sources = [
+            path
+            for path in (
+                self.config.deco_init_pth_path,
+                self.config.base_policy_path,
+                self.config.adapter_model_path,
+            )
+            if path
+        ]
+        # 训练入口已经进行阶段级校验；这里再做一次防御性互斥检查，覆盖直接构造
+        # policy 的调用路径，杜绝多套权重按顺序静默覆盖同一参数。
+        if len(configured_sources) != 1:
+            raise ValueError(
+                "load_external_init_weights=true requires exactly one configured weight source."
+            )
         freeze_loaded_init = (
             self.config.training_stage == "tactile_adapter" and self.config.freeze_pretrained_main
         )

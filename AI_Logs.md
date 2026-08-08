@@ -1,5 +1,65 @@
 # AI Execution Logs
 
+## 2026-08-08
+
+### 收敛 DECO 训练配置、两阶段契约与三类权重入口
+
+- **任务目标**：按用户确认，将 DECO 训练侧严格收敛为 `visual_main` 与 `tactile_adapter` 两种模式；保留三类权重入口，但明确各自用途、位置、互斥关系以及与完整 resume 的区别。本次同步修改配置背后的单卡、多卡、权重加载、冻结和采样代码路径，不修改 README，留待用户后续统一整理。
+- **修改文件 1：`configs/policy/deco_config.yaml`**
+  - 在 `training.resume` 附近增加完整恢复语义说明：`resume=true` 恢复同一次 run 的 policy、optimizer、scheduler、AMP、RNG 与 epoch/step。
+  - 将历史 `deco_init_pth_path` 从 `policy` 区移动到 `training` 的 resume 区，限定为 `visual_main` 的权重 warm start；它不恢复训练状态，并与 `training.resume` 互斥。
+  - 明确 `base_policy_path` 用于从冻结的 Visual Main + Action Decoder 新建 tactile adapter 训练。
+  - 明确 `adapter_model_path` 仅继承已有 tactile adapter checkpoint 的模型权重并开启新 run，optimizer、scheduler、AMP、RNG、epoch/step 均重新初始化；若要精确续跑同一次训练，应使用 `training.resume=true`。
+  - 保留 `load_external_init_weights` 作为外部权重显式安全开关，要求外部路径只选一个。
+  - 删除活动 YAML 中的 `use_tactile`、`use_tactile_lora`、`freeze_pretrained_main`、`action_dim`、`drop_n_last_frames`、`obs_state`、`use_task_condition`、`num_tasks`、固定 RGB/tactile key、`dataset_hz`、`n_action_steps` 与固定 normalization mapping；这些字段仍保留在 wrapper 默认值或 checkpoint 配置中，由阶段、profile、数据集 metadata 或部署配置负责。
+  - 按用户要求保留 `max_training_step` 原位置，保留 `tactile_left_max: 25` 与 `tactile_right_max: 25`，并标注其为显式信息字段。
+- **修改文件 2：`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`**
+  - 新增严格训练阶段契约：`visual_main` 强制关闭 tactile/PI adapter 且主干可训练；`tactile_adapter` 强制启用 tactile/PI adapter 并冻结 Visual Main + Action Decoder。
+  - 三个历史布尔字段改为可缺省派生：新 YAML 不再重复填写；直接反序列化旧 checkpoint 时保留其显式结构字段，训练入口则强制应用当前两阶段契约。
+  - `action_dim` 改由 `end_effector_profile` 固定派生为 28D 或 18D，并继续通过数据 feature shape 做最终一致性校验。
+  - 新增 `configure_training_initialization()`，统一校验 `resume`、`resume_timestamp`、显式加载开关和三条权重路径。
+  - `visual_main` 只允许从零训练或选择一个历史 `.pth` warm start；`tactile_adapter` 禁止 `.pth`，且必须在 `base_policy_path` 与 `adapter_model_path` 中二选一，避免冻结随机初始化主干。
+  - 保留旧 YAML 将 `deco_init_pth_path` 放在 policy 下的读取兼容；若新旧位置同时填写不同值则明确失败。
+  - 保持 `_save_pretrained()` 清空三条外部路径和加载开关，使新 checkpoint 的 `.safetensors` 继续自包含。
+- **修改文件 3：`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`**
+  - 在实际加载权重前增加防御性互斥检查：显式外部加载时必须且只能存在一个权重来源，防止 `.pth`、base、adapter 多套权重按顺序静默覆盖。
+  - 复核 tactile adapter 可训练参数集合与 DECO 模型实际命名一致：tactile encoder、gating、tactile positional embedding、tactile cross-attention 和 PI adapter 可训练，Visual Main 与 Action Decoder 其余参数冻结。
+- **修改文件 4：`kuavo_train/train_policy.py` 与 `kuavo_train/train_policy_with_accelerate.py`**
+  - 两条训练入口都从 `LeRobotDatasetMetadata.fps` 注入 DECO 的 `dataset_hz`，不再要求 YAML 重复填写；ACT/DP 的实例化参数保持不变。
+  - 两条入口都在构造 policy 前调用统一训练初始化校验，保证配置错误在加载/冻结模型之前显式失败。
+  - EpisodeAwareSampler 改为读取实例化后由 `chunk_size` 派生的 `drop_n_last_frames`，确保删除 YAML 信息字段后仍丢弃至少 `chunk_size-1` 个 episode 尾帧，避免 padded action 进入 DECO loss。
+  - 单卡与 Accelerate 的完整 resume 加载失败均改为终止并抛出错误，禁止静默退化为随机初始化的新训练。
+- **新增计划文档**：`docs/plans/2026-08-08-deco-training-config-cleanup.md`，记录配置、wrapper、训练入口和静态验收清单；README 按用户要求暂不修改。
+- **旧 checkpoint 兼容边界**：
+  - wrapper 继续保留历史配置字段，直接加载旧 checkpoint 时不会因为新 YAML 删除字段而无法反序列化；旧 `.pth` 入口也继续兼容，但只允许作为 `visual_main` 权重 warm start。
+  - 新 checkpoint 保存时仍清空外部初始化路径，部署或 resume 不会再次访问原始 base/adapter/`.pth` 路径。
+  - 今后从训练入口启动时会强制当前两阶段契约；历史上若存在不属于这两种模式的特殊训练组合，可直接加载其 checkpoint，但不再作为新的受支持训练模式继续配置。
+- **全链路静态验证**：
+  - 沿 `deco_config.yaml -> Hydra instantiate -> configure_training_initialization -> DECOPolicyWrapper 权重加载 -> tactile adapter 参数冻结 -> optimizer requires_grad 过滤 -> EpisodeAwareSampler -> checkpoint 保存/resume` 顺序逐段核对。
+  - 核对五种合法/非法组合：主干从零训练、主干 `.pth` warm start、新 adapter 训练、adapter 权重续接、完整 resume；确认路径互斥与阶段限制均有显式错误分支。
+  - 检索活动代码后，单卡与 Accelerate 均不再直接读取已从 DECO YAML 删除的 `drop_n_last_frames` 或 `dataset_hz`。
+  - 执行目标文件 `git diff --check` 静态格式检查；遵守 No-Runtime 规约，未运行 Python、pytest、训练、模型实例化、ROS、仿真、部署或任何环境修改命令，因此运行时行为仍需在允许执行代码的训练机器上验证。
+
+### 恢复 DECO YAML 的显式归一化配置
+
+- **任务目标**：根据用户确认，将此前从活动 YAML 中隐藏、但 wrapper 仍保留默认值和消费逻辑的 `policy.normalization_mapping` 恢复为显式配置，方便训练前直接核对各模态的数值语义。
+- **修改文件：`configs/policy/deco_config.yaml`**
+  - 恢复 `VISUAL`、`STATE`、`ACTION` 与 `TACTILE` 四类 feature 的 `_target_: lerobot.configs.types.NormalizationMode` 配置路径及对应枚举值。
+  - `VISUAL`、`STATE`、`ACTION` 显式使用 `MEAN_STD`，继续依赖 LeRobot 数据集统计量完成均值方差归一化。
+  - `TACTILE` 显式保持 `IDENTITY`，因为 DECO wrapper 会继续按照 `tactile_left_max/right_max=25` 对左右手触觉单独归一化；避免再次经过数据集均值方差处理。
+  - 更新相邻中文注释，明确 `dataset_hz` 仍由数据集 metadata 自动注入，而归一化映射重新作为 YAML 中可见的设置值保留。
+- **代码路径确认**：`CustomDECOConfigWrapper._merge_default_normalization_mapping()` 会合并 YAML 映射，`make_deco_pre_post_processors()` 会将该映射传给 LeRobot normalizer，因此不需要修改 wrapper 或训练入口。
+- **修改边界**：本次不修改 README、模型结构、权重入口、训练阶段契约、单卡/多卡训练脚本或部署配置。
+- **静态验证边界**：仅执行 YAML/调用路径文本审查和目标文件 `git diff --check`；遵守 No-Runtime 规约，不运行 Python、Hydra、训练、测试、ROS 或部署程序。
+
+### 提交 DECO 训练侧配置与两阶段权重逻辑
+
+- **提交目的**：根据用户确认，将已经收口的 DECO 训练配置、两阶段模式、三类权重入口、单卡/Accelerate 训练入口和显式归一化配置整理为独立 Git 提交。
+- **提交范围**：`configs/policy/deco_config.yaml`、`kuavo_train/train_policy.py`、`kuavo_train/train_policy_with_accelerate.py`、`kuavo_train/wrapper/policy/deco/DECOConfigWrapper.py`、`kuavo_train/wrapper/policy/deco/DECOPolicyWrapper.py`、`docs/plans/2026-08-08-deco-training-config-cleanup.md` 与 `AI_Logs.md`。
+- **提交信息**：`refactor(train): 收敛 DECO 两阶段训练与权重入口`。
+- **排除范围**：不纳入 `AGENTS.md`、Content PDF、`kuavo_data/inspect_deco_stage1_schema.py`、`kuavo_data/validate_deco_lerobot_dataset.py`、`重启训练脚本.md` 等当前工作区中的用户修改或删除。
+- **验证边界**：提交前仅执行目标文件 diff、暂存区作用域、关键配置/调用路径检索与 `git diff --check` 静态检查；遵守 No-Runtime 规约，不运行 Python、pytest、训练、模型实例化、ROS、仿真、部署或环境修改命令。
+
 ## 2026-08-07
 
 ### 提交 DECO 数据清洗端整理结果
