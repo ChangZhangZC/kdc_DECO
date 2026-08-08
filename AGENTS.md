@@ -7,7 +7,7 @@
 
 ## Standard Operating Procedure (SOP)
 1. Context Discovery
-   - Status Check: Inspect `PLANS.md` and `AI_Logs.md` to synchronize progress.
+   - Status Check: Inspect `AI_Logs.md` to synchronize progress.
    - Structural Retrieval: Utilize the repository map in `AGENTS.md `under `## Context` to rapidly locate required files and modules.
    - Template Benchmarking: Analyze existing ACT or Diffusion Policy (DP) configurations in `configs/policy/` as authoritative integration templates prior to any code changes.
    - Contextual Reference: Treat all assets within the Content/ directory as legitimate referenceable context for ongoing tasks.
@@ -74,4 +74,3 @@ This repository (`kuavo_data_challenge`) is designed for data processing, traini
   - Architectural Integrity: Ensure all modifications align with the existing project structure and do not break the functional pipeline.
   - Requirement Fulfillment: Confirm that all new code precisely meets user specifications and integrates seamlessly with the Kuavo toolchain.
 - [ ] Traceability: `AI_Logs.md` has been updated with descriptive operation logs in Chinese.
-- [ ] Record: In the `PLANS.md` file, check off the tasks that have already been completed.

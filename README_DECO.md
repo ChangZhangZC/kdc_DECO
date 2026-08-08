@@ -1,7 +1,7 @@
 # Kuavo-DECO 使用说明
 
 本文档说明当前 `kuavo_data_challenge` 仓库中的 DECO 数据转换、训练与部署链路。
-当前实现已经收敛为固定三视角 RGB 方案，不再使用历史 RGB-D 前端：
+
 
 ```text
 Kuavo rosbag
@@ -29,10 +29,10 @@ Kuavo rosbag
 
 ### 1.2 固定 state/action profile
 
-| Profile | 末端执行器 | State/Action | Tactile | 训练阶段 |
-| --- | --- | ---: | ---: | --- |
-| `qiangnao_tactile` | 强脑灵巧手 | 28D | 可选 30D | `visual_main`；可选 `tactile_adapter` |
-| `gripper_no_tactile` | Leju Claw 或 RQ2F85 | 18D | 不支持 | 仅 `visual_main` |
+| Profile              | 末端执行器          | State/Action |  Tactile | 训练阶段                              |
+| -------------------- | ------------------- | -----------: | -------: | ------------------------------------- |
+| `qiangnao_tactile`   | 强脑灵巧手          |          28D | 可选 30D | `visual_main`；可选 `tactile_adapter` |
+| `gripper_no_tactile` | Leju Claw 或 RQ2F85 |          18D |   不支持 | 仅 `visual_main`                      |
 
 28D 顺序：
 
@@ -60,17 +60,17 @@ Kuavo rosbag
 
 ### 2.1 主要文件
 
-| 路径 | 用途 |
-| --- | --- |
-| `requirements_DECO.txt` | DECO 的 Linux pip 依赖入口 |
-| `configs/data/KuavoRosbag2Lerobot_deco.yaml` | DECO 数据转换配置 |
-| `kuavo_data/CvtRosbag2Lerobot_DECO.py` | Kuavo rosbag 到 LeRobot 数据集的转换入口 |
-| `configs/policy/deco_config.yaml` | DECO 训练配置 |
-| `kuavo_train/train_policy.py` | Kuavo policy 训练入口 |
-| `kuavo_train/wrapper/policy/deco/` | DECO 的 LeRobot config、policy、processor 与动作分发适配层 |
-| `configs/deploy/kuavo_deco_env.yaml` | DECO 仿真、真机和 client 部署配置入口 |
-| `kuavo_deploy/utils/deco_obs_action.py` | DECO 在线观测拼接、动作解码与兼容性校验 |
-| `third_party/deco/` | DECO 模型主体源码 |
+| 路径                                         | 用途                                                       |
+| -------------------------------------------- | ---------------------------------------------------------- |
+| `requirements_DECO.txt`                      | DECO 的 Linux pip 依赖入口                                 |
+| `configs/data/KuavoRosbag2Lerobot_deco.yaml` | DECO 数据转换配置                                          |
+| `kuavo_data/CvtRosbag2Lerobot_DECO.py`       | Kuavo rosbag 到 LeRobot 数据集的转换入口                   |
+| `configs/policy/deco_config.yaml`            | DECO 训练配置                                              |
+| `kuavo_train/train_policy.py`                | Kuavo policy 训练入口                                      |
+| `kuavo_train/wrapper/policy/deco/`           | DECO 的 LeRobot config、policy、processor 与动作分发适配层 |
+| `configs/deploy/kuavo_deco_env.yaml`         | DECO 仿真、真机和 client 部署配置入口                      |
+| `kuavo_deploy/utils/deco_obs_action.py`      | DECO 在线观测拼接、动作解码与兼容性校验                    |
+| `third_party/deco/`                          | DECO 模型主体源码                                          |
 
 不要直接修改 `third_party/lerobot/`。Kuavo 对 LeRobot 的自定义兼容逻辑应继续放在 `lerobot_patches/` 中。
 
@@ -111,20 +111,20 @@ configs/data/KuavoRosbag2Lerobot_deco.yaml
 
 主要字段：
 
-| 字段 | 说明 |
-| --- | --- |
-| `rosbag.rosbag_dir` | 包含一个或多个 `.bag` 文件的输入目录 |
-| `rosbag.num_used` | 转换 bag 数量；`null` 表示全部 |
-| `rosbag.lerobot_dir` | LeRobot dataset root 输出目录 |
-| `dataset.eef_type` | `qiangnao`、`leju_claw` 或 `rq2f85` |
-| `dataset.train_hz` | 输出数据集帧率，当前默认 30 Hz |
-| `dataset.sample_drop` | 从 head RGB 主时间轴首尾丢弃的原始帧数 |
-| `dataset.dex_dof_needed` | 固定 schema 信息，当前只允许 `6` |
-| `deco.end_effector_profile` | 推荐 `auto`，根据 `eef_type` 推导 28D/18D profile |
-| `deco.rgb_keys` | 固定三视角的短 key，顺序必须为 head、left wrist、right wrist |
-| `deco.rgb_topics` | 三路 RGB 对应的 rosbag topic |
-| `deco.write_tactile` | 强脑数据是否写入 30D tactile；二夹爪会强制忽略 |
-| `deco.overwrite` | 是否允许覆盖已有输出目录，默认 `false` |
+| 字段                        | 说明                                                         |
+| --------------------------- | ------------------------------------------------------------ |
+| `rosbag.rosbag_dir`         | 包含一个或多个 `.bag` 文件的输入目录                         |
+| `rosbag.num_used`           | 转换 bag 数量；`null` 表示全部                               |
+| `rosbag.lerobot_dir`        | LeRobot dataset root 输出目录                                |
+| `dataset.eef_type`          | `qiangnao`、`leju_claw` 或 `rq2f85`                          |
+| `dataset.train_hz`          | 输出数据集帧率，当前默认 30 Hz                               |
+| `dataset.sample_drop`       | 从 head RGB 主时间轴首尾丢弃的原始帧数                       |
+| `dataset.dex_dof_needed`    | 固定 schema 信息，当前只允许 `6`                             |
+| `deco.end_effector_profile` | 推荐 `auto`，根据 `eef_type` 推导 28D/18D profile            |
+| `deco.rgb_keys`             | 固定三视角的短 key，顺序必须为 head、left wrist、right wrist |
+| `deco.rgb_topics`           | 三路 RGB 对应的 rosbag topic                                 |
+| `deco.write_tactile`        | 强脑数据是否写入 30D tactile；二夹爪会强制忽略               |
+| `deco.overwrite`            | 是否允许覆盖已有输出目录，默认 `false`                       |
 
 默认 RGB topic：
 
@@ -211,19 +211,19 @@ python kuavo_train/train_policy.py \
 
 主要训练参数：
 
-| 字段 | 说明 |
-| --- | --- |
-| `task` | 输出目录中的任务名 |
-| `method` | 输出目录中的方法名 |
-| `root` | LeRobot dataset root |
-| `training.max_epoch` | 最大训练 epoch |
-| `training.save_freq_epoch` | 额外 checkpoint 保存间隔 |
-| `training.batch_size` | batch size |
-| `training.num_workers` | DataLoader worker 数量 |
-| `training.resume` | 是否精确恢复同一次训练 run |
-| `training.resume_timestamp` | `resume=true` 时指向原 `run_<timestamp>` 目录名 |
+| 字段                          | 说明                                               |
+| ----------------------------- | -------------------------------------------------- |
+| `task`                        | 输出目录中的任务名                                 |
+| `method`                      | 输出目录中的方法名                                 |
+| `root`                        | LeRobot dataset root                               |
+| `training.max_epoch`          | 最大训练 epoch                                     |
+| `training.save_freq_epoch`    | 额外 checkpoint 保存间隔                           |
+| `training.batch_size`         | batch size                                         |
+| `training.num_workers`        | DataLoader worker 数量                             |
+| `training.resume`             | 是否精确恢复同一次训练 run                         |
+| `training.resume_timestamp`   | `resume=true` 时指向原 `run_<timestamp>` 目录名    |
 | `training.deco_init_pth_path` | 仅用于 `visual_main` 的历史 DECO `.pth` warm start |
-| `training.RGB_Augmenter` | 三路 RGB 共用的增强配置 |
+| `training.RGB_Augmenter`      | 三路 RGB 共用的增强配置                            |
 
 ### 4.2 Profile 与训练阶段契约
 
@@ -237,11 +237,11 @@ policy:
 
 以下字段由 wrapper 固定派生，不应再作为常规命令行参数手工组合：
 
-| `training_stage` | `action_dim` | `use_tactile` | `use_tactile_lora` | `freeze_pretrained_main` |
-| --- | ---: | ---: | ---: | ---: |
-| `visual_main` + `qiangnao_tactile` | 28 | `false` | `false` | `false` |
-| `visual_main` + `gripper_no_tactile` | 18 | `false` | `false` | `false` |
-| `tactile_adapter` + `qiangnao_tactile` | 28 | `true` | `true` | `true` |
+| `training_stage`                       | `action_dim` | `use_tactile` | `use_tactile_lora` | `freeze_pretrained_main` |
+| -------------------------------------- | -----------: | ------------: | -----------------: | -----------------------: |
+| `visual_main` + `qiangnao_tactile`     |           28 |       `false` |            `false` |                  `false` |
+| `visual_main` + `gripper_no_tactile`   |           18 |       `false` |            `false` |                  `false` |
+| `tactile_adapter` + `qiangnao_tactile` |           28 |        `true` |             `true` |                   `true` |
 
 `gripper_no_tactile` 不能进入 `tactile_adapter`。训练入口会再次强制阶段契约，防止旧 checkpoint 字段或 Hydra override 产生非法组合。
 
@@ -340,27 +340,7 @@ training:
 
 Resume 会恢复 policy、optimizer、scheduler、AMP、RNG 与训练进度。它不能与 `load_external_init_weights`、`deco_init_pth_path`、`base_policy_path` 或 `adapter_model_path` 同时使用。
 
-### 4.6 输出资产
 
-训练输出结构：
-
-```text
-outputs/train/<task>/<method>/run_<timestamp>/
-  config.json
-  model.safetensors
-  policy_preprocessor.json
-  policy_postprocessor.json
-  learning_state.pth
-  rng_state.pth
-  epochbest/
-    config.json
-    model.safetensors
-  epoch<epoch>/
-    config.json
-    model.safetensors
-```
-
-部署和迁移时保留整个 `run_<timestamp>/`。根目录包含 preprocessor、postprocessor 和恢复训练状态；`epochbest/` 或 `epoch<epoch>/` 只保存对应 policy checkpoint。
 
 ## 5. 部署
 
@@ -376,28 +356,28 @@ configs/deploy/kuavo_deco_env.yaml
 
 主要字段：
 
-| 字段 | 说明 |
-| --- | --- |
-| `env.env_name` | `Kuavo-Sim` 或 `Kuavo-Real` |
-| `env.ros_rate` | 必须等于 checkpoint 的 `dataset_hz`，不是独立推理频率旋钮 |
-| `env.obs_key_map` | 三路 RGB、state、末端执行器和可选 tactile topic |
-| `deco.inference_mode` | 唯一部署 schema 入口，自动派生末端类型、18D/28D layout、双臂约束和 tactile 开关 |
-| `deco.inf_step` | `null` 使用 checkpoint 值；正整数仅覆盖在线 denoising 次数 |
-| `deco.head_control.mode` | `fixed` 或 `policy` |
-| `deco.head_control.initial_value` | 头部初始化 yaw/pitch，单位 rad |
-| `deco.head_control.fixed_value` | `fixed` 模式下的头部 state/action；`policy` 模式必须为 `null` |
-| `deco.action_dispatch.mode` | `receding_horizon` 或 `temporal_ensemble` |
-| `inference.policy_type` | 本地推理为 `deco`，远端调用侧为 `client` |
-| `inference.checkpoint.*` | 训练 task、method、run timestamp 与 epoch |
+| 字段                              | 说明                                                                            |
+| --------------------------------- | ------------------------------------------------------------------------------- |
+| `env.env_name`                    | `Kuavo-Sim` 或 `Kuavo-Real`                                                     |
+| `env.ros_rate`                    | 必须等于 checkpoint 的 `dataset_hz`，不是独立推理频率旋钮                       |
+| `env.obs_key_map`                 | 三路 RGB、state、末端执行器和可选 tactile topic                                 |
+| `deco.inference_mode`             | 唯一部署 schema 入口，自动派生末端类型、18D/28D layout、双臂约束和 tactile 开关 |
+| `deco.inf_step`                   | `null` 使用 checkpoint 值；正整数仅覆盖在线 denoising 次数                      |
+| `deco.head_control.mode`          | `fixed` 或 `policy`                                                             |
+| `deco.head_control.initial_value` | 头部初始化 yaw/pitch，单位 rad                                                  |
+| `deco.head_control.fixed_value`   | `fixed` 模式下的头部 state/action；`policy` 模式必须为 `null`                   |
+| `deco.action_dispatch.mode`       | `receding_horizon` 或 `temporal_ensemble`                                       |
+| `inference.policy_type`           | 本地推理为 `deco`，远端调用侧为 `client`                                        |
+| `inference.checkpoint.*`          | 训练 task、method、run timestamp 与 epoch                                       |
 
 ### 5.2 Inference mode
 
-| `deco.inference_mode` | 自动派生的 `env.eef_type` | 自动派生的 `env.state_layout` | Checkpoint profile | Tactile |
-| --- | --- | --- | --- | --- |
-| `qiangnao_tactile` | `qiangnao` | `deco_28d` | `qiangnao_tactile` | 开启 |
-| `qiangnao_no_tactile` | `qiangnao` | `deco_28d` | `qiangnao_tactile` | 关闭 |
-| `leju_claw_no_tactile` | `leju_claw` | `deco_18d` | `gripper_no_tactile` | 关闭 |
-| `rq2f85_no_tactile` | `rq2f85` | `deco_18d` | `gripper_no_tactile` | 关闭 |
+| `deco.inference_mode`  | 自动派生的 `env.eef_type` | 自动派生的 `env.state_layout` | Checkpoint profile   | Tactile |
+| ---------------------- | ------------------------- | ----------------------------- | -------------------- | ------- |
+| `qiangnao_tactile`     | `qiangnao`                | `deco_28d`                    | `qiangnao_tactile`   | 开启    |
+| `qiangnao_no_tactile`  | `qiangnao`                | `deco_28d`                    | `qiangnao_tactile`   | 关闭    |
+| `leju_claw_no_tactile` | `leju_claw`               | `deco_18d`                    | `gripper_no_tactile` | 关闭    |
+| `rq2f85_no_tactile`    | `rq2f85`                  | `deco_18d`                    | `gripper_no_tactile` | 关闭    |
 
 部署加载 checkpoint 后会静态核对 profile、action 维度、tactile 开关、末端类型、state layout 和三路 RGB key，配置不一致时直接报错。
 
@@ -523,29 +503,3 @@ Server / Client 模式可用于边侧机推理：机器人侧 client 负责采�
 部署:     deco.inference_mode=leju_claw_no_tactile 或 rq2f85_no_tactile
           # loader 自动派生对应 eef_type + deco_18d
 ```
-
-## 7. 常见误配
-
-- 不要把当前 DECO 描述为 RGB-D 模型；当前 policy 固定消费三路 RGB，不读取 depth。
-- 不要交换 head、left wrist、right wrist 的相机顺序，也不要复制单路图像作为缺失相机的降级方案。
-- 不要混用 28D 数据、18D policy 或不一致的部署 `state_layout`。
-- 不要手工组合 `action_dim`、`use_tactile`、`use_tactile_lora` 与 `freeze_pretrained_main`；它们由 profile 和训练阶段确定。
-- 不要让 `gripper_no_tactile` 进入 `tactile_adapter`。
-- 不要在没有有效 Visual Main 权重时冻结主干并训练 tactile adapter。
-- 不要同时填写 `base_policy_path` 与 `adapter_model_path`。
-- 不要将精确 resume 与任何外部初始化权重入口混用。
-- 不要把部署 `deco.inference_mode` 当作脚本选择器。
-- 不要让 `env.ros_rate` 与 checkpoint 的 `dataset_hz` 不一致。
-- 不要尝试使用已经移除的 `stride_action` 部署模式。
-- 不要让 server/client 两侧重复执行 preprocessor 或 postprocessor。
-- 不要只迁移单个 `epochbest/` 目录而遗漏 run 根目录中的处理器和恢复状态。
-
-## 8. 当前未提供的能力
-
-- Depth / RGB-D 视觉前端；
-- 单相机或双相机降级路径；
-- 单臂 state/action schema；
-- Delta action 或 relative-start action；
-- 部署期 stride 降频；
-- 自动从 `visual_main` 切换到 `tactile_adapter` 的单次训练流程；
-- 独立的数据 Inspector 或 Validator 使用入口。数据检查应以当前转换器输出、LeRobot metadata 和后续专用工具为准。

@@ -2,6 +2,15 @@
 
 ## 2026-08-08
 
+### 提交当前仓库清理改动
+
+- **提交范围**：提交当前工作区剩余的 `AGENTS.md`、`README_DECO.md` 修改，以及 Content 中 DECO 论文 PDF、`kuavo_data/inspect_deco_stage1_schema.py`、`kuavo_data/validate_deco_lerobot_dataset.py` 和 `重启训练脚本.md` 的删除。
+- **规则整理**：`AGENTS.md` 不再要求每次读取或勾选 `PLANS.md`，进度同步统一以 `AI_Logs.md` 为准。
+- **文档整理**：保留用户对 `README_DECO.md` 的当前精简与表格格式调整；仅额外去除文件末尾空白行，不回退其内容变化。
+- **删除边界**：两个独立数据检查脚本及两份参考资料不再保留在当前分支；历史 `AI_Logs.md` 与技术决策文档中的名称继续作为审计记录存在，不代表活动调用依赖。所有删除仍可从 Git 历史恢复。
+- **提交信息**：`chore(repo): 清理过时检查工具与文档`。
+- **验证边界**：执行目标文件引用检索、差异范围检查和 `git diff --check`；遵守 No-Runtime 规约，不运行 Python、测试、训练、ROS、仿真或部署。
+
 ### 合并 DECO 分支层级
 
 - **第一步**：在独立临时 worktree 中使用 `git merge --ff-only deco/dev`，将 `deco/main` 从 `774487f` 快进到 `9ba6a87`；未产生冲突或额外 merge commit。
