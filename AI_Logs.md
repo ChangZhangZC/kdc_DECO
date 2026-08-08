@@ -2,6 +2,13 @@
 
 ## 2026-08-08
 
+### 推送 DECO 三层分支到远端
+
+- **推送目标**：将本地 `deco/main`、`deco/dev` 与当前 `deco/feature/3view-rgb` 推送到 `origin`。
+- **远端保护**：推送前执行 `git fetch origin --prune`；三条远端分支均为本地对应分支的祖先，没有远端独有提交，因此使用普通快进推送，不使用 `--force` 或 `--force-with-lease`。
+- **分支边界**：`deco/main` 保持在已合入开发基线的位置，`deco/dev` 保持在已合入 3View RGB 功能的位置，当前 feature 分支额外包含最后一次仓库清理提交及本推送记录。
+- **验证边界**：推送后核对本地与远端三组分支 tip 是否一致；不运行 Python、测试、训练、ROS、仿真或部署。
+
 ### 提交当前仓库清理改动
 
 - **提交范围**：提交当前工作区剩余的 `AGENTS.md`、`README_DECO.md` 修改，以及 Content 中 DECO 论文 PDF、`kuavo_data/inspect_deco_stage1_schema.py`、`kuavo_data/validate_deco_lerobot_dataset.py` 和 `重启训练脚本.md` 的删除。
