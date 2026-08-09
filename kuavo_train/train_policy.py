@@ -1,10 +1,18 @@
+import sys
+from pathlib import Path
+
+# 直接执行 `python kuavo_train/train_policy.py` 时，Python 默认只搜索 `kuavo_train/`。
+# 先显式加入仓库根目录，才能导入同级的 `lerobot_patches` 以及 `kuavo_train` 包内模块。
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import lerobot_patches.custom_patches  # Ensure custom patches are applied, DON'T REMOVE THIS LINE!
 from lerobot.configs.policies import PolicyFeature
 from typing import Any
 
 import hydra
 from omegaconf import DictConfig, OmegaConf, ListConfig
-from pathlib import Path
 from functools import partial
 
 import torch

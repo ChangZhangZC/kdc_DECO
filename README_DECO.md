@@ -85,6 +85,14 @@ conda install -c conda-forge "ffmpeg=7.*" libstdcxx-ng -y
 python -m pip install -r requirements_DECO.txt
 ```
 
+`requirements_DECO.txt` 会以 editable 模式安装本仓库的 `third_party/lerobot` 和项目自身。若启动训练时出现 `ModuleNotFoundError: No module named 'lerobot'`，说明当前 conda 环境尚未完成这一步；在已确认其余依赖可用时，也可仅执行：
+
+```bash
+python -m pip install -e third_party/lerobot
+```
+
+训练命令应从仓库根目录直接运行：`python kuavo_train/train_policy.py`。训练入口会在导入阶段自动加入仓库根目录，因此可同时找到同级的 `lerobot_patches/` 与 `kuavo_train` 包内模块；不要在 `kuavo_train/` 子目录内执行该命令。
+
 数据转换、仿真和实机部署还需要 ROS Noetic 与 Kuavo 消息环境：
 
 ```bash
@@ -199,15 +207,27 @@ configs/policy/deco_config.yaml
 
 ```bash
 python kuavo_train/train_policy.py \
-  --config-path=../configs/policy/ \
-  --config-name=deco_config.yaml \
+  --config-path=../configs/policy \
+  --config-name=deco_config \
   task=your_task_name \
   method=deco_visual_main \
   root=/path/to/lerobot_dataset \
+  repoid=lerobot/your_rosbag_dir_name_deco \
   policy_name=deco
 ```
 
 `policy_name` 固定使用 `deco`。训练入口会从数据集 metadata 读取真实 fps，并把它保存为 checkpoint 的 `dataset_hz`。
+
+训练命令同时接收 `root` 和 `repoid`；完整的本地数据集由 `root` 直接定位。若转换后的目录是：
+
+```text
+/path/to/name/lerobot/
+├── meta/
+├── data/
+└── videos/
+```
+
+则 `root=/path/to/name/lerobot`。DECO 转换脚本以原始 `rosbag.rosbag_dir` 的最后一级目录名生成 `repoid`：`lerobot/<原始rosbag目录名>_deco`。例如原始 rosbag 目录为 `/path/to/pick_bottle` 时，建议填写 `repoid=lerobot/pick_bottle_deco`，以保持训练记录与转换时的数据集身份一致；即使之后将输出目录改名为 `name`，也不应据此改写 `repoid`。当前本地完整数据集由 `root` 直接定位，`repoid` 不会再作为子目录拼接。
 
 主要训练参数：
 
@@ -224,6 +244,31 @@ python kuavo_train/train_policy.py \
 | `training.resume_timestamp`   | `resume=true` 时指向原 `run_<timestamp>` 目录名    |
 | `training.deco_init_pth_path` | 仅用于 `visual_main` 的历史 DECO `.pth` warm start |
 | `training.RGB_Augmenter`      | 三路 RGB 共用的增强配置                            |
+
+#### 双 GPU 选择与显存不足处理
+
+训练机存在多张 GPU 时，可在同一条启动命令前加 `CUDA_VISIBLE_DEVICES` 选择物理显卡。例如使用第二张物理 GPU（索引为 `1`）：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python kuavo_train/train_policy.py \
+  --config-path=../configs/policy \
+  --config-name=deco_config \
+  task=your_task_name \
+  method=deco_visual_main \
+  root=/path/to/lerobot_dataset \
+  repoid=lerobot/your_rosbag_dir_name_deco \
+  policy_name=deco
+```
+
+先用 `nvidia-smi -L` 确认物理 GPU 编号。设置 `CUDA_VISIBLE_DEVICES=1` 后，进程内的这张卡会重新映射为 `cuda:0`，因此 `training.device` 应继续保持 YAML 默认值 `cuda`，不要改成 `cuda:1`。
+
+若报 `torch.OutOfMemoryError`，先执行 `nvidia-smi` 查找显存占用进程，并用 `ps -fp <PID>` 确认其归属。优先在该进程所属终端使用 `Ctrl+C` 正常结束；只有确认是自己遗留且不需要保留的进程后，才可执行 `kill <PID>`。在显存已释放且仍然不足时，依次通过 Hydra override 降低 batch size，无需修改 YAML：
+
+```bash
+training.batch_size=8
+```
+
+若仍然不足，再使用 `training.batch_size=4`。
 
 ### 4.2 Profile 与训练阶段契约
 
@@ -251,11 +296,12 @@ policy:
 
 ```bash
 python kuavo_train/train_policy.py \
-  --config-path=../configs/policy/ \
-  --config-name=deco_config.yaml \
+  --config-path=../configs/policy \
+  --config-name=deco_config \
   task=your_task_name \
   method=deco_visual_main \
   root=/path/to/qiangnao_lerobot/lerobot \
+  repoid=lerobot/your_rosbag_dir_name_deco \
   policy.end_effector_profile=qiangnao_tactile \
   policy.training_stage=visual_main
 ```
@@ -264,11 +310,12 @@ python kuavo_train/train_policy.py \
 
 ```bash
 python kuavo_train/train_policy.py \
-  --config-path=../configs/policy/ \
-  --config-name=deco_config.yaml \
+  --config-path=../configs/policy \
+  --config-name=deco_config \
   task=your_task_name \
   method=deco_gripper_visual_main \
   root=/path/to/gripper_lerobot/lerobot \
+  repoid=lerobot/your_rosbag_dir_name_deco \
   policy.end_effector_profile=gripper_no_tactile \
   policy.training_stage=visual_main
 ```

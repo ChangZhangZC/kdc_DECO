@@ -1,5 +1,30 @@
 # AI Execution Logs
 
+## 2026-08-09
+
+### 补充 DECO 本地训练启动与数据集定位说明
+
+- **修改文件**：更新 `README_DECO.md` 的 Python 环境与 DECO 训练章节，并同步记录本次操作。
+- **环境修复说明**：明确 `requirements_DECO.txt` 会以 editable 模式安装 `third_party/lerobot`；针对训练入口报出的 `ModuleNotFoundError: No module named 'lerobot'`，补充完整依赖安装命令和仅补装 LeRobot 的最小命令。
+- **启动入口修正**：将三处 `python kuavo_train/train_policy.py` 示例统一改为从仓库根目录运行 `python -m kuavo_train.train_policy`，说明模块方式可使同级 `lerobot_patches/` 正常导入，避免直接执行脚本时的模块搜索路径错误。
+- **数据集定位说明**：补充 `name/lerobot/{meta,data,videos}` 本地目录结构对应 `root=/path/to/name/lerobot`；根据 `CvtRosbag2Lerobot_DECO.py` 的 `repo_id = f"lerobot/{task_name}_deco"` 逻辑，建议 `repoid` 保持为原始 rosbag 目录名派生的值，并说明当前完整本地数据集由 `root` 直接定位、不再以 `repoid` 拼接子目录；三条训练命令均显式加入该参数。
+- **验证边界**：仅静态对照转换脚本、训练入口、requirements 与 Markdown 命令示例，并检查差异格式；遵守 No-Runtime 规约，不运行 Python、训练、安装、ROS、仿真或部署命令。
+
+### 按用户要求恢复 DECO 直接脚本训练入口
+
+- **修改文件**：修改 `kuavo_train/train_policy.py`、`kuavo_train/train_policy_with_accelerate.py`、`README_DECO.md`，并同步记录本次操作。
+- **根因与实现**：直接执行训练脚本时，Python 的初始模块搜索路径只含 `kuavo_train/`，无法导入仓库根目录同级的 `lerobot_patches`；两个训练入口均在该导入之前使用 `Path(__file__).resolve().parent.parent` 计算仓库根目录并插入 `sys.path`，配套中文注释说明直接启动的路径语义。现有 `from utils.transforms` 保持不变，以兼容直接脚本方式。
+- **文档调整**：训练命令统一恢复为从仓库根目录运行 `python kuavo_train/train_policy.py --config-path=../configs/policy --config-name=deco_config`；明确不得在 `kuavo_train/` 子目录内启动。此前本日志中记录的模块化入口属于前一轮临时方案，现以用户确认的直接脚本入口为准。
+- **验证边界**：仅静态检查两处路径初始化必须位于 `lerobot_patches` 导入前、README 的三条命令与训练入口一致，并检查目标差异格式；遵守 No-Runtime 规约，不运行 Python、训练、安装、ROS、仿真或部署命令。
+
+### 补充多 GPU 选择与显存不足处理说明
+
+- **修改文件**：更新 `README_DECO.md` 的训练基本入口，并同步记录本次操作。
+- **文档内容**：新增第二张物理 GPU 的 `CUDA_VISIBLE_DEVICES=1` 启动示例，明确其在进程内映射为 `cuda:0`、`training.device` 保持 `cuda`；新增显存不足时的 `nvidia-smi`、`ps -fp <PID>`、确认归属后停止遗留进程以及 `training.batch_size=8/4` Hydra override 处理顺序。
+- **范围边界**：按用户要求，不在 README 或 requirements 中加入 GPU 架构、CUDA wheel 或 Blackwell 兼容性说明；不修改模型、数据、训练超参数默认值或依赖版本。
+- **提交范围**：用户确认将当前工作区五个修改文件共同提交，即本日志、`README_DECO.md`、两个训练入口和 `kuavo_data/CvtRosbag2Lerobot_DECO.py`；随后推送当前 `deco/feature/3view-rgb` 分支至 `origin`。
+- **验证边界**：仅执行目标文档/代码的静态差异、格式和导入顺序核对；遵守 No-Runtime 规约，不运行 Python、训练、安装、ROS、仿真或部署命令。
+
 ## 2026-08-08
 
 ### 推送 DECO 三层分支到远端
