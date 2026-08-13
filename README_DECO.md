@@ -79,6 +79,16 @@ Kuavo rosbag
 示例环境初始化：
 
 ```bash
+git clone https://github.com/ChangZhangZC/kdc_DECO.git
+cd kdc_DECO
+
+git switch icra 
+git submodule init
+git submodule update --recursive
+git switch deco/main
+```
+
+```bash
 conda create -n kuavo_deco python=3.10 -y
 conda activate kuavo_deco
 conda install -c conda-forge "ffmpeg=7.*" libstdcxx-ng -y
