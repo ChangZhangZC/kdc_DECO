@@ -8,9 +8,9 @@ hydra:
 
 rosbag:
 
-  rosbag_dir: /path/to/your/rosbag
+  rosbag_dir: /media/data/training_data/task2_pick_apple_messy
   num_used: null
-  lerobot_dir: /your/path/to/your/lerobotdata_deco/lerobot
+  lerobot_dir: /media/data/training_data/task2_pick_apple_messy_DECO/lerobot
 
 dataset:
   # 末端执行器类型：qiangnao 使用 28D 灵巧手 schema；leju_claw 与 rq2f85 使用 18D 夹爪 schema。
@@ -27,7 +27,7 @@ dataset:
 
   # Sim 640*480, Real 840*480
   resize:
-    width: 640
+    width: 840
     height: 480
 
 deco:
@@ -58,7 +58,7 @@ deco:
   tactile_force_scale: 100.0   # normal_force / tactile_force_scale -> 牛顿量纲；默认 /100
 
   # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
-  overwrite: false
+  overwrite: true
 
   # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
   arm_traj_gap_threshold_s: null

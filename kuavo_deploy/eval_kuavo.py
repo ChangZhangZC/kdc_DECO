@@ -161,10 +161,17 @@ def parse_config(config_path):
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f)
         inf = cfg.get("inference", {})
-        task = inf.get("task", "N/A")
-        method = inf.get("method", "N/A")
-        timestamp = inf.get("timestamp", "N/A")
-        epoch = inf.get("epoch", "N/A")
+        # 新版 DECO 配置将模型定位字段集中在 inference.checkpoint 下；
+        # New DECO configs group model location fields under inference.checkpoint.
+        # 回退读取旧扁平字段，确保现有 ACT/DP 部署配置继续正常显示。
+        # Fall back to legacy flat fields so existing ACT/DP deploy configs remain compatible.
+        checkpoint = inf.get("checkpoint", {})
+        if not isinstance(checkpoint, dict):
+            raise ValueError("inference.checkpoint must be a mapping/object")
+        task = checkpoint.get("task", inf.get("task", "N/A"))
+        method = checkpoint.get("method", inf.get("method", "N/A"))
+        timestamp = checkpoint.get("timestamp", inf.get("timestamp", "N/A"))
+        epoch = checkpoint.get("epoch", inf.get("epoch", "N/A"))
         model_path = Path(f"outputs/train/{task}/{method}/{timestamp}/epoch{epoch}")
         print("📋 Model Configuration Info:")
         print(f"   Task: {task}")

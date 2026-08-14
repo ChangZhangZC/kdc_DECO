@@ -10,11 +10,19 @@
   python scripts.py --task back_to_zero --config /path/to/custom_config.yaml"         # 中断模型推理后，倒放bag包回到0位
 """
 
+import sys
+from pathlib import Path
+
+# 该文件会被作为深层脚本直接执行；先补入仓库根目录，再导入本地 kuavo_deploy 包。
+# This nested entrypoint is executed directly, so expose the repository root before local imports.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import rospy
 import rosbag
 import time
 import argparse
-from pathlib import Path
 from typing import List, Tuple, Optional
 
 from std_srvs.srv import Trigger, TriggerRequest, TriggerResponse
@@ -26,7 +34,7 @@ import gymnasium as gym
 
 import numpy as np
 import signal
-import sys,os
+import os
 import threading
 import subprocess
 import traceback

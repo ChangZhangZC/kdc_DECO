@@ -5,23 +5,23 @@ hydra:
     dir: ./outputs/train_hydra_save/deco_multirun/${now:%Y%m%d_%H%M%S}
     subdir: ${hydra:job.override_dirname}
 
-task: "your_deco_task_name"
-method: "deco_visual_main"
+task: "pick_apple_messy"
+method: "deco"
 timestamp: ${now:%Y%m%d_%H%M%S}
 repoid: "lerobot/${task}"
-root: "/your/path/to/your/lerobotdata_deco/lerobot"
+root: "/media/data/training_data/task2_pick_apple_messy_DECO/lerobot"
 
 policy_name: deco  # 固定值：当前文件只用于 Kuavo-DECO policy
 
 training:
   output_directory: "outputs/train/${task}/${method}"
   seed: 42
-  max_epoch: 100
-  save_freq_epoch: 10
+  max_epoch: 200
+  save_freq_epoch: 20
   log_freq: 1
   device: "cuda"
   accumulation_steps: 1
-  batch_size: 16
+  batch_size: 64
   num_workers: 4
   drop_last: False
   max_training_step: null

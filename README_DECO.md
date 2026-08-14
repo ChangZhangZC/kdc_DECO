@@ -452,7 +452,7 @@ python kuavo_deploy/eval_kuavo.py
 4. 选择 `configs/deploy/kuavo_deco_env.yaml`；
 5. 选择 `auto_test`。
 
-### 5.6 真机入口
+### 5.6 真机入口 
 
 本地真机推理：
 
@@ -475,7 +475,7 @@ Server / Client 模式可用于边侧机推理：机器人侧 client 负责采�
 ```text
 数据:     dataset.eef_type=qiangnao
           deco.write_tactile=false 或 true
-训练:     policy.end_effector_profile=qiangnao_tactile
+训练:     policy.end_effector_profile=qiangnao_tactile 
           policy.training_stage=visual_main
 部署:     deco.inference_mode=qiangnao_no_tactile
           # loader 自动派生 qiangnao + deco_28d

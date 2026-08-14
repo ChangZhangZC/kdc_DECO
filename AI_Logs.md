@@ -1,5 +1,52 @@
 # AI Execution Logs
 
+## 2026-08-14
+
+### 本地提交当前 DECO 数据训练与部署链路改动
+
+- **提交目标**：按用户确认，将当前主仓库中的 DECO 数据、训练与部署链路改动整理为一次本地 Git 提交；不执行 fetch、push、远端分支更新或 PR 创建。
+- **计划提交范围**：`AI_Logs.md`、`README_DECO.md`、`configs/data/KuavoRosbag2Lerobot_deco.yaml`、`configs/deploy/kuavo_deco_env.yaml`、`configs/policy/deco_config.yaml`、`kuavo_data/CvtRosbag2Lerobot_DECO.py`、`kuavo_deploy/eval_kuavo.py`、`kuavo_deploy/src/scripts/script.py`、`kuavo_deploy/src/scripts/script_auto_test.py` 与 `kuavo_train/train_policy.py`。
+- **明确排除范围**：按用户要求，不暂存或提交 `third_party/lerobot` 子模块指针更新；同时排除未跟踪的 `error_DECO.txt` 与 `log/` 下运行日志。提交完成后，子模块指针仍会作为有意保留的未提交工作区状态显示。
+- **提交内容概览**：包含当前本机数据/训练/部署配置、训练与数据入口路径引导、统一部署菜单的新版 checkpoint 路径预览，以及真机与仿真深层入口的最小仓库模块导入修复。
+- **验证边界**：提交前仅核对显式暂存文件清单、暂存差异范围、子模块与未跟踪产物排除状态；遵守 No-Runtime 规约，不运行 Python、训练、数据转换、部署菜单、ROS、仿真、真机或测试程序。
+- **远端边界**：本次操作仅创建本地提交，绝不推送云端。
+
+### 按最小入口引导方案修复部署模块导入
+
+- **方案更正**：根据用户反馈，撤销上一轮在 `kuavo_deploy/eval_kuavo.py` 中加入的子进程 `cwd`、`PYTHONPATH` 环境管理、配置绝对路径转换和仓库根目录模型预览；上一条日志保留为已执行但随后撤销的中间过程记录，不代表最终活动实现。
+- **保留改动：`kuavo_deploy/eval_kuavo.py`**：继续保留已经确认需要的新版 `inference.checkpoint.*` 路径预览与旧 ACT/DP 扁平字段回退兼容；除此之外，子进程启动行为恢复原状。
+- **修改文件 1：`kuavo_deploy/src/scripts/script.py`**
+  - 在任何 `kuavo_deploy.*` 本地包导入之前，根据当前文件位置解析仓库根目录，并在缺失时将其插入 `sys.path` 首位。
+  - 该入口由真机 `go/run/go_run/here_run/back_to_zero` 共用，因此 ACT、Diffusion Policy 与 DECO 均使用同一最小导入修复。
+- **修改文件 2：`kuavo_deploy/src/scripts/script_auto_test.py`**
+  - 应用同样的仓库根目录引导，确保仿真 `auto_test` 直接执行深层脚本时也不依赖外部手工设置 `PYTHONPATH`。
+- **实现边界**：不改变父进程或子进程环境变量、工作目录、配置路径语义、任务菜单、日志重定向、policy 加载、ROS topic 或动作执行逻辑；不要求安装本地 `kuavo_deploy` package。
+- **静态验证边界**：核对路径层级 `script.py -> scripts -> src -> kuavo_deploy -> repository root`、引导代码位于本地包导入之前、两入口逻辑一致以及目标差异格式；遵守 No-Runtime 规约，不运行 Python、部署菜单、ROS、仿真、真机或测试程序。
+
+### 永久修复统一部署菜单的仓库模块导入环境
+
+- **任务目标**：解决通过 `kuavo_deploy/eval_kuavo.py` 启动真机或仿真子任务时，深层脚本无法导入仓库顶层 `kuavo_deploy` 包并报出 `ModuleNotFoundError: No module named 'kuavo_deploy'` 的问题；ACT、Diffusion Policy 与 DECO 共用同一修复，不增加策略专用分支。
+- **修改文件：`kuavo_deploy/eval_kuavo.py`**
+  - 新增 `build_subprocess_context()`，从统一菜单文件位置确定仓库根目录，并为子进程复制当前环境变量。
+  - 将仓库根目录前置到子进程 `PYTHONPATH`，去除其中重复的同一路径，同时完整保留用户已有的其他 Python 模块搜索路径。
+  - 将帮助、dry-run、`go`、`run`、`go_run`、`here_run`、`back_to_zero`、verbose 与仿真 `auto_test` 的子进程工作目录统一固定为仓库根目录，确保仓库包、`outputs/`、日志等相对路径语义一致。
+  - 在切换子进程工作目录前，将用户输入的部署配置路径解析为绝对路径，避免从仓库外启动菜单并填写相对配置路径时改变其含义。
+  - 模型路径预览同步以仓库根目录解析 `outputs/train/...`，使菜单从其他目录启动时的存在性检查与正式子进程加载位置保持一致。
+  - 保留现有 `script.py` 与 `script_auto_test.py` 文件路径命令形式，不改变交互信号、日志重定向、任务菜单或现有控制器的进程识别约定。
+- **兼容边界**：不要求用户执行 `pip install` 或手工导出 `PYTHONPATH`；不覆盖父进程环境；不修改 ACT、DP、DECO policy 加载、部署 YAML、ROS topic、模型推理或机器人动作执行逻辑。
+- **静态验证边界**：逐项核对所有 `subprocess.run/Popen` 调用均使用统一 `cwd/env`，检查配置绝对路径转换、环境变量合并、目标差异和格式；遵守 No-Runtime 规约，不运行 Python、部署菜单、模型加载、ROS、仿真、真机或测试程序。
+
+### 修复统一部署菜单对新版 checkpoint 配置的路径预览
+
+- **任务目标**：修复通过 `kuavo_deploy/eval_kuavo.py` 选择 DECO 部署配置时，模型信息被错误显示为 `N/A`、预览路径被错误拼接为 `outputs/train/N/A/N/A/N/A/epochN/A` 的问题。
+- **修改文件 1：`kuavo_deploy/eval_kuavo.py`**
+  - 更新 `parse_config()` 的模型定位字段读取逻辑，优先从新版 `inference.checkpoint.task/method/timestamp/epoch` 配置区读取。
+  - 保留对旧版 `inference.task/method/timestamp/epoch` 扁平配置的回退兼容，确保现有 ACT、Diffusion Policy 等部署配置的菜单预览行为不受影响。
+  - 新增 `inference.checkpoint` 类型检查；若该字段不是 YAML mapping/object，则在菜单预览阶段给出明确错误，避免继续生成误导性路径。
+  - 模型目录格式继续保持为 `outputs/train/<task>/<method>/<timestamp>/epoch<epoch>`，不改变正式配置加载器、checkpoint 加载方式或部署运行入口。
+- **修改边界**：不修改 `configs/deploy/kuavo_deco_env.yaml` 的 checkpoint 配置，不修改 DECO/ACT/DP 策略加载、真机控制、仿真服务或动作执行逻辑。
+- **静态验证边界**：仅核对新旧配置字段的优先级、路径拼接逻辑、目标差异与格式；遵守 No-Runtime 规约，不运行 Python、部署菜单、模型加载、ROS、仿真、真机或测试程序。
+
 ## 2026-08-08
 
 ### 推送 DECO 三层分支到远端
