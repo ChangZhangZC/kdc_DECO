@@ -83,6 +83,10 @@ conda create -n kuavo_deco python=3.10 -y
 conda activate kuavo_deco
 conda install -c conda-forge "ffmpeg=7.*" libstdcxx-ng -y
 python -m pip install -r requirements_DECO.txt
+
+pip install kuavo-humanoid-sdk==xxx #安装对应版本的sdk
+pip install deprecated==1.3.1
+conda install -c conda-forge pyaudio
 ```
 
 数据转换、仿真和实机部署还需要 ROS Noetic 与 Kuavo 消息环境：

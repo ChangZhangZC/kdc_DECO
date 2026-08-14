@@ -2,6 +2,23 @@
 
 ## 2026-08-14
 
+### 提交并推送 DECO 真机测试配置
+
+- **提交目标**：按用户确认，将当前真机测试相关配置、依赖说明和操作记录整理为一次提交，并推送当前 `deco/feature/3view-rgb` 分支到 `origin`。
+- **提交范围**：`configs/deploy/kuavo_deco_env.yaml` 中的 Kuavo-Real、840×480 三视角、灵巧手无触觉、policy 头部控制、当前 `pick_apple_messy` checkpoint 与起始 bag 配置；`README_DECO.md` 中的 Kuavo SDK、`deprecated` 和 PyAudio 环境补充说明；以及本文件中的操作记录。
+- **明确排除**：继续排除 `third_party/lerobot` 本地子模块偏离，不更新主仓库 gitlink；不提交 `log/` 运行日志、模型 checkpoint 或其他运行产物。
+- **验证边界**：提交前仅执行目标文件差异审查、显式暂存范围核对和 `git diff --check`；遵守 No-Runtime 规约，不运行 Python、测试、训练、ROS、仿真或真机部署程序。
+- **发布方式与远端覆盖决策**：系统未安装 GitHub CLI，因此不创建或检查 PR。推送前执行 `fetch` 后发现远端新增提交 `4b1aca9` 与 `dfb323e`，当前分支形成双方各 2 个提交的分叉；用户明确要求“直接推送，以本地为准”，因此使用以 `dfb323e51a839293576d17b1af2c96c0463ad122` 为精确期望值的 `--force-with-lease` 覆盖 `origin/deco/feature/3view-rgb`，不使用无保护的 `--force`。远端两个提交将从该分支的可见历史中移除，但仍可通过提交哈希恢复。
+
+### 尝试将本地 LeRobot 对齐到 deco/dev 固定版本
+
+- **目标版本确认**：`deco/dev` 与当前 `deco/feature/3view-rgb` 的主仓库 gitlink 均固定为 LeRobot commit `44326f287ae8a72dfacc5a5e0955780d37b97a5a`；当前本地子模块实际位于 `58f70b6bd370864139a3795ac3497a9eae8c42d5`。
+- **工作区保护**：切换前确认 `third_party/lerobot` 子模块内部没有未提交文件，因此不存在覆盖子模块源码改动的风险；未创建提交，也未推送任何远端。
+- **恢复结果**：目标 commit 不存在于当前子模块对象库；尝试从 `.gitmodules` 配置的官方远端 `https://github.com/huggingface/lerobot.git` 精确获取时，远端返回 `not our ref`，公开哈希检索也未找到可用来源。
+- **历史追踪**：主仓库提交 `3e1605a168426690c6c6808d20e0e1421439ec6e` 曾将子模块指针从 `d9e74a9d374a8f26582ad326c699740a227b483c` 更新为该目标哈希，但没有同步修改 `.gitmodules` 远端；仓库中也未保留可恢复该对象的 patch、diff 或 bundle。
+- **最终状态**：为避免用近似版本冒充精确对齐，本次没有切换子模块；本地 LeRobot 继续保持在 `58f70b6bd370864139a3795ac3497a9eae8c42d5`。后续需要提供包含 `44326f2...` 的旧 LeRobot 仓库、Git bundle 或可访问远端，才能完成精确对齐。
+- **验证边界**：仅执行 Git 元数据、历史与公开对象来源检查；遵守 No-Runtime 规约，不运行 Python、测试、训练、ROS、仿真或部署程序。
+
 ### 本地提交当前 DECO 数据训练与部署链路改动
 
 - **提交目标**：按用户确认，将当前主仓库中的 DECO 数据、训练与部署链路改动整理为一次本地 Git 提交；不执行 fetch、push、远端分支更新或 PR 创建。
