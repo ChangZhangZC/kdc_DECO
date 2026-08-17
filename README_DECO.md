@@ -93,6 +93,10 @@ conda create -n kuavo_deco python=3.10 -y
 conda activate kuavo_deco
 conda install -c conda-forge "ffmpeg=7.*" libstdcxx-ng -y
 python -m pip install -r requirements_DECO.txt
+
+pip install kuavo-humanoid-sdk==xxx #安装对应版本的sdk
+pip install deprecated==1.3.1
+conda install -c conda-forge pyaudio
 ```
 
 `requirements_DECO.txt` 会以 editable 模式安装本仓库的 `third_party/lerobot` 和项目自身。若启动训练时出现 `ModuleNotFoundError: No module named 'lerobot'`，说明当前 conda 环境尚未完成这一步；在已确认其余依赖可用时，也可仅执行：

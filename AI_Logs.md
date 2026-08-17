@@ -1,5 +1,16 @@
 # AI Execution Logs
 
+## 2026-08-17
+
+### 合并 Downloads 仓库的 DECO 功能改动并保留通用配置模板
+
+- **合并来源**：将 `/Users/changzhang/Downloads/kdc_DECO` 的 `deco/feature/3view-rgb` 两个本地提交 `7a85466` 与 `c559e45` 合入当前同名分支；当前分支原有远端提交 `4b1aca9` 与 `dfb323e` 完整保留，并创建 `backup/pre-downloads-merge-20260817` 作为合并前备份引用。
+- **冲突处理**：`kuavo_data/CvtRosbag2Lerobot_DECO.py` 与 `kuavo_train/train_policy.py` 的冲突来自 Downloads 副本的重复路径引导及 CRLF 行尾，当前分支已经具备等价或更完整实现，故保留当前版本；`AI_Logs.md` 保留当前历史，并以本条记录追踪本次导入范围。
+- **保留的功能代码**：合并 `kuavo_deploy/eval_kuavo.py` 对新版 `inference.checkpoint` 嵌套字段的菜单预览兼容，以及 `kuavo_deploy/src/scripts/script.py`、`kuavo_deploy/src/scripts/script_auto_test.py` 在深层脚本直接启动时补入仓库根目录的导入引导，避免本地 `kuavo_deploy` 包无法解析。
+- **配置模板保护**：明确不带入 Downloads 中面向特定真机和数据集的路径、checkpoint、图像分辨率、末端模式、训练 batch size 与输出目录设置；`configs/data/KuavoRosbag2Lerobot_deco.yaml`、`configs/deploy/kuavo_deco_env.yaml`、`configs/policy/deco_config.yaml` 均保持当前仓库通用模板版本。
+- **未提交文件边界**：Downloads 工作区的 `kuavo_deploy/readme/utils/setup_env.sh` 仅将文件模式从 `100755` 改为 `100644`，无内容差异，且不属于任何提交；本次不导入该修改，当前仓库版本及权限保持不变。
+- **验证边界**：使用 Git 提交图、共同祖先、三方合并预演、冲突标记检查、目标差异与空白检查进行静态核对；遵守 No-Runtime 规约，不运行 Python、训练、ROS、仿真、真机部署或测试程序。
+
 ## 2026-08-09
 
 ### 补充 DECO 本地训练启动与数据集定位说明
