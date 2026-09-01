@@ -68,6 +68,8 @@ Kuavo rosbag
 | `configs/policy/deco_config.yaml`            | DECO 训练配置                                              |
 | `kuavo_train/train_policy.py`                | Kuavo policy 训练入口                                      |
 | `kuavo_train/wrapper/policy/deco/`           | DECO 的 LeRobot config、policy、processor 与动作分发适配层 |
+| `configs/eval/deco_open_loop_eval.yaml`      | 单 Rosbag DECO Open Loop Eval 配置                         |
+| `kuavo_eval/open_loop_eval.py`               | Rosbag GT 与 DECO prediction 离线开环对比入口              |
 | `configs/deploy/kuavo_deco_env.yaml`         | DECO 仿真、真机和 client 部署配置入口                      |
 | `kuavo_deploy/utils/deco_obs_action.py`      | DECO 在线观测拼接、动作解码与兼容性校验                    |
 | `third_party/deco/`                          | DECO 模型主体源码                                          |
@@ -401,11 +403,125 @@ training:
 
 Resume 会恢复 policy、optimizer、scheduler、AMP、RNG 与训练进度。它不能与 `load_external_init_weights`、`deco_init_pth_path`、`base_policy_path` 或 `adapter_model_path` 同时使用。
 
+## 5. Rosbag Open Loop Eval
 
+Open Loop Eval 直接读取一个原始 `.bag`，在内存中复用数转阶段已有的 reader、topic
+解码、30Hz 时间对齐与 state/action 基础转换函数，不需要预先生成 LeRobot dataset。
+为避免影响已经稳定使用的数据清洗入口，18D/28D 单帧组装逻辑在 eval 脚本中保留一份
+等价副本，`CvtRosbag2Lerobot_DECO.py` 不因该评估功能发生修改。模型每隔
+`action_horizon` 帧使用当前 Rosbag 的真实 observation 预测一个 action chunk；脚本将
+postprocessor 后的物理 action 与按同一数转规则构造的 Rosbag Ground Truth 绘制在
+同一个 subplot。
 
-## 5. 部署
+配置文件：
 
-### 5.1 唯一配置入口
+```text
+configs/eval/deco_open_loop_eval.yaml
+```
+
+首先配置单个 Rosbag：
+
+```yaml
+input:
+  rosbag_path: /path/to/episode.bag
+  start_frame: 0
+  max_steps: null
+```
+
+checkpoint 与 processor 使用同一训练目录层级，不需要分别填写路径：
+
+```yaml
+inference:
+  device: cuda
+  seed: 42
+  checkpoint:
+    root: outputs/train
+    task: your_task
+    method: deco_visual_main
+    timestamp: run_YYYYMMDD_HHMMSS
+    epoch: best
+  inf_step: null
+  action_horizon: null
+```
+
+脚本自动解析：
+
+```text
+run root  = outputs/train/<task>/<method>/<timestamp>
+checkpoint = <run root>/epoch<epoch>
+processor  = <run root>/policy_preprocessor.json
+             <run root>/policy_postprocessor.json
+```
+
+`epoch: best` 对应 `epochbest`，数值 `100` 对应 `epoch100`；`epoch: latest` 表示直接
+加载 run root 中训练循环最后保存的 policy。`inf_step: null` 使用 checkpoint 值；
+`action_horizon: null` 优先使用 checkpoint 的 `n_action_steps`，若其也是 `null`，则
+消费完整 `chunk_size`。
+
+该配置通过 Hydra defaults 把 `configs/data/KuavoRosbag2Lerobot_deco.yaml` 放在
+`conversion` 命名空间。评估前应核对：
+
+```yaml
+conversion:
+  dataset:
+    eef_type: qiangnao  # 或 leju_claw / rq2f85
+    train_hz: 30
+    sample_drop: 10
+  deco:
+    rgb_topics:
+      head_cam_h: /cam_h/color/image_raw/compressed
+      wrist_cam_l: /cam_l/color/image_raw/compressed
+      wrist_cam_r: /cam_r/color/image_raw/compressed
+```
+
+profile 与是否需要 tactile 会由 checkpoint 强制覆盖，并与 Rosbag reader 做一致性
+校验；`eef_type` 仍需描述 bag 中实际使用的强脑、Leju 或 RQ2F85 topic。Rosbag 对齐
+频率必须与 checkpoint 的 `dataset_hz` 相同。
+
+从仓库根目录运行：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /path/to/your/kuavo_ros_ws/devel/setup.bash
+python kuavo_eval/open_loop_eval.py
+```
+
+也可以使用 Hydra override 临时替换关键路径：
+
+```bash
+python kuavo_eval/open_loop_eval.py \
+  input.rosbag_path=/path/to/episode.bag \
+  inference.checkpoint.task=your_task \
+  inference.checkpoint.method=deco_visual_main \
+  inference.checkpoint.timestamp=run_YYYYMMDD_HHMMSS \
+  inference.checkpoint.epoch=best
+```
+
+结果默认保存到：
+
+```text
+outputs/open_loop_eval/<task>/<method>/<timestamp>/<checkpoint>/<bag_name>/
+├── summary.json
+├── predictions.npz
+└── action_dims_00_06.png
+```
+
+高维 action 默认每7维分页。每个 subplot 只包含两条动作曲线：`Rosbag Ground Truth`
+与 `DECO Prediction`；红色虚线标记重新运行模型推理的帧。`predictions.npz` 保存时间戳、
+frame index、推理位置、GT、prediction 与 action names，可在不重新加载模型的情况下
+二次绘图。
+
+Ground Truth 不是未经解释的 ROS message 原数组，而是严格沿用训练数转规则：机械臂
+依次选择 `/kuavo_arm_traj_synced`、`/kuavo_arm_traj`、`/joint_cmd`；灵巧手/夹爪和
+头部分别按当前 profile 组装，并应用训练时相同的单位转换与机械臂范围保护。这样它才
+与 postprocessor 后的 18D/28D 预测处于同一物理 schema。
+
+该评估使用 Rosbag 中的真实 observation，不会执行预测动作，因此只能诊断模型对示教
+动作的拟合程度、时间对齐与 checkpoint/processor 配置，不能替代仿真或真机闭环成功率。
+
+## 6. 部署
+
+### 6.1 唯一配置入口
 
 DECO 部署使用：
 
@@ -431,7 +547,7 @@ configs/deploy/kuavo_deco_env.yaml
 | `inference.policy_type`           | 本地推理为 `deco`，远端调用侧为 `client`                                        |
 | `inference.checkpoint.*`          | 训练 task、method、run timestamp 与 epoch                                       |
 
-### 5.2 Inference mode
+### 6.2 Inference mode
 
 | `deco.inference_mode`  | 自动派生的 `env.eef_type` | 自动派生的 `env.state_layout` | Checkpoint profile   | Tactile |
 | ---------------------- | ------------------------- | ----------------------------- | -------------------- | ------- |
@@ -442,7 +558,7 @@ configs/deploy/kuavo_deco_env.yaml
 
 部署加载 checkpoint 后会静态核对 profile、action 维度、tactile 开关、末端类型、state layout 和三路 RGB key，配置不一致时直接报错。
 
-### 5.3 最小配置示例
+### 6.3 最小配置示例
 
 RQ2F85 仿真部署：
 
@@ -477,7 +593,7 @@ inference:
 
 切换末端执行器时只选择新的 `deco.inference_mode` 并加载语义匹配的 checkpoint。配置加载器会从该 mode 自动派生 `env.eef_type`、`env.state_layout`、`env.which_arm=both`、`env.only_arm=true` 与 `env.qiangnao_dof_needed`；如果 YAML 仍显式填写了冲突值，加载时会直接报错。
 
-### 5.4 动作分发
+### 6.4 动作分发
 
 当前支持两种互斥模式：
 
@@ -492,7 +608,7 @@ env.ros_rate == checkpoint.dataset_hz
 
 当前不支持部署期 stride 降频。
 
-### 5.5 仿真入口
+### 6.5 仿真入口
 
 仿真沿用 Kuavo 现有菜单入口：
 
@@ -513,7 +629,7 @@ python kuavo_deploy/eval_kuavo.py
 4. 选择 `configs/deploy/kuavo_deco_env.yaml`；
 5. 选择 `auto_test`。
 
-### 5.6 真机入口
+### 6.6 真机入口
 
 本地真机推理：
 
@@ -529,9 +645,9 @@ python kuavo_deploy/src/scripts/script.py \
 
 Server / Client 模式可用于边侧机推理：机器人侧 client 负责采集观测和执行动作，GPU 机器上的 server 负责加载 policy。Preprocessor 与 postprocessor 只能在链路中的一侧执行，不能重复处理。
 
-## 6. 推荐工作流
+## 7. 推荐工作流
 
-### 6.1 强脑灵巧手，无触觉
+### 7.1 强脑灵巧手，无触觉
 
 ```text
 数据:     dataset.eef_type=qiangnao
@@ -542,7 +658,7 @@ Server / Client 模式可用于边侧机推理：机器人侧 client 负责采�
           # loader 自动派生 qiangnao + deco_28d
 ```
 
-### 6.2 强脑灵巧手，带 Tactile Adapter
+### 7.2 强脑灵巧手，带 Tactile Adapter
 
 ```text
 数据:     dataset.eef_type=qiangnao
@@ -555,7 +671,7 @@ Server / Client 模式可用于边侧机推理：机器人侧 client 负责采�
           # loader 自动派生 qiangnao + deco_28d
 ```
 
-### 6.3 Leju Claw 或 RQ2F85
+### 7.3 Leju Claw 或 RQ2F85
 
 ```text
 数据:     dataset.eef_type=leju_claw 或 rq2f85

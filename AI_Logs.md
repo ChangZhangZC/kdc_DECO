@@ -1,5 +1,35 @@
 # AI Execution Logs
 
+## 2026-08-20
+
+### 新增直接基于原始 Rosbag 的 DECO Open Loop Eval
+
+- **任务目标**：在 `kdc_DECO` 内新增与 LeTools GR00T `open_loop_eval.py` 同类的离线开环诊断能力；直接读取单个原始 `.bag`，用 Rosbag 真实观测执行 DECO 推理，并将模型预测 action 与 Rosbag Ground Truth action 绘制在同一坐标轴，不接入 ROS 控制、仿真或真机动作下发。
+- **统一训练资产路径**：新增 `configs/eval/deco_open_loop_eval.yaml` 与 `kuavo_train/eval/open_loop_eval.py`，使用 `outputs/train/<task>/<method>/<timestamp>` 作为唯一 run root；checkpoint 自动解析为其下的 `epochbest`、`epochN` 或 run root，`policy_preprocessor.json`、`policy_postprocessor.json` 及 processor 状态统一从 run root 加载，不再分别要求 `checkpoint-path` 与 `processor-root`。
+- **评估配置入口**：配置集中暴露单 Rosbag 路径、起始帧、最大步数、device、seed、checkpoint task/method/timestamp/epoch、Flow Matching `inf_step`、`action_horizon`、输出开关、绘图分页与 DPI；同时在 `conversion` 命名空间复用并覆盖 DECO 数转配置，允许在同一文件设置末端执行器、对齐频率、首尾裁帧、RGB/action/末端/tactile topics、二值模式、图像尺寸与动作断流阈值。
+- **原始 Rosbag 数据链路**：评估入口直接调用 `DecoRosbagReader.process_rosbag()`，在内存中完成 topic 解码、以 head RGB 为主时间轴的最近邻对齐与目标频率采样，不预先生成或读取 LeRobot metadata/dataset。checkpoint 会强制决定 profile 与 tactile 输入契约，并校验三视角 key、`dataset_hz` 和 action 维度。
+- **共享 Ground Truth 构造**：修改 `kuavo_data/CvtRosbag2Lerobot_DECO.py`，抽取 `build_deco_frame_from_aligned_bag()`，让离线数转与 Open Loop Eval 共用同一帧构造逻辑，包括机械臂 action topic 优先级、灵巧手/夹爪单位转换、28D/18D 排列、头部 action 来源、tactile 处理和机械臂范围保护；`populate_dataset()` 改为调用该函数，消除训练数据与评估 GT 的双实现漂移风险。
+- **推理与设备语义**：新增 `kuavo_train/eval/__init__.py` 和评估主脚本；三路 HWC `uint8` RGB 在进入保存的 preprocessor 前按 LeRobot 视频 loader 语义转换为 CHW float `[0,1]`，再调用 `predict_action_chunk()` 与保存的 postprocessor 得到物理 action。评估设备在加载 safetensors 前写入 checkpoint config，避免 checkpoint 保存为 CUDA 而本次选择 CPU 时权重提前映射失败。
+- **时序比较与输出**：每隔 `action_horizon` 帧使用该时刻真实 Rosbag observation 重新推理，并裁剪 episode 尾部后拼接完整预测序列；拒绝 shape 不一致及 NaN/Inf。默认输出 `summary.json`、`predictions.npz` 和按 action 维度分页的 PNG，每个 subplot 同时绘制 `Rosbag Ground Truth` 与 `DECO Prediction` 两条曲线，并用红色虚线标记推理点；summary 同时记录总体和逐维 MSE/MAE、checkpoint、processor、profile、频率与动作来源。
+- **文档与设计记录**：更新 `README_DECO.md`，新增配置字段、目录解析、运行命令、输出结构、Ground Truth 语义及开环/闭环能力边界；新增 `docs/plans/2026-08-20-deco-rosbag-open-loop-eval.md` 记录经用户批准的实现方案与静态验证步骤。
+- **验证边界**：按仓库 No-Runtime 规约，仅进行 checkpoint/config/processor、Rosbag reader、共享 frame builder、preprocessor、policy、postprocessor、指标和绘图调用链的静态审查，并检查差异格式、冲突标记及新文件结构；未运行 Python、pytest、模型推理、Rosbag、ROS、仿真、真机部署或任何环境修改命令。
+
+### 按用户要求撤回数据清洗脚本改动并将帧构造副本移入 Eval
+
+- **撤回范围**：完整撤回本次 Open Loop Eval 对 `kuavo_data/CvtRosbag2Lerobot_DECO.py` 的公共 frame builder 抽取及 `populate_dataset()` 重构；该文件已恢复到当前分支原始内容，Git 对该文件不再显示任何差异，既有 Rosbag 数据转换行为不受新功能影响。
+- **评估侧实现**：在 `kuavo_train/eval/open_loop_eval.py` 内新增本地 `build_deco_frame_from_aligned_bag()`，按原 `populate_dataset()` 的 qiangnao 28D、gripper 18D、三视角 RGB、可选 tactile、头部 action 与机械臂裁剪逻辑逐项复制；评估仍只读复用数据脚本已有的 `DecoRosbagReader` 和 state/action 基础转换函数。
+- **架构边界**：按用户确认采用“稳定数据转换入口不修改、离线评估通过新增代码扩展”的方案。这样消除新评估功能对现有清洗主流程的回归风险；对应代价是 eval 侧保留一份单帧组装副本，后续若数据 schema 主动变化，需要同步核对评估副本。
+- **文档同步**：更新 `README_DECO.md` 与实现计划，明确数据清洗脚本保持不变、单帧 18D/28D 组装位于 eval 本地副本，避免继续描述为共享公共 frame builder。
+- **验证边界**：仅静态核对数据清洗文件零差异，以及 eval 本地副本与原 `populate_dataset()` 的 profile 分支、字段来源、单位转换、action clamp 和 tactile 处理一致性；不运行 Python、pytest、Rosbag、模型推理、ROS、仿真或部署程序。
+
+### 将 Open Loop Eval 入口迁移到仓库一级目录
+
+- **目录迁移**：按用户要求，将 `kuavo_train/eval/__init__.py` 与 `kuavo_train/eval/open_loop_eval.py` 迁移为仓库一级包 `kuavo_eval/__init__.py` 与 `kuavo_eval/open_loop_eval.py`，使离线评估入口与训练模块解耦。
+- **必要路径修正**：仅因目录层级变化，将脚本的仓库根目录解析从 `Path(__file__).resolve().parents[2]` 改为 `parents[1]`，Hydra 配置相对路径从 `../../configs` 改为 `../configs`；配置文件仍保留在 `configs/eval/deco_open_loop_eval.yaml`。
+- **文档同步**：更新 `README_DECO.md` 的主要文件表与运行命令，并同步实现计划中的文件位置；新的启动命令为 `python kuavo_eval/open_loop_eval.py`。
+- **范围边界**：本次只做文件位置和由位置变化导致的相对路径修正，不修改 Rosbag Baseline 来源、`action_horizon`、模型调用方式、指标、绘图或其他 Open Loop Eval 算法逻辑。
+- **验证边界**：仅静态检查新旧路径、引用和差异范围；遵守 No-Runtime 规约，不运行 Python、pytest、Rosbag、模型推理、ROS、仿真或部署程序。
+
 ## 2026-08-17
 
 ### 合并 Downloads 仓库的 DECO 功能改动并保留通用配置模板
