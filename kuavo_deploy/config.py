@@ -10,6 +10,7 @@ Provides:
 
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Tuple, Any, Dict
+import math
 import os
 import yaml
 
@@ -19,9 +20,10 @@ class Range:
     min: List[float]
     max: List[float]
 
+
 @dataclass
 class LimitsConfig:
-    joint_q: Range = field(default_factory=lambda: Range([-3.14]*14, [3.14]*14))
+    joint_q: Range = field(default_factory=lambda: Range([-3.14] * 14, [3.14] * 14))
     gripper: Range = field(default_factory=lambda: Range([0, 0], [1, 1]))
     head_q: Range = field(default_factory=lambda: Range([-1.0, -1.0], [1.0, 1.0]))
     eef: Range = field(default_factory=lambda: Range(
@@ -36,8 +38,11 @@ class LimitsConfig:
         [0.005, 0.0075, 0.004, 0.03, 0.03, 0.05,
          0.005, 0.0075, 0.004, 0.03, 0.03, 0.05]
     ))
-    base: Range = field(default_factory=lambda: Range([-2.0, -2.0, -3.14, 0],
-                                                      [2.0, 2.0, 3.14, 1]))
+    base: Range = field(default_factory=lambda: Range(
+        [-2.0, -2.0, -3.14, 0],
+        [2.0, 2.0, 3.14, 1],
+    ))
+
 
 # -----------------------
 # Environment Dataclass
@@ -58,18 +63,15 @@ class ConfigEnv:
     image_size: List[int] = field(default_factory=lambda: [640, 480])
     depth_range: List[int] = field(default_factory=lambda: [0, 1500])
     obs_key_map: Dict[str, List[Any]] = field(default_factory=dict)
-    arm_state_keys: List[str]=field(default_factory=list)
+    arm_state_keys: List[str] = field(default_factory=list)
     ratio: float = 0.5
     frame_alignment: bool = True
     qiangnao_dof_needed: int = 1
-
     fk_joint_angles_for_reset: Optional[List[float]] = None
     rotation_threshold: Optional[float] = None
-    
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     is_binary: bool = False
 
-    # -------- Validation ----------
     def validate(self):
         if self.eef_type not in ["rq2f85", "leju_claw", "qiangnao"]:
             raise ValueError(f"Invalid eef_type: {self.eef_type}. Valid: rq2f85, leju_claw, qiangnao")
@@ -87,7 +89,6 @@ class ConfigEnv:
             raise ValueError("state_layout='deco_18d' requires eef_type='leju_claw' or 'rq2f85'.")
         if not isinstance(self.image_size, list) or len(self.image_size) != 2:
             raise ValueError("image_size must be a list [width, height], matching cv2.resize.")
-        # ensure lists lengths for arm bounds
         if not (len(self.limits["joint_q"]["max"]) == len(self.limits["joint_q"]["min"]) == 14):
             raise ValueError("Robot arm_min/arm_max must be lists of length 14")
         if self.state_layout == "deco_28d" and not (
@@ -99,19 +100,19 @@ class ConfigEnv:
         ):
             raise ValueError("state_layout='deco_18d' requires gripper limits with at least 2 values.")
         if self.state_layout.startswith("deco_") and not (
-            len(self.limits.get("head_q", {}).get("max", [])) >= 2 and len(self.limits.get("head_q", {}).get("min", [])) >= 2
+            len(self.limits.get("head_q", {}).get("max", [])) >= 2
+            and len(self.limits.get("head_q", {}).get("min", [])) >= 2
         ):
             raise ValueError("DECO deployment layouts require head_q limits with at least 2 values.")
         if self.qiangnao_dof_needed not in [1, 6]:
             raise ValueError("qiangnao_dof_needed must be 1 for ACT/DP style gripper state or 6 for DECO dexhand state.")
 
-    # -------- Derived properties ----------
     @property
     def joint_q_slice(self):
         return {
             "left": [[12, 19]],
             "right": [[19, 26]],
-            "both": [[12, 19], [19, 26]]
+            "both": [[12, 19], [19, 26]],
         }[self.which_arm]
 
     @property
@@ -120,41 +121,35 @@ class ConfigEnv:
             return {
                 "left": [[0, 1]],
                 "right": [[1, 2]],
-                "both": [[0, 1], [1, 2]]
+                "both": [[0, 1], [1, 2]],
             }[self.which_arm]
-        elif self.eef_type == "qiangnao" and self.qiangnao_dof_needed == 1:
+        if self.eef_type == "qiangnao" and self.qiangnao_dof_needed == 1:
             return {
                 "left": [[0, 1]],
                 "right": [[6, 7]],
-                "both": [[0, 1], [6, 7]]
+                "both": [[0, 1], [6, 7]],
             }[self.which_arm]
-        elif self.eef_type == "qiangnao" and self.qiangnao_dof_needed == 6:
-            # DECO 28D 需要完整左右手各 6 维，而不是 ACT/DP 默认的单维开合量。
+        if self.eef_type == "qiangnao" and self.qiangnao_dof_needed == 6:
             return {
                 "left": [[0, 6]],
                 "right": [[6, 12]],
-                "both": [[0, 6], [6, 12]]
+                "both": [[0, 6], [6, 12]],
             }[self.which_arm]
-        else:
-            raise ValueError("Unsupported eef_type or dof config")
+        raise ValueError("Unsupported eef_type or dof config")
 
-    # ---------------- obs_key_map build ----------------
     def build_obs_key_map(self, deco: Optional["ConfigDeco"] = None) -> Dict[str, Any]:
         obs_map = {}
         for key, info in self.obs_key_map.items():
             if key == "tactile" and (deco is None or deco.inference_mode != "qiangnao_tactile"):
-                # 只有带触觉的 DECO 灵巧手推理才订阅 tactile，避免无触觉 checkpoint 收到多余 feature。
                 continue
             if key in ["rq2f85", "qiangnao", "leju_claw"] and key != self.eef_type:
-                # 同一个部署配置可以保留多个末端 topic 模板，但实际只启用当前 eef_type。
                 continue
             base = {
                 "topic": info[0],
                 "msg_type": info[1],
                 "frequency": info[2],
-                "handle": {"params": {}}
+                "handle": {"params": {}},
             }
-            # 统一规则化参数处理
             if len(info) == 4 and isinstance(info[3], list):
                 base["handle"]["params"]["resize_wh"] = info[3]
             if len(info) == 5 and isinstance(info[3], list) and isinstance(info[4], list):
@@ -168,8 +163,6 @@ class ConfigEnv:
                 base["handle"]["params"]["depth_encoding"] = info[5]
             if key == "tactile" and len(info) >= 4:
                 base["handle"]["params"]["force_scale"] = float(info[3])
-
-            # 特殊键处理
             if key == "joint_q":
                 base["handle"]["params"]["slice"] = self.joint_q_slice
             if key == "head_q":
@@ -182,12 +175,11 @@ class ConfigEnv:
                 obs_map["eef_pose"] = {
                     "type": "computed",
                     "source": info[1],
-                    "frequency": info[2]
+                    "frequency": info[2],
                 }
                 continue
             obs_map[key] = base
         return obs_map
-
 
 
 # -----------------------
@@ -196,11 +188,11 @@ class ConfigEnv:
 @dataclass
 class ConfigInference:
     go_bag_path: str = ""
-    policy_type: str = "diffusion"  # 支持 diffusion, act 等
+    policy_type: str = "diffusion"
     eval_episodes: int = 1
     seed: int = 42
     start_seed: int = 42
-    device: str = "cuda"  # or "cpu"
+    device: str = "cuda"
     task: str = ""
     method: str = ""
     timestamp: str = ""
@@ -214,9 +206,7 @@ class ConfigInference:
 
     def validate(self):
         if self.policy_type not in ["diffusion", "act", "deco", "client"]:
-            # 若将来支持更多策略，请在此扩展
-            # Expansion room for future support for other policies
-            raise ValueError(f"Unsupported policy_type '{self.policy_type}'")
+            raise ValueError(f"Unsupported policy type: {self.policy_type}")
         if self.device not in ["cuda", "cpu"]:
             raise ValueError("device must be 'cuda' or 'cpu'")
         if not isinstance(self.client_host, str) or not self.client_host:
@@ -231,8 +221,6 @@ class ConfigInference:
             self.client_api_token_env = ""
 
     def client_api_token_value(self) -> Optional[str]:
-        """从环境变量读取 client token，避免把远端推理 token 明文写入部署 YAML。"""
-
         token_env = str(self.client_api_token_env or "").strip()
         if not token_env:
             return None
@@ -247,37 +235,28 @@ class ConfigInference:
 
 @dataclass
 class ConfigRecedingHorizon:
-    """连续消费原始 chunk 前 N 步；None 表示完整 chunk。"""
-
     n_action_steps: Optional[int] = 16
 
 
 @dataclass
 class ConfigTemporalEnsemble:
-    """原生在线 Temporal Ensembling 的指数衰减系数。"""
-
     coefficient: float = 0.1
 
 
 @dataclass
 class ConfigStrideAction:
-    """显式降频实验参数；默认部署不会自动启用该策略。"""
-
     target_hz: int = 10
     queue_steps: Optional[int] = None
 
 
 @dataclass
 class ConfigActionDispatch:
-    """DECO 三种互斥动作分发策略的部署接口。"""
-
     mode: str = "receding_horizon"
     receding_horizon: ConfigRecedingHorizon = field(default_factory=ConfigRecedingHorizon)
     temporal_ensemble: ConfigTemporalEnsemble = field(default_factory=ConfigTemporalEnsemble)
     stride_action: ConfigStrideAction = field(default_factory=ConfigStrideAction)
 
     def __post_init__(self) -> None:
-        # YAML loader 和 asdict() 会把嵌套 dataclass 变成 dict；在配置边界恢复强类型。
         if isinstance(self.receding_horizon, dict):
             self.receding_horizon = ConfigRecedingHorizon(**self.receding_horizon)
         if isinstance(self.temporal_ensemble, dict):
@@ -288,14 +267,7 @@ class ConfigActionDispatch:
 
 @dataclass
 class ConfigDeco:
-    """DECO 部署专用配置。
-
-    这些字段只描述在线推理如何拼接观测、选择 checkpoint 和解释动作；
-    不应覆盖 checkpoint 自己保存的模型结构字段。
-    """
-
     inference_mode: str = "qiangnao_no_tactile"
-    # None 保持 checkpoint 保存的 Flow Matching 推理步数；正整数仅覆盖在线 denoising 循环。
     inf_step: Optional[int] = None
     head_state_source: str = "live_joint_q"
     action_dispatch: ConfigActionDispatch = field(default_factory=ConfigActionDispatch)
@@ -305,8 +277,6 @@ class ConfigDeco:
             self.action_dispatch = ConfigActionDispatch(**self.action_dispatch)
 
     def validate_action_dispatch_structure(self) -> None:
-        """校验三种 dispatcher 的互斥配置，不依赖 checkpoint 运行参数。"""
-
         if self.inf_step is not None and (
             isinstance(self.inf_step, bool)
             or not isinstance(self.inf_step, int)
@@ -327,8 +297,7 @@ class ConfigDeco:
         supported_modes = {"receding_horizon", "temporal_ensemble", "stride_action"}
         if dispatch.mode not in supported_modes:
             raise ValueError(
-                f"deco.action_dispatch.mode must be one of {sorted(supported_modes)}, "
-                f"got {dispatch.mode!r}."
+                f"deco.action_dispatch.mode must be one of {sorted(supported_modes)}, got {dispatch.mode!r}."
             )
 
         n_action_steps = dispatch.receding_horizon.n_action_steps
@@ -337,8 +306,7 @@ class ConfigDeco:
                 raise ValueError("deco.action_dispatch.receding_horizon.n_action_steps must be positive or null.")
             if dispatch.mode != "receding_horizon":
                 raise ValueError(
-                    "deco.action_dispatch.receding_horizon.n_action_steps must be null "
-                    "when another mode is active."
+                    "deco.action_dispatch.receding_horizon.n_action_steps must be null when another mode is active."
                 )
 
         coefficient = dispatch.temporal_ensemble.coefficient
@@ -354,13 +322,10 @@ class ConfigDeco:
                 raise ValueError("deco.action_dispatch.stride_action.queue_steps must be positive or null.")
             if dispatch.mode != "stride_action":
                 raise ValueError(
-                    "deco.action_dispatch.stride_action.queue_steps must be null "
-                    "when another mode is active."
+                    "deco.action_dispatch.stride_action.queue_steps must be null when another mode is active."
                 )
 
     def validate_action_dispatch_timing(self, dataset_hz: int, chunk_size: int, env: ConfigEnv) -> None:
-        """checkpoint 加载后校验数据频率、控制频率与 chunk 边界。"""
-
         self.validate_action_dispatch_structure()
         if dataset_hz <= 0 or chunk_size <= 0:
             raise ValueError("DECO checkpoint dataset_hz and chunk_size must be positive.")
@@ -369,8 +334,7 @@ class ConfigDeco:
         if dispatch.mode in {"receding_horizon", "temporal_ensemble"}:
             if env.ros_rate != dataset_hz:
                 raise ValueError(
-                    f"{dispatch.mode} requires env.ros_rate == checkpoint dataset_hz "
-                    f"({dataset_hz}), got {env.ros_rate}."
+                    f"{dispatch.mode} requires env.ros_rate == checkpoint dataset_hz ({dataset_hz}), got {env.ros_rate}."
                 )
             n_action_steps = dispatch.receding_horizon.n_action_steps
             if n_action_steps is not None and n_action_steps > chunk_size:
@@ -403,8 +367,6 @@ class ConfigDeco:
         deco_client = inference.policy_type == "client" and env.state_layout.startswith("deco_")
         if not (deco_policy or deco_client):
             return
-        # client 模式下真实 policy 在 server 端，但调用侧仍负责构造 DECO observation
-        # 并反解 DECO action；因此只要使用 deco_* state_layout，就必须校验 env/deco schema。
         if self.inference_mode not in ["qiangnao_tactile", "qiangnao_no_tactile", "gripper_no_tactile"]:
             raise ValueError(
                 "deco.inference_mode must be 'qiangnao_tactile', 'qiangnao_no_tactile', or 'gripper_no_tactile'."
@@ -427,6 +389,23 @@ class ConfigDeco:
                 )
 
 
+@dataclass
+class ConfigSafety:
+    """Final arm-command safety guard applied immediately before Robot SDK dispatch."""
+
+    mode: str = "normal"
+    arm_max_step_delta: float = math.pi / 2
+
+    def validate(self) -> None:
+        if self.mode not in {"normal", "strict"}:
+            raise ValueError("safety.mode must be 'normal' or 'strict'.")
+        if isinstance(self.arm_max_step_delta, bool) or not isinstance(self.arm_max_step_delta, (int, float)):
+            raise ValueError("safety.arm_max_step_delta must be a finite positive number in radians.")
+        self.arm_max_step_delta = float(self.arm_max_step_delta)
+        if not math.isfinite(self.arm_max_step_delta) or self.arm_max_step_delta <= 0:
+            raise ValueError("safety.arm_max_step_delta must be a finite positive number in radians.")
+
+
 # -----------------------
 # Master config
 # -----------------------
@@ -435,21 +414,19 @@ class KuavoConfig:
     env: ConfigEnv
     inference: ConfigInference
     deco: ConfigDeco = field(default_factory=ConfigDeco)
+    safety: ConfigSafety = field(default_factory=ConfigSafety)
 
     def validate(self):
         self.env.validate()
         self.inference.validate()
         self.deco.validate(self.env, self.inference)
+        self.safety.validate()
 
 
 # -----------------------
 # Loader
 # -----------------------
 def load_kuavo_config(config_path: Optional[str] = None) -> KuavoConfig:
-    """
-    Load config from YAML.
-    Default path: ./configs/deploy/kuavo_env.yaml (same name as your original file)
-    """
     if config_path is None:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(current_dir, "../configs", "deploy", "kuavo_env.yaml")
@@ -457,23 +434,21 @@ def load_kuavo_config(config_path: Optional[str] = None) -> KuavoConfig:
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
-    # The user's original YAML was mostly top-level keys (not nested under env/inference).
-    # We'll support both styles:
-    #  - top-level flat (as your original): keys like 'real', 'policy_type', ...
-    #  - nested style: {env: {...}, inference: {...}}
-    if 'env' in cfg and 'inference' in cfg:
-        env_cfg: Dict[str, Any] = cfg.get('env', {})
-        inf_cfg: Dict[str, Any] = cfg.get('inference', {})
-        deco_cfg: Dict[str, Any] = cfg.get('deco', {})
+    if "env" in cfg and "inference" in cfg:
+        env_cfg: Dict[str, Any] = cfg.get("env", {})
+        inf_cfg: Dict[str, Any] = cfg.get("inference", {})
+        deco_cfg: Dict[str, Any] = cfg.get("deco", {})
+        safety_cfg: Dict[str, Any] = cfg.get("safety", {})
     else:
-        # 自动根据 dataclass 字段划分 env / inference
         env_fields = set(ConfigEnv.__dataclass_fields__.keys())
         inf_fields = set(ConfigInference.__dataclass_fields__.keys())
         deco_fields = set(ConfigDeco.__dataclass_fields__.keys())
+        safety_fields = set(ConfigSafety.__dataclass_fields__.keys())
 
         env_cfg = {}
         inf_cfg = {}
         deco_cfg = {}
+        safety_cfg = {}
 
         for k, v in cfg.items():
             if k in env_fields:
@@ -482,8 +457,12 @@ def load_kuavo_config(config_path: Optional[str] = None) -> KuavoConfig:
                 inf_cfg[k] = v
             elif k in deco_fields:
                 deco_cfg[k] = v
+            elif k in safety_fields:
+                safety_cfg[k] = v
             elif k == "deco" and isinstance(v, dict):
                 deco_cfg.update(v)
+            elif k == "safety" and isinstance(v, dict):
+                safety_cfg.update(v)
             elif k == "limits" and isinstance(v, dict):
                 def dict_to_range(d):
                     return Range(d.get("min", []), d.get("max", []))
@@ -498,28 +477,28 @@ def load_kuavo_config(config_path: Optional[str] = None) -> KuavoConfig:
                 ))
             else:
                 env_cfg[k] = v
-    # Merge defaults with provided config
+
     default_env = ConfigEnv()
     default_inf = ConfigInference()
     default_deco = ConfigDeco()
+    default_safety = ConfigSafety()
 
     merged_env = {**asdict(default_env), **env_cfg}
     merged_inf = {**asdict(default_inf), **inf_cfg}
     merged_deco = {**asdict(default_deco), **deco_cfg}
+    merged_safety = {**asdict(default_safety), **safety_cfg}
 
     env = ConfigEnv(**merged_env)
     inference = ConfigInference(**merged_inf)
     deco = ConfigDeco(**merged_deco)
+    safety = ConfigSafety(**merged_safety)
 
-    config = KuavoConfig(env=env, inference=inference, deco=deco)
+    config = KuavoConfig(env=env, inference=inference, deco=deco, safety=safety)
     config.env.obs_key_map = config.env.build_obs_key_map(config.deco)
     config.validate()
     return config
 
 
-# -----------------------
-# Quick test when run as script
-# -----------------------
 if __name__ == "__main__":
     cfg = load_kuavo_config()
     print(isinstance(cfg, KuavoConfig))
@@ -533,4 +512,6 @@ if __name__ == "__main__":
     print("=== Inference basic ===")
     print("policy_type:", cfg.inference.policy_type)
     print("device:", cfg.inference.device)
-    print("arm_state_keys",cfg.env.arm_state_keys)
+    print("arm_state_keys", cfg.env.arm_state_keys)
+    print("safety_mode:", cfg.safety.mode)
+    print("arm_max_step_delta:", cfg.safety.arm_max_step_delta)
