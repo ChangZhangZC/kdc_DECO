@@ -22,7 +22,9 @@ hydra:  # Hydra config directory, for parameter checking only
 # env config: DECO 3View RGB deployment configuration
 # =====================================================
 env:
-  env_name: Kuavo-Sim
+  # DECO 使用独立环境入口，在原 Kuavo-Sim 行为上增加 raw-action safety guard；
+  # Kuavo-Sim / Kuavo-Real 保持 ACT/DP 原逻辑不变。
+  env_name: Kuavo-DECO
   # 固定约束：DECO 第一版只支持 joint-space action；eef/base 控制不属于 DECO action_dim。
   control_mode: joint
   # 可选值：
@@ -78,23 +80,16 @@ env:
     head_q:
       min: [-1.0, -1.0]
       max: [1.0, 1.0]
+    # DECO-only arm safety。normal 保持历史行为；strict 在 clipping 前检查 raw arm action。
+    deco_arm_safety:
+      mode: strict  # normal | strict
+      # 单位 rad；pi/2 ≈ 90°。仅用于拦截灾难性单步跳变，不作为速度/加速度限制。
+      arm_max_step_delta: 1.5707963267948966
 
   # 固定约束：DECO 灵巧手部署需要读取左右手各 6 维；ACT/DP 默认单维开合量不适用。
   qiangnao_dof_needed: 6
 
   is_binary: false
-
-
-# =====================================================
-# arm safety guard: final protection before Robot SDK
-# =====================================================
-safety:
-  # normal: 保持历史 action-space clipping 行为，不检查单步 arm delta。
-  # strict: arm 关节越界时不 clip；整条 14D arm command 拒绝下发并终止 rollout。
-  #         同时逐关节检查 target 与当前 actual joint_q 的单步变化。
-  mode: strict
-  # 单位 rad；pi/2 ≈ 90°。该阈值用于拦截灾难性单步跳变，不作为速度/加速度限制。
-  arm_max_step_delta: 1.5707963267948966
 
 
 # =====================================================
