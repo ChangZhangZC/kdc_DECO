@@ -85,7 +85,7 @@ deco:
   tactile_force_scale: 100.0
 
   # 固定信息：头部 state 使用 episode 内 joint_q[26:28] 均值；头部 action 当前补零。
-  head_action_fill: [0.0, 25.0]
+  head_action_fill: [0.0, 0.4363]
 
   # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
   overwrite: false
