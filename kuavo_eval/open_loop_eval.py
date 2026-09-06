@@ -2,14 +2,12 @@
 # -*- coding: utf-8 -*-
 """Direct Rosbag open-loop evaluation for Kuavo-DECO.
 
-This evaluator reproduces the stable DECO data contract on ``deco/recovery``:
-- three RGB views in fixed head/left-wrist/right-wrist order;
-- head observation is the episode mean of ``joint_q[26:28]``;
-- head action GT is ``conversion.deco.head_action_fill``;
-- model predictions are postprocessed back to physical action space before comparison.
+Configuration ownership is intentionally split into three layers:
+1. data.config_path: historical Rosbag conversion/GT contract;
+2. checkpoint + saved processors: model architecture and normalization contract;
+3. runtime: evaluation-only overrides such as inf_step and action_horizon.
 
-The evaluator works fully offline: it reads a Rosbag, aligns/decodes it in memory, runs
-policy inference, and writes diagnostics. It never publishes ROS control commands.
+The evaluator works fully offline. It never publishes ROS control commands.
 """
 
 from __future__ import annotations
@@ -71,14 +69,14 @@ def _resolve_path(value: str | Path) -> Path:
 def _checkpoint_label(epoch: Any) -> str | None:
     text = str(epoch).strip()
     if not text:
-        raise ValueError("inference.checkpoint.epoch 不能为空。")
+        raise ValueError("checkpoint.epoch 不能为空。")
     if text in {"latest", "root"}:
         return None
     return text if text.startswith("epoch") else f"epoch{text}"
 
 
 def resolve_training_assets(cfg: DictConfig) -> tuple[Path, Path, str]:
-    checkpoint_cfg = cfg.inference.checkpoint
+    checkpoint_cfg = cfg.checkpoint
     root = _resolve_path(str(checkpoint_cfg.root))
     task = str(checkpoint_cfg.task).strip()
     method = str(checkpoint_cfg.method).strip()
@@ -102,6 +100,18 @@ def resolve_training_assets(cfg: DictConfig) -> tuple[Path, Path, str]:
     return run_root, checkpoint_path, display_label
 
 
+def load_data_conversion_config(cfg: DictConfig) -> tuple[Path, DictConfig]:
+    config_path = _resolve_path(str(cfg.data.config_path))
+    if not config_path.is_file():
+        raise FileNotFoundError(f"data.config_path 不存在：{config_path}")
+    loaded = OmegaConf.load(config_path)
+    if not isinstance(loaded, DictConfig):
+        raise TypeError(f"data.config_path 必须加载为 YAML DictConfig：{config_path}")
+    if OmegaConf.select(loaded, "dataset") is None or OmegaConf.select(loaded, "deco") is None:
+        raise ValueError("历史数转 YAML 必须包含 dataset 和 deco 两个配置块。")
+    return config_path, loaded
+
+
 def _validate_eval_config(cfg: DictConfig) -> None:
     bag_path = _resolve_path(str(cfg.input.rosbag_path))
     if not bag_path.is_file() or bag_path.suffix.lower() != ".bag":
@@ -118,15 +128,15 @@ def _validate_eval_config(cfg: DictConfig) -> None:
         raise ValueError("input.max_steps 必须是正整数或 null。")
 
     for key in ("action_horizon", "inf_step"):
-        value = cfg.inference[key]
+        value = cfg.runtime[key]
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
-            raise ValueError(f"inference.{key} 必须是正整数或 null。")
+            raise ValueError(f"runtime.{key} 必须是正整数或 null。")
 
-    seed = cfg.inference.seed
+    seed = cfg.runtime.seed
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-        raise ValueError("inference.seed 必须是非负整数。")
+        raise ValueError("runtime.seed 必须是非负整数。")
 
     dimensions_per_figure = cfg.output.dimensions_per_figure
     dpi = cfg.output.dpi
@@ -141,8 +151,8 @@ def _validate_eval_config(cfg: DictConfig) -> None:
 
 
 def _resolve_action_horizon(cfg: DictConfig, policy: CustomDECOPolicyWrapper) -> int:
-    if cfg.inference.action_horizon is not None:
-        horizon = int(cfg.inference.action_horizon)
+    if cfg.runtime.action_horizon is not None:
+        horizon = int(cfg.runtime.action_horizon)
     elif policy.config.n_action_steps is not None:
         horizon = int(policy.config.n_action_steps)
     else:
@@ -150,59 +160,142 @@ def _resolve_action_horizon(cfg: DictConfig, policy: CustomDECOPolicyWrapper) ->
 
     chunk_size = int(policy.config.chunk_size)
     if horizon > chunk_size:
-        raise ValueError(f"action_horizon={horizon} 不能超过 chunk_size={chunk_size}。")
+        raise ValueError(f"action_horizon={horizon} 不能超过 checkpoint.chunk_size={chunk_size}。")
     return horizon
 
 
-def _configure_conversion_from_checkpoint(
-    conversion_cfg: DictConfig,
+def _validate_data_checkpoint_contract(
+    *,
+    data_cfg: DictConfig,
     policy: CustomDECOPolicyWrapper,
+    reader: DecoRosbagReader,
 ) -> None:
-    configured_hz = int(cfg_select(conversion_cfg, "dataset.train_hz", 0))
+    data_hz = int(cfg_select(data_cfg, "dataset.train_hz", 0))
     checkpoint_hz = int(policy.config.dataset_hz)
-    if configured_hz != checkpoint_hz:
+    if data_hz != checkpoint_hz:
         raise ValueError(
-            "conversion.dataset.train_hz 必须等于 checkpoint.dataset_hz："
-            f"conversion={configured_hz}, checkpoint={checkpoint_hz}"
+            "历史数转 YAML 与 checkpoint 的时间语义不一致："
+            f"data.dataset.train_hz={data_hz}, checkpoint.dataset_hz={checkpoint_hz}"
         )
 
-    OmegaConf.update(
-        conversion_cfg,
-        "deco.end_effector_profile",
-        str(policy.config.end_effector_profile),
-        merge=False,
-    )
-    OmegaConf.update(
-        conversion_cfg,
-        "deco.write_tactile",
-        bool(policy.config.use_tactile),
-        merge=False,
-    )
+    data_rgb = tuple(reader.rgb_keys)
+    checkpoint_rgb = tuple(policy.config.rgb_keys)
+    if data_rgb != checkpoint_rgb:
+        raise ValueError(
+            "历史数转 YAML 与 checkpoint 的 RGB key/顺序不一致："
+            f"data={data_rgb}, checkpoint={checkpoint_rgb}"
+        )
+
+    if reader.profile != policy.config.end_effector_profile:
+        raise ValueError(
+            "历史数转 YAML 与 checkpoint 的 end-effector profile 不一致："
+            f"data={reader.profile}, checkpoint={policy.config.end_effector_profile}"
+        )
+
+    data_action_dim = len(profile_action_names(reader.profile))
+    if data_action_dim != int(policy.config.action_dim):
+        raise ValueError(
+            "历史数转 YAML 与 checkpoint 的 action_dim 不一致："
+            f"data={data_action_dim}, checkpoint={policy.config.action_dim}"
+        )
+
+    if bool(policy.config.use_tactile) and not bool(reader.include_tactile):
+        raise ValueError(
+            "checkpoint.use_tactile=true，但历史数转 YAML 未启用 tactile；"
+            "无法复现该 checkpoint 的输入契约。"
+        )
+    if bool(reader.include_tactile) and not bool(policy.config.use_tactile):
+        LOGGER.info("历史数据包含 tactile，但该 checkpoint 不消费 tactile；保留历史数转契约。")
 
 
-def _validate_policy_reader_compatibility(
+def _validate_aligned_metadata(
     policy: CustomDECOPolicyWrapper,
     reader: DecoRosbagReader,
     metadata: dict[str, Any],
 ) -> None:
-    expected_rgb = tuple(policy.config.rgb_keys)
-    actual_rgb = tuple(reader.rgb_keys)
-    if actual_rgb != expected_rgb:
-        raise ValueError(
-            "Rosbag RGB key/顺序与 checkpoint 不一致："
-            f"reader={actual_rgb}, checkpoint={expected_rgb}"
-        )
-    if reader.profile != policy.config.end_effector_profile:
-        raise ValueError(
-            "Rosbag profile 与 checkpoint 不一致："
-            f"{reader.profile} vs {policy.config.end_effector_profile}"
-        )
-    if bool(reader.include_tactile) != bool(policy.config.use_tactile):
-        raise ValueError("Rosbag tactile 输入契约与 checkpoint 不一致。")
     if int(metadata.get("target_hz", 0)) != int(policy.config.dataset_hz):
-        raise ValueError("Rosbag 对齐频率与 checkpoint.dataset_hz 不一致。")
-    if len(profile_action_names(reader.profile)) != int(policy.config.action_dim):
-        raise ValueError("Rosbag action schema 与 checkpoint.action_dim 不一致。")
+        raise ValueError("Rosbag 实际对齐频率与 checkpoint.dataset_hz 不一致。")
+    if str(metadata.get("end_effector_profile", "")) != str(reader.profile):
+        raise ValueError("Rosbag aligned metadata 的 profile 与历史数转配置不一致。")
+
+
+def _contract_snapshot(
+    *,
+    data_config_path: Path,
+    data_cfg: DictConfig,
+    policy: CustomDECOPolicyWrapper,
+    cfg: DictConfig,
+    action_horizon: int,
+    checkpoint_inf_step: int,
+) -> dict[str, Any]:
+    return {
+        "data": {
+            "config_path": str(data_config_path),
+            "eef_type": str(cfg_select(data_cfg, "dataset.eef_type", "")),
+            "train_hz": int(cfg_select(data_cfg, "dataset.train_hz", 0)),
+            "sample_drop": int(cfg_select(data_cfg, "dataset.sample_drop", 0)),
+            "is_binary": bool(cfg_select(data_cfg, "dataset.is_binary", False)),
+            "resize": {
+                "width": int(cfg_select(data_cfg, "dataset.resize.width", 0)),
+                "height": int(cfg_select(data_cfg, "dataset.resize.height", 0)),
+            },
+            "rgb_keys": list(cfg_select(data_cfg, "deco.rgb_keys", [])),
+            "arm_action_priority": list(cfg_select(data_cfg, "deco.arm_action_priority", [])),
+            "head_action_fill": list(cfg_select(data_cfg, "deco.head_action_fill", [])),
+            "write_tactile": bool(cfg_select(data_cfg, "deco.write_tactile", False)),
+        },
+        "checkpoint": {
+            "end_effector_profile": str(policy.config.end_effector_profile),
+            "action_dim": int(policy.config.action_dim),
+            "rgb_keys": list(policy.config.rgb_keys),
+            "dataset_hz": int(policy.config.dataset_hz),
+            "chunk_size": int(policy.config.chunk_size),
+            "n_action_steps": None if policy.config.n_action_steps is None else int(policy.config.n_action_steps),
+            "inf_step": int(checkpoint_inf_step),
+            "use_tactile": bool(policy.config.use_tactile),
+            "resize_shape": list(policy.config.resize_shape),
+        },
+        "runtime": {
+            "device": str(cfg.runtime.device),
+            "seed": int(cfg.runtime.seed),
+            "inf_step_override": None if cfg.runtime.inf_step is None else int(cfg.runtime.inf_step),
+            "effective_inf_step": int(policy.model.inference_step),
+            "action_horizon_override": (
+                None if cfg.runtime.action_horizon is None else int(cfg.runtime.action_horizon)
+            ),
+            "effective_action_horizon": int(action_horizon),
+        },
+    }
+
+
+def _log_contract_report(snapshot: dict[str, Any]) -> None:
+    data = snapshot["data"]
+    checkpoint = snapshot["checkpoint"]
+    runtime = snapshot["runtime"]
+    lines = [
+        "================ DECO OFFLINE EVAL CONTRACT ================",
+        f"Data config           : {data['config_path']}",
+        f"Data eef_type         : {data['eef_type']}",
+        f"Data train_hz         : {data['train_hz']}",
+        f"Data sample_drop      : {data['sample_drop']}",
+        f"Data is_binary        : {data['is_binary']}",
+        f"Data head_action_fill : {data['head_action_fill']}",
+        f"Checkpoint profile    : {checkpoint['end_effector_profile']}",
+        f"Checkpoint action_dim : {checkpoint['action_dim']}",
+        f"Checkpoint RGB keys   : {checkpoint['rgb_keys']}",
+        f"Checkpoint dataset_hz : {checkpoint['dataset_hz']}",
+        f"Checkpoint chunk_size : {checkpoint['chunk_size']}",
+        f"Checkpoint n_actions  : {checkpoint['n_action_steps']}",
+        f"Checkpoint inf_step   : {checkpoint['inf_step']}",
+        f"Saved tactile input   : {checkpoint['use_tactile']}",
+        f"Runtime inf_step      : {runtime['effective_inf_step']} "
+        f"(override={runtime['inf_step_override']})",
+        f"Runtime horizon       : {runtime['effective_action_horizon']} "
+        f"(override={runtime['action_horizon_override']})",
+        "Compatibility         : PASS",
+        "============================================================",
+    ]
+    LOGGER.info("\n%s", "\n".join(lines))
 
 
 def validate_head_contract(
@@ -349,7 +442,7 @@ def evaluate_rosbag(
     preprocessor: Any,
     postprocessor: Any,
     reader: DecoRosbagReader,
-    conversion_cfg: DictConfig,
+    data_cfg: DictConfig,
     bag_data: dict[str, Any],
     start_frame: int,
     max_steps: int | None,
@@ -372,7 +465,7 @@ def evaluate_rosbag(
             bag_data,
             frame_idx,
             reader,
-            conversion_cfg,
+            data_cfg,
             head_mean,
         )
         for frame_idx in range(start_frame, stop_frame)
@@ -566,7 +659,7 @@ def _build_output_directory(
     checkpoint_label: str,
     bag_path: Path,
 ) -> Path:
-    checkpoint_cfg = cfg.inference.checkpoint
+    checkpoint_cfg = cfg.checkpoint
     output_dir = (
         _resolve_path(str(cfg.output.root))
         / str(checkpoint_cfg.task)
@@ -588,41 +681,56 @@ def main(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO)
     _validate_eval_config(cfg)
 
+    data_config_path, data_cfg = load_data_conversion_config(cfg)
     run_root, checkpoint_path, checkpoint_label = resolve_training_assets(cfg)
     bag_path = _resolve_path(str(cfg.input.rosbag_path))
 
-    device = torch.device(str(cfg.inference.device))
+    device = torch.device(str(cfg.runtime.device))
     if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("inference.device 请求 CUDA，但当前 PyTorch 未检测到可用 CUDA。")
-    set_seed(int(cfg.inference.seed))
+        raise RuntimeError("runtime.device 请求 CUDA，但当前 PyTorch 未检测到可用 CUDA。")
+    set_seed(int(cfg.runtime.seed))
 
     policy = CustomDECOPolicyWrapper.from_pretrained(checkpoint_path, strict=True)
     policy.eval()
     policy.to(device)
     policy.reset()
 
-    if cfg.inference.inf_step is not None:
-        policy.config.inf_step = int(cfg.inference.inf_step)
-        policy.model.inference_step = int(cfg.inference.inf_step)
+    checkpoint_inf_step = int(policy.model.inference_step)
+    if cfg.runtime.inf_step is not None:
+        policy.config.inf_step = int(cfg.runtime.inf_step)
+        policy.model.inference_step = int(cfg.runtime.inf_step)
 
     action_horizon = _resolve_action_horizon(cfg, policy)
     preprocessor, postprocessor = make_pre_post_processors(None, run_root)
 
-    _configure_conversion_from_checkpoint(cfg.conversion, policy)
-    initialize_deco_rgb_parameters(cfg.conversion)
+    initialize_deco_rgb_parameters(data_cfg)
+    reader = DecoRosbagReader(data_cfg)
+    _validate_data_checkpoint_contract(
+        data_cfg=data_cfg,
+        policy=policy,
+        reader=reader,
+    )
 
-    reader = DecoRosbagReader(cfg.conversion)
+    contract = _contract_snapshot(
+        data_config_path=data_config_path,
+        data_cfg=data_cfg,
+        policy=policy,
+        cfg=cfg,
+        action_horizon=action_horizon,
+        checkpoint_inf_step=checkpoint_inf_step,
+    )
+    _log_contract_report(contract)
+
     bag_data = reader.process_rosbag(str(bag_path))
     metadata = bag_data["__metadata__"]
-
-    _validate_policy_reader_compatibility(policy, reader, metadata)
+    _validate_aligned_metadata(policy, reader, metadata)
 
     result = evaluate_rosbag(
         policy=policy,
         preprocessor=preprocessor,
         postprocessor=postprocessor,
         reader=reader,
-        conversion_cfg=cfg.conversion,
+        data_cfg=data_cfg,
         bag_data=bag_data,
         start_frame=int(cfg.input.start_frame),
         max_steps=None if cfg.input.max_steps is None else int(cfg.input.max_steps),
@@ -669,27 +777,21 @@ def main(cfg: DictConfig) -> None:
 
     summary = {
         "rosbag_path": str(bag_path),
+        "data_config_path": str(data_config_path),
         "run_root": str(run_root),
         "checkpoint_path": str(checkpoint_path),
         "processor_root": str(run_root),
         "output_directory": str(output_dir),
-        "device": str(device),
-        "seed": int(cfg.inference.seed),
+        "contract": contract,
         "end_effector_profile": reader.profile,
         "eef_type": reader.eef_type,
-        "use_tactile": bool(policy.config.use_tactile),
-        "dataset_hz": int(policy.config.dataset_hz),
-        "chunk_size": int(policy.config.chunk_size),
-        "action_horizon": action_horizon,
-        "inf_step": int(policy.model.inference_step),
-        "action_dim": int(policy.config.action_dim),
         "start_frame": int(result["frame_indices"][0]),
         "num_steps": int(result["ground_truth"].shape[0]),
         "arm_action_source": str(metadata["arm_action_source"]),
         "head_contract": {
             "observation_source": "episode_mean_joint_q_26_28",
             "observation_value": result["head_mean"].tolist(),
-            "action_source": "conversion.deco.head_action_fill",
+            "action_source": "data.config_path -> deco.head_action_fill",
             "action_fill": result["head_action_fill"].tolist(),
             "model_head_action_executed_in_stable_deploy": False,
         },
