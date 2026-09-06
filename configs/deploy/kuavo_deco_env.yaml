@@ -86,6 +86,18 @@ env:
 
 
 # =====================================================
+# arm safety guard: final protection before Robot SDK
+# =====================================================
+safety:
+  # normal: 保持历史 action-space clipping 行为，不检查单步 arm delta。
+  # strict: arm 关节越界时不 clip；整条 14D arm command 拒绝下发并终止 rollout。
+  #         同时逐关节检查 target 与当前 actual joint_q 的单步变化。
+  mode: strict
+  # 单位 rad；pi/2 ≈ 90°。该阈值用于拦截灾难性单步跳变，不作为速度/加速度限制。
+  arm_max_step_delta: 1.5707963267948966
+
+
+# =====================================================
 # deco config: DECO-only runtime mode and schema choices
 # =====================================================
 deco:
