@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """Direct Rosbag open-loop evaluation for Kuavo-DECO.
 
-The evaluator reproduces the stable DECO data contract on ``deco/recovery``:
+This evaluator reproduces the stable DECO data contract on ``deco/recovery``:
 - three RGB views in fixed head/left-wrist/right-wrist order;
 - head observation is the episode mean of ``joint_q[26:28]``;
 - head action GT is ``conversion.deco.head_action_fill``;
 - model predictions are postprocessed back to physical action space before comparison.
 
-This is an offline diagnostic only. It never sends actions to ROS, simulation, or hardware.
+The evaluator works fully offline: it reads a Rosbag, aligns/decodes it in memory, runs
+policy inference, and writes diagnostics. It never publishes ROS control commands.
 """
 
 from __future__ import annotations
@@ -36,7 +37,6 @@ from lerobot.policies.factory import make_pre_post_processors  # noqa: E402
 from lerobot.utils.random_utils import set_seed  # noqa: E402
 
 from kuavo_data.CvtRosbag2Lerobot_DECO import (  # noqa: E402
-    DECO_LEROBOT_TASK,
     GRIPPER_NO_TACTILE_PROFILE,
     QIANGNAO_TACTILE_PROFILE,
     DecoRosbagReader,
@@ -106,20 +106,38 @@ def _validate_eval_config(cfg: DictConfig) -> None:
     bag_path = _resolve_path(str(cfg.input.rosbag_path))
     if not bag_path.is_file() or bag_path.suffix.lower() != ".bag":
         raise ValueError(f"input.rosbag_path 必须指向存在的 .bag 文件：{bag_path}")
-    if not isinstance(cfg.input.start_frame, int) or isinstance(cfg.input.start_frame, bool) or cfg.input.start_frame < 0:
+
+    start_frame = cfg.input.start_frame
+    if isinstance(start_frame, bool) or not isinstance(start_frame, int) or start_frame < 0:
         raise ValueError("input.start_frame 必须是非负整数。")
-    if cfg.input.max_steps is not None and (
-        not isinstance(cfg.input.max_steps, int) or isinstance(cfg.input.max_steps, bool) or cfg.input.max_steps <= 0
+
+    max_steps = cfg.input.max_steps
+    if max_steps is not None and (
+        isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0
     ):
         raise ValueError("input.max_steps 必须是正整数或 null。")
+
     for key in ("action_horizon", "inf_step"):
         value = cfg.inference[key]
-        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
             raise ValueError(f"inference.{key} 必须是正整数或 null。")
-    if not isinstance(cfg.inference.seed, int) or isinstance(cfg.inference.seed, bool) or cfg.inference.seed < 0:
+
+    seed = cfg.inference.seed
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("inference.seed 必须是非负整数。")
-    if int(cfg.output.dimensions_per_figure) <= 0 or int(cfg.output.dpi) <= 0:
-        raise ValueError("output.dimensions_per_figure 和 output.dpi 必须为正数。")
+
+    dimensions_per_figure = cfg.output.dimensions_per_figure
+    dpi = cfg.output.dpi
+    if (
+        isinstance(dimensions_per_figure, bool)
+        or not isinstance(dimensions_per_figure, int)
+        or dimensions_per_figure <= 0
+    ):
+        raise ValueError("output.dimensions_per_figure 必须是正整数。")
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or dpi <= 0:
+        raise ValueError("output.dpi 必须是正整数。")
 
 
 def _resolve_action_horizon(cfg: DictConfig, policy: CustomDECOPolicyWrapper) -> int:
@@ -129,12 +147,17 @@ def _resolve_action_horizon(cfg: DictConfig, policy: CustomDECOPolicyWrapper) ->
         horizon = int(policy.config.n_action_steps)
     else:
         horizon = int(policy.config.chunk_size)
-    if horizon > int(policy.config.chunk_size):
-        raise ValueError(f"action_horizon={horizon} 不能超过 chunk_size={policy.config.chunk_size}。")
+
+    chunk_size = int(policy.config.chunk_size)
+    if horizon > chunk_size:
+        raise ValueError(f"action_horizon={horizon} 不能超过 chunk_size={chunk_size}。")
     return horizon
 
 
-def _configure_conversion_from_checkpoint(conversion_cfg: DictConfig, policy: CustomDECOPolicyWrapper) -> None:
+def _configure_conversion_from_checkpoint(
+    conversion_cfg: DictConfig,
+    policy: CustomDECOPolicyWrapper,
+) -> None:
     configured_hz = int(cfg_select(conversion_cfg, "dataset.train_hz", 0))
     checkpoint_hz = int(policy.config.dataset_hz)
     if configured_hz != checkpoint_hz:
@@ -142,6 +165,7 @@ def _configure_conversion_from_checkpoint(conversion_cfg: DictConfig, policy: Cu
             "conversion.dataset.train_hz 必须等于 checkpoint.dataset_hz："
             f"conversion={configured_hz}, checkpoint={checkpoint_hz}"
         )
+
     OmegaConf.update(
         conversion_cfg,
         "deco.end_effector_profile",
@@ -156,21 +180,23 @@ def _configure_conversion_from_checkpoint(conversion_cfg: DictConfig, policy: Cu
     )
 
 
-def _reader_rgb_policy_keys(reader: DecoRosbagReader) -> tuple[str, ...]:
-    return tuple(f"observation.images.{key}" for key in reader.rgb_keys)
-
-
 def _validate_policy_reader_compatibility(
     policy: CustomDECOPolicyWrapper,
     reader: DecoRosbagReader,
     metadata: dict[str, Any],
 ) -> None:
     expected_rgb = tuple(policy.config.rgb_keys)
-    actual_rgb = _reader_rgb_policy_keys(reader)
+    actual_rgb = tuple(reader.rgb_keys)
     if actual_rgb != expected_rgb:
-        raise ValueError(f"Rosbag RGB key/顺序与 checkpoint 不一致：reader={actual_rgb}, checkpoint={expected_rgb}")
+        raise ValueError(
+            "Rosbag RGB key/顺序与 checkpoint 不一致："
+            f"reader={actual_rgb}, checkpoint={expected_rgb}"
+        )
     if reader.profile != policy.config.end_effector_profile:
-        raise ValueError(f"Rosbag profile 与 checkpoint 不一致：{reader.profile} vs {policy.config.end_effector_profile}")
+        raise ValueError(
+            "Rosbag profile 与 checkpoint 不一致："
+            f"{reader.profile} vs {policy.config.end_effector_profile}"
+        )
     if bool(reader.include_tactile) != bool(policy.config.use_tactile):
         raise ValueError("Rosbag tactile 输入契约与 checkpoint 不一致。")
     if int(metadata.get("target_hz", 0)) != int(policy.config.dataset_hz):
@@ -179,11 +205,19 @@ def _validate_policy_reader_compatibility(
         raise ValueError("Rosbag action schema 与 checkpoint.action_dim 不一致。")
 
 
-def validate_head_contract(reader: DecoRosbagReader, head_mean: np.ndarray) -> np.ndarray:
+def validate_head_contract(
+    reader: DecoRosbagReader,
+    head_mean: np.ndarray,
+) -> np.ndarray:
     head_mean = np.asarray(head_mean, dtype=np.float32).reshape(-1)
     if head_mean.shape != (2,) or not np.isfinite(head_mean).all():
         raise ValueError(f"head_mean 必须是有限 2D 向量，实际={head_mean}")
-    head_action_fill = as_float_array("head_action_fill", reader.head_action_fill, min_len=2)[:2]
+
+    head_action_fill = as_float_array(
+        "head_action_fill",
+        reader.head_action_fill,
+        min_len=2,
+    )[:2]
     if not np.isfinite(head_action_fill).all():
         raise ValueError(f"head_action_fill 包含 NaN/Inf：{head_action_fill}")
     return head_action_fill.astype(np.float32)
@@ -196,7 +230,6 @@ def build_deco_frame_from_aligned_bag(
     cfg: DictConfig,
     head_mean: np.ndarray,
 ) -> dict[str, Any]:
-    """Reproduce one stable training frame from aligned Rosbag data."""
     is_binary = bool(cfg_select(cfg, "dataset.is_binary", False))
     profile = reader.profile
     arm_action_source = str(bag_data["__metadata__"]["arm_action_source"])
@@ -235,14 +268,13 @@ def build_deco_frame_from_aligned_bag(
         raise ValueError(f"未知 DECO profile：{profile}")
 
     frame: dict[str, Any] = {
-        f"observation.images.{rgb_key}": bag_data[rgb_key][frame_idx]["data"]
+        rgb_key: bag_data[rgb_key][frame_idx]["data"]
         for rgb_key in reader.rgb_keys
     }
     frame.update(
         {
             "observation.state": torch.from_numpy(state).float(),
             "action": torch.from_numpy(clamp_deco_arm_action(action, profile)).float(),
-            "task": DECO_LEROBOT_TASK,
         }
     )
     if reader.include_tactile:
@@ -251,7 +283,9 @@ def build_deco_frame_from_aligned_bag(
             bag_data["observation.tactile_raw"][frame_idx]["data"],
             min_len=30,
         )[:30]
-        frame["observation.tactile"] = torch.from_numpy(tactile.astype(np.float32)).float()
+        frame["observation.tactile"] = torch.from_numpy(
+            tactile.astype(np.float32)
+        ).float()
     return frame
 
 
@@ -259,33 +293,51 @@ def _rgb_hwc_uint8_to_chw_float(value: Any, key: str) -> torch.Tensor:
     image = np.asarray(value)
     if image.ndim != 3 or image.shape[-1] != 3 or image.dtype != np.uint8:
         raise ValueError(
-            f"Rosbag RGB {key} 必须是 HWC uint8 三通道，实际 shape={image.shape}, dtype={image.dtype}"
+            f"Rosbag RGB {key} 必须是 HWC uint8 三通道，"
+            f"实际 shape={image.shape}, dtype={image.dtype}"
         )
     return torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1).float() / 255.0
 
 
-def build_policy_observation(frame: dict[str, Any], policy: CustomDECOPolicyWrapper) -> dict[str, Any]:
+def build_policy_observation(
+    frame: dict[str, Any],
+    policy: CustomDECOPolicyWrapper,
+) -> dict[str, Any]:
     observation = {
         key: _rgb_hwc_uint8_to_chw_float(frame[key], key)
         for key in policy.config.rgb_keys
     }
     observation["observation.state"] = torch.as_tensor(
-        frame["observation.state"], dtype=torch.float32
+        frame["observation.state"],
+        dtype=torch.float32,
     ).clone()
+
     if policy.config.use_tactile:
         tactile_key = str(policy.config.tactile_key)
-        observation[tactile_key] = torch.as_tensor(frame[tactile_key], dtype=torch.float32).clone()
+        if tactile_key not in frame:
+            raise ValueError(f"tactile checkpoint 的 Rosbag frame 缺少 {tactile_key}")
+        observation[tactile_key] = torch.as_tensor(
+            frame[tactile_key],
+            dtype=torch.float32,
+        ).clone()
     return observation
 
 
 def _to_action_chunk_numpy(value: Any, expected_dim: int) -> np.ndarray:
     if not isinstance(value, torch.Tensor):
-        raise TypeError(f"DECO postprocessor 必须返回 torch.Tensor，实际={type(value).__name__}")
+        raise TypeError(
+            "DECO postprocessor 必须返回 torch.Tensor，"
+            f"实际={type(value).__name__}"
+        )
+
     array = value.detach().cpu().float().numpy()
     if array.ndim == 3 and array.shape[0] == 1:
         array = array[0]
     if array.ndim != 2 or array.shape[1] != expected_dim:
-        raise ValueError(f"postprocessed action chunk shape 非法：{array.shape}, expected_dim={expected_dim}")
+        raise ValueError(
+            "postprocessed action chunk shape 非法："
+            f"{array.shape}, expected_dim={expected_dim}"
+        )
     if not np.isfinite(array).all():
         raise ValueError("DECO prediction 包含 NaN/Inf。")
     return array.astype(np.float32, copy=False)
@@ -325,35 +377,51 @@ def evaluate_rosbag(
         )
         for frame_idx in range(start_frame, stop_frame)
     ]
+
     ground_truth = np.stack(
-        [torch.as_tensor(frame["action"]).cpu().float().numpy() for frame in frames], axis=0
+        [torch.as_tensor(frame["action"]).cpu().float().numpy() for frame in frames],
+        axis=0,
     ).astype(np.float32)
+
     expected_dim = int(policy.config.action_dim)
-    if ground_truth.shape != (num_steps, expected_dim) or not np.isfinite(ground_truth).all():
+    if ground_truth.shape != (num_steps, expected_dim):
         raise ValueError(
-            f"Ground Truth action 非法：shape={ground_truth.shape}, expected={(num_steps, expected_dim)}"
+            "Ground Truth action shape 非法："
+            f"{ground_truth.shape}, expected={(num_steps, expected_dim)}"
         )
+    if not np.isfinite(ground_truth).all():
+        raise ValueError("Ground Truth action 包含 NaN/Inf。")
 
     predicted_parts: list[np.ndarray] = []
     inference_frame_indices: list[int] = []
     policy.reset()
+
     for local_start in range(0, num_steps, action_horizon):
         inference_frame_indices.append(start_frame + local_start)
         raw_observation = build_policy_observation(frames[local_start], policy)
         processed_observation = preprocessor(raw_observation)
+
         with torch.inference_mode():
             normalized_chunk = policy.predict_action_chunk(processed_observation)
-        physical_chunk = _to_action_chunk_numpy(postprocessor(normalized_chunk), expected_dim)
+
+        physical_chunk = _to_action_chunk_numpy(
+            postprocessor(normalized_chunk),
+            expected_dim,
+        )
+
         valid_steps = min(action_horizon, num_steps - local_start)
         if physical_chunk.shape[0] < valid_steps:
             raise ValueError(
-                f"prediction chunk 太短：predicted={physical_chunk.shape[0]}, required={valid_steps}"
+                "prediction chunk 太短："
+                f"predicted={physical_chunk.shape[0]}, required={valid_steps}"
             )
         predicted_parts.append(physical_chunk[:valid_steps])
 
     prediction = np.concatenate(predicted_parts, axis=0)
     if prediction.shape != ground_truth.shape:
-        raise ValueError(f"prediction={prediction.shape} 与 ground_truth={ground_truth.shape} 不一致。")
+        raise ValueError(
+            f"prediction={prediction.shape} 与 ground_truth={ground_truth.shape} 不一致。"
+        )
 
     head_key = reader.rgb_keys[0]
     timestamps = np.asarray(
@@ -404,15 +472,17 @@ def calculate_metrics(
 ) -> dict[str, Any]:
     error = prediction - ground_truth
     groups = action_group_indices(profile)
+
     per_dimension = [
         {
-            "index": i,
+            "index": index,
             "name": name,
-            "mse": float(np.mean(np.square(error[:, i]))),
-            "mae": float(np.mean(np.abs(error[:, i]))),
+            "mse": float(np.mean(np.square(error[:, index]))),
+            "mae": float(np.mean(np.abs(error[:, index]))),
         }
-        for i, name in enumerate(action_names)
+        for index, name in enumerate(action_names)
     ]
+
     return {
         "overall": _metric_block(error),
         "deploy_executed": _metric_block(error[:, groups["deploy_executed"]]),
@@ -441,6 +511,7 @@ def plot_action_comparison(
     action_dim = ground_truth.shape[1]
     page_size = dimensions_per_figure if paginate_dimensions else action_dim
     saved_paths: list[Path] = []
+
     for dim_start in range(0, action_dim, page_size):
         dim_stop = min(dim_start + page_size, action_dim)
         figure, axes = plt.subplots(
@@ -453,10 +524,21 @@ def plot_action_comparison(
             f"DECO Open Loop Eval - Rosbag GT vs Prediction (action_horizon={action_horizon})",
             fontsize=14,
         )
+
         for row_idx, dim_idx in enumerate(range(dim_start, dim_stop)):
             axis = axes[row_idx, 0]
-            axis.plot(frame_indices, ground_truth[:, dim_idx], label="Rosbag Ground Truth", linewidth=1.4)
-            axis.plot(frame_indices, prediction[:, dim_idx], label="DECO Prediction", linewidth=1.2)
+            axis.plot(
+                frame_indices,
+                ground_truth[:, dim_idx],
+                label="Rosbag Ground Truth",
+                linewidth=1.4,
+            )
+            axis.plot(
+                frame_indices,
+                prediction[:, dim_idx],
+                label="DECO Prediction",
+                linewidth=1.2,
+            )
             for marker_idx, inference_idx in enumerate(inference_frame_indices):
                 axis.axvline(
                     int(inference_idx),
@@ -469,21 +551,27 @@ def plot_action_comparison(
             axis.set_ylabel("Physical action")
             axis.grid(alpha=0.2)
             axis.legend(loc="upper right")
+
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.98))
         path = output_dir / f"action_dims_{dim_start:02d}_{dim_stop - 1:02d}.png"
         figure.savefig(path, dpi=dpi)
         plt.close(figure)
         saved_paths.append(path)
+
     return saved_paths
 
 
-def _build_output_directory(cfg: DictConfig, checkpoint_label: str, bag_path: Path) -> Path:
-    c = cfg.inference.checkpoint
+def _build_output_directory(
+    cfg: DictConfig,
+    checkpoint_label: str,
+    bag_path: Path,
+) -> Path:
+    checkpoint_cfg = cfg.inference.checkpoint
     output_dir = (
         _resolve_path(str(cfg.output.root))
-        / str(c.task)
-        / str(c.method)
-        / str(c.timestamp)
+        / str(checkpoint_cfg.task)
+        / str(checkpoint_cfg.method)
+        / str(checkpoint_cfg.timestamp)
         / checkpoint_label
         / bag_path.stem
     )
@@ -491,10 +579,15 @@ def _build_output_directory(cfg: DictConfig, checkpoint_label: str, bag_path: Pa
     return output_dir
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="eval/deco_open_loop_eval")
+@hydra.main(
+    version_base=None,
+    config_path="../configs",
+    config_name="eval/deco_open_loop_eval",
+)
 def main(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO)
     _validate_eval_config(cfg)
+
     run_root, checkpoint_path, checkpoint_label = resolve_training_assets(cfg)
     bag_path = _resolve_path(str(cfg.input.rosbag_path))
 
@@ -507,18 +600,21 @@ def main(cfg: DictConfig) -> None:
     policy.eval()
     policy.to(device)
     policy.reset()
+
     if cfg.inference.inf_step is not None:
         policy.config.inf_step = int(cfg.inference.inf_step)
         policy.model.inference_step = int(cfg.inference.inf_step)
-    action_horizon = _resolve_action_horizon(cfg, policy)
 
+    action_horizon = _resolve_action_horizon(cfg, policy)
     preprocessor, postprocessor = make_pre_post_processors(None, run_root)
 
     _configure_conversion_from_checkpoint(cfg.conversion, policy)
     initialize_deco_rgb_parameters(cfg.conversion)
+
     reader = DecoRosbagReader(cfg.conversion)
     bag_data = reader.process_rosbag(str(bag_path))
     metadata = bag_data["__metadata__"]
+
     _validate_policy_reader_compatibility(policy, reader, metadata)
 
     result = evaluate_rosbag(
@@ -532,12 +628,17 @@ def main(cfg: DictConfig) -> None:
         max_steps=None if cfg.input.max_steps is None else int(cfg.input.max_steps),
         action_horizon=action_horizon,
     )
+
     action_names = profile_action_names(reader.profile)
     metrics = calculate_metrics(
-        result["ground_truth"], result["prediction"], action_names, reader.profile
+        result["ground_truth"],
+        result["prediction"],
+        action_names,
+        reader.profile,
     )
 
     output_dir = _build_output_directory(cfg, checkpoint_label, bag_path)
+
     plot_paths: list[Path] = []
     if bool(cfg.output.save_plot):
         plot_paths = plot_action_comparison(
@@ -595,12 +696,14 @@ def main(cfg: DictConfig) -> None:
         "metrics": metrics,
         "plots": [str(path) for path in plot_paths],
     }
+
     if bool(cfg.output.save_summary):
         with (output_dir / "summary.json").open("w", encoding="utf-8") as file:
             json.dump(summary, file, ensure_ascii=False, indent=2)
 
     LOGGER.info(
-        "DECO Open Loop Eval 完成：steps=%d, executed_MSE=%.8f, executed_MAE=%.8f, overall_MSE=%.8f, output=%s",
+        "DECO Open Loop Eval 完成：steps=%d, executed_MSE=%.8f, executed_MAE=%.8f, "
+        "overall_MSE=%.8f, output=%s",
         summary["num_steps"],
         metrics["deploy_executed"]["mse"],
         metrics["deploy_executed"]["mae"],
