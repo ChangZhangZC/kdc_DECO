@@ -1,0 +1,67 @@
+defaults:
+  # 直接复用 stable DECO 数转配置；Offline Eval 不维护第二套 Rosbag/schema 规则。
+  - /data@conversion: KuavoRosbag2Lerobot_deco
+  - _self_
+
+hydra:
+  run:
+    dir: ./outputs/open_loop_eval_hydra/${now:%Y%m%d_%H%M%S}
+
+# =====================================================
+# 单个原始 Rosbag 输入
+# =====================================================
+input:
+  rosbag_path: "/path/to/your/episode.bag"
+  # 对齐到 conversion.dataset.train_hz 后，从该零基帧开始评估。
+  start_frame: 0
+  # null 表示一直评估到对齐 Rosbag 的有效末尾。
+  max_steps: null
+
+# =====================================================
+# Stable 数据契约 override
+# =====================================================
+# Head contract 不在 Eval 内单独定义：
+# - observation head：沿用数据转换器的 episode mean joint_q[26:28]
+# - action head：沿用 conversion.deco.head_action_fill
+# Offline Eval 必须复现训练数据契约，禁止从 /joint_cmd 单独构造 head GT。
+conversion:
+  dataset:
+    # 必须与 Rosbag 的真实末端执行器一致：qiangnao / leju_claw / rq2f85。
+    eef_type: qiangnao
+    # 必须等于 checkpoint.config.json 中保存的 dataset_hz。
+    train_hz: 30
+
+# =====================================================
+# 本地 DECO checkpoint 与推理参数
+# =====================================================
+inference:
+  device: "cuda"
+  seed: 42
+
+  checkpoint:
+    # run root  = <root>/<task>/<method>/<timestamp>
+    # checkpoint = <run root>/epoch<epoch>
+    # processor  = <run root>/policy_{pre,post}processor.json
+    root: "outputs/train"
+    task: "your_task"
+    method: "deco_visual_main"
+    timestamp: "run_YYYYMMDD_HHMMSS"
+    # best -> epochbest；100 -> epoch100；latest/root -> run root。
+    epoch: best
+
+  # null 使用 checkpoint 中保存的 Flow Matching 推理步数。
+  inf_step: null
+  # null 优先使用 checkpoint.n_action_steps；若其也为 null，则使用完整 chunk_size。
+  action_horizon: null
+
+# =====================================================
+# 结果保存
+# =====================================================
+output:
+  root: "outputs/open_loop_eval"
+  save_plot: true
+  save_summary: true
+  save_predictions: true
+  paginate_dimensions: true
+  dimensions_per_figure: 7
+  dpi: 150
