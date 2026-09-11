@@ -1,5 +1,6 @@
 env:
-  env_name: Kuavo-Sim
+  # DECO 专用环境入口：在原 Kuavo 环境行为前增加 raw-action safety guard。
+  env_name: Kuavo-DECO
   # 固定匹配项：必须等于所加载 checkpoint 的 dataset_hz，不用于单独调节模型推理频率。
   ros_rate: 30
 
@@ -31,6 +32,11 @@ env:
     head_q:
       min: [-1.0, -1.0]
       max: [1.0, 1.0]
+    # DECO-only safety guard。normal 保持历史 clip/dispatch 行为；strict 在 clipping 前拒绝危险机械臂动作。
+    deco_arm_safety:
+      mode: strict  # normal | strict
+      # 单位 rad；pi/2 ≈ 90°。用于拦截灾难性单步跳变，不作为速度/加速度控制器。
+      arm_max_step_delta: 1.5707963267948966
 
   is_binary: false
 
