@@ -46,8 +46,8 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     chunk_size: int = 32
     drop_n_last_frames: int | None = None
 
-    # 模型结构。
-    # end_effector_profile 决定 state/action 的物理 schema；action_dim 必须与 profile 一致。
+    # 模型结构。action_dim 等历史字段继续保留，以兼容旧 checkpoint 的配置反序列化；
+    # 活动训练配置不再要求用户填写，而是由 end_effector_profile 统一派生。
     end_effector_profile: str = QIANGNAO_TACTILE_PROFILE
     action_dim: int = 28
     obs_state: bool = True
@@ -60,12 +60,13 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
     rope_axes_dim: tuple[int, int] = (256, 256)
     vision_backbone: str = "resnet34"
 
-    # 两阶段训练与 tactile adapter。
+    # 两阶段训练与 tactile adapter。三个布尔字段保留给旧 checkpoint 读取；
+    # 新配置使用 None 表示按 training_stage 派生，训练入口会再次强制阶段契约。
     training_stage: str = "visual_main"
-    use_tactile: bool = False
-    use_tactile_lora: bool = False
+    use_tactile: bool | None = None
+    use_tactile_lora: bool | None = None
     tactile_lora_rank: int = 32
-    freeze_pretrained_main: bool = True
+    freeze_pretrained_main: bool | None = None
     tactile_left_max: float | None = None
     tactile_right_max: float | None = None
     clip_tactile_to_unit: bool = True
@@ -114,10 +115,11 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         self._convert_omegaconf_fields()
         self._merge_custom_fields()
         self._merge_default_normalization_mapping()
+        self._apply_training_stage_contract(force=False)
         self._set_and_validate_temporal_window()
         self._validate_end_effector_profile()
         self._validate_rgb_keys()
-        self._validate_stage_and_tactile()
+        self._validate_tactile_limits()
         self._validate_frequency()
         self._select_model_input_features()
 
@@ -171,17 +173,11 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
                 "end_effector_profile must be 'qiangnao_tactile' or 'gripper_no_tactile'."
             )
         expected_action_dim = 28 if self.end_effector_profile == QIANGNAO_TACTILE_PROFILE else 18
-        if self.action_dim != expected_action_dim:
-            raise ValueError(
-                f"{self.end_effector_profile} requires action_dim={expected_action_dim}, "
-                f"got action_dim={self.action_dim}."
-            )
+        # action_dim 是 profile 的固定信息，不再作为用户可选项。即使旧 checkpoint
+        # 中带有该字段，也以当前 profile 的 schema 为准，随后由 validate_features
+        # 对数据集实际 state/action shape 做最终核验。
+        self.action_dim = expected_action_dim
         if self.end_effector_profile == GRIPPER_NO_TACTILE_PROFILE:
-            if self.use_tactile or self.use_tactile_lora:
-                raise ValueError(
-                    "gripper_no_tactile has no observation.tactile; keep use_tactile=False "
-                    "and use_tactile_lora=False."
-                )
             if self.training_stage == "tactile_adapter":
                 raise ValueError("gripper_no_tactile cannot enter tactile_adapter training_stage.")
 
@@ -197,29 +193,129 @@ class CustomDECOConfigWrapper(PreTrainedConfig):
         if len(set(self.rgb_keys)) != FIXED_RGB_VIEW_COUNT:
             raise ValueError(f"rgb_keys must be unique, got {self.rgb_keys!r}.")
 
-    def _validate_stage_and_tactile(self) -> None:
+    def _apply_training_stage_contract(self, *, force: bool) -> None:
+        """把两种训练模式固化为唯一合法组合。
+
+        新 YAML 不再暴露三个布尔字段，因此 None 会按阶段派生。直接加载旧
+        checkpoint 时保留其显式布尔值以维持模型结构；训练入口使用 force=True，
+        让今后的训练严格只有 visual_main 与 tactile_adapter 两种模式。
+        """
+
         if self.training_stage not in {"visual_main", "tactile_adapter"}:
             raise ValueError("training_stage must be 'visual_main' or 'tactile_adapter'.")
-        if self.training_stage == "tactile_adapter":
-            if self.end_effector_profile != QIANGNAO_TACTILE_PROFILE:
-                raise ValueError("tactile_adapter stage is only valid for qiangnao_tactile.")
-            if not self.use_tactile or not self.use_tactile_lora:
-                raise ValueError("tactile_adapter stage requires use_tactile=True and use_tactile_lora=True.")
-            if (
-                self.load_external_init_weights
-                and not self.base_policy_path
-                and not self.deco_init_pth_path
-                and not self.adapter_model_path
-            ):
-                raise ValueError(
-                    "tactile_adapter stage requires base_policy_path, deco_init_pth_path, or adapter_model_path."
-                )
+        stage_values = {
+            "visual_main": (False, False, False),
+            "tactile_adapter": (True, True, True),
+        }
+        expected_tactile, expected_lora, expected_freeze = stage_values[self.training_stage]
+        if force or self.use_tactile is None:
+            self.use_tactile = expected_tactile
+        if force or self.use_tactile_lora is None:
+            self.use_tactile_lora = expected_lora
+        if force or self.freeze_pretrained_main is None:
+            self.freeze_pretrained_main = expected_freeze
+
+    def _validate_tactile_limits(self) -> None:
+        if self.training_stage == "tactile_adapter" and self.end_effector_profile != QIANGNAO_TACTILE_PROFILE:
+            raise ValueError("tactile_adapter stage is only valid for qiangnao_tactile.")
         if self.use_tactile:
             if not _is_positive_number(self.tactile_left_max) or not _is_positive_number(self.tactile_right_max):
                 raise ValueError(
                     "use_tactile=True requires positive tactile_left_max and tactile_right_max "
                     "based on Kuavo tactile values after normal_force / 100."
                 )
+
+    @staticmethod
+    def _normalize_optional_path(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    def configure_training_initialization(
+        self,
+        *,
+        resume: bool,
+        resume_timestamp: str | None,
+        deco_init_pth_path: str | None,
+    ) -> None:
+        """在训练构造模型前校验 resume 与三类权重入口。
+
+        `training.resume` 恢复同一次运行的 policy、优化器、scheduler、AMP、RNG
+        和进度；三个外部路径都只做权重初始化，因此必须与 resume 互斥。
+        该校验刻意不放进 ``__post_init__``，以便路径已清空的自包含旧
+        checkpoint 仍可用于部署，或由 resume 流程完整恢复。
+        """
+
+        # 无论旧 YAML 是否还带有历史布尔字段，进入训练后都只允许当前两种
+        # 固定模式；随后重新筛选 features，确保 tactile 输入与阶段一致。
+        self._apply_training_stage_contract(force=True)
+        self._validate_end_effector_profile()
+        self._validate_tactile_limits()
+        self._select_model_input_features()
+
+        training_pth = self._normalize_optional_path(deco_init_pth_path)
+        legacy_policy_pth = self._normalize_optional_path(self.deco_init_pth_path)
+        if training_pth and legacy_policy_pth and training_pth != legacy_policy_pth:
+            raise ValueError(
+                "deco_init_pth_path is set differently under training and policy; "
+                "请只保留 training.deco_init_pth_path。"
+            )
+
+        # 兼容旧 YAML 曾把 `.pth` 路径放在 policy 下；新配置只展示 training 入口。
+        self.deco_init_pth_path = training_pth or legacy_policy_pth
+        self.base_policy_path = self._normalize_optional_path(self.base_policy_path)
+        self.adapter_model_path = self._normalize_optional_path(self.adapter_model_path)
+        active_paths = {
+            "deco_init_pth_path": self.deco_init_pth_path,
+            "base_policy_path": self.base_policy_path,
+            "adapter_model_path": self.adapter_model_path,
+        }
+        configured_paths = [name for name, path in active_paths.items() if path]
+
+        if resume:
+            if not self._normalize_optional_path(resume_timestamp):
+                raise ValueError("training.resume=true requires a non-empty resume_timestamp.")
+            if self.load_external_init_weights or configured_paths:
+                raise ValueError(
+                    "training.resume=true performs an exact same-run resume and cannot be combined "
+                    "with load_external_init_weights or external weight paths."
+                )
+            return
+
+        if self.training_stage == "visual_main":
+            if self.base_policy_path or self.adapter_model_path:
+                raise ValueError(
+                    "visual_main only supports training from scratch or legacy `.pth` warm start; "
+                    "base_policy_path/adapter_model_path are tactile_adapter entrances."
+                )
+            if self.deco_init_pth_path and not self.load_external_init_weights:
+                raise ValueError(
+                    "training.deco_init_pth_path requires policy.load_external_init_weights=true."
+                )
+            if self.load_external_init_weights and not self.deco_init_pth_path:
+                raise ValueError(
+                    "visual_main with load_external_init_weights=true requires "
+                    "training.deco_init_pth_path."
+                )
+            return
+
+        if self.deco_init_pth_path:
+            raise ValueError(
+                "training.deco_init_pth_path is only valid for visual_main; "
+                "tactile_adapter must use base_policy_path or adapter_model_path."
+            )
+        adapter_sources = [path for path in (self.base_policy_path, self.adapter_model_path) if path]
+        if not self.load_external_init_weights:
+            raise ValueError(
+                "tactile_adapter requires policy.load_external_init_weights=true so the frozen "
+                "Visual Main + Action Decoder cannot remain randomly initialized."
+            )
+        if len(adapter_sources) != 1:
+            raise ValueError(
+                "tactile_adapter requires exactly one of base_policy_path (new adapter training) "
+                "or adapter_model_path (weight-only adapter continuation)."
+            )
 
     def _validate_frequency(self) -> None:
         if isinstance(self.dataset_hz, bool) or not isinstance(self.dataset_hz, int) or self.dataset_hz <= 0:

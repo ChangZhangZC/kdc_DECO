@@ -11,7 +11,7 @@ timestamp: ${now:%Y%m%d_%H%M%S}
 repoid: "lerobot/${task}"
 root: "/your/path/to/your/lerobotdata_deco/lerobot"
 
-policy_name: deco  # 固定值：当前文件只用于 Kuavo-DECO policy；ACT/DP 请使用各自配置文件。
+policy_name: deco  # 固定值：当前文件只用于 Kuavo-DECO policy
 
 training:
   output_directory: "outputs/train/${task}/${method}"
@@ -21,36 +21,24 @@ training:
   log_freq: 1
   device: "cuda"
   accumulation_steps: 1
-  # 固定信息：原 ACT/DP 模板曾保留 EMA 说明字段；当前 DECO 训练入口不构建 EMA，因此不提供 ema_power 配置项。
   batch_size: 16
-  num_workers: 8
+  num_workers: 4
   drop_last: False
   max_training_step: null
 
   resume: false
   resume_timestamp: "run_YYYYMMDD_HHMMSS"
 
-  # 学习率调度由 policy.scheduler_name / policy.scheduler_warmup_steps 统一控制；
-  # 训练层不再重复放 scheduler_*，避免同一含义出现两份配置。
+  # 历史 `.pth` 权重 warm start，设置 policy.load_external_init_weights=true；全新主干训练保持 null。
+  deco_init_pth_path: null
 
-  # 三路 RGB 随机增强只作用于视觉输入；DECOProcessor 会先分别做确定性 letterbox。
-  # tfs.<name>.type 可填写 kuavo_train/utils/transforms.py 中注册的图像增强类型；
-  # 当前默认集合含义：
-  # - Identity: 保留原图。
-  # - ColorJitter: 调整亮度/对比度/饱和度/色相。
-  # - SharpnessJitter: 调整锐度。
-  # - RandomMask: 随机遮挡局部区域。
-  # - RandomBorderCutout: 随机裁掉边缘区域。
-  # - GaussianNoise: 加高斯噪声。
-  # - GammaCorrection: 做 gamma 亮度校正。
-  # - GaussianBlur: 高斯模糊，用于吸收 DECO 原生 blur 增强思路。
   RGB_Augmenter:
     enable: True
     max_num_transforms: 1
     random_order: True
     tfs:
       notransform:
-        weight: 3.0
+        weight: 10.0
         type: "Identity"
         kwargs: {}
       brightness:
@@ -107,56 +95,33 @@ policy:
   _target_: kuavo_train.wrapper.policy.deco.DECOConfigWrapper.CustomDECOConfigWrapper
 
   # 可选值：
-  # - visual_main: 第一阶段 3View RGB + state 主干训练；默认关闭 tactile。
-  # - tactile_adapter: 第二阶段触觉 adapter 微调；仅 qiangnao_tactile 可用，必须加载第一阶段权重。
+  # - visual_main: 只训练 3View RGB + state 的 Visual Main 与 Action Decoder，不构建触觉训练分支。
+  # - tactile_adapter: 冻结已训练的 Visual Main 与 Action Decoder，只训练 tactile/LoRA adapter。
   training_stage: visual_main
-  # use_tactile=true 表示模型 forward 读取 observation.tactile；只允许 qiangnao_tactile。
-  use_tactile: false
-  # use_tactile_lora=true 表示启用 DECO 自实现 PI_Adapter/plugin；通常只在 tactile_adapter 阶段开启。
-  use_tactile_lora: false
 
   # DECO action-token Flow Matching 主干。
   # end_effector_profile 可选值，必须与数据集 schema 一致：
-  # - qiangnao_tactile: 28D 灵巧手 state/action，可在第二阶段启用 tactile_adapter。
-  # - gripper_no_tactile: 18D 二夹爪 state/action，没有 observation.tactile，必须保持 use_tactile/use_tactile_lora=false。
+  # - qiangnao_tactile: 固定 28D 灵巧手 state/action，可进入 tactile_adapter。
+  # - gripper_no_tactile: 固定 18D 二夹爪 state/action，只允许 visual_main。
   end_effector_profile: qiangnao_tactile
   chunk_size: 32
-  # DECO loss 当前不消费 action_is_pad；必须丢弃至少 chunk_size-1 个尾帧，避免 padded action 入训。
-  drop_n_last_frames: 31
-  action_dim: 28
-  obs_state: true
-  use_task_condition: false
-  num_tasks: 10
   num_attn_blocks: 6
   inf_step: 5
   heads: 8
   dim: 512
   rope_axes_dim: [256, 256]
-  # 可选值：
-  # - resnet34: 默认容量，更贴近当前 Kuavo-DECO 方案。
-  # - resnet18: 低显存/低延迟备选，通常用于 ablation 或资源受限场景。
-  vision_backbone: resnet34
+  vision_backbone: resnet34 # resnet34 / resnet18
 
-  # 固定三视角 RGB 顺序：head -> left wrist -> right wrist。
-  # key 名称可按已有 LeRobot 数据集 schema 修改，但数量、顺序和物理语义必须保持不变。
-  rgb_keys:
-    - observation.images.head_cam_h
-    - observation.images.wrist_cam_l
-    - observation.images.wrist_cam_r
-  tactile_key: observation.tactile
+
   resize_shape: [256, 256]
   use_letterbox: true
   letterbox_fill_rgb: 0.5019607843 # raw RGB 灰色 padding 128/255
 
-  # checkpoint 保存 30Hz 数据语义；默认 Receding Horizon 连续执行原始 chunk。
-  dataset_hz: 30
-  # 连续执行 action[0:16]，即约 0.533s 后使用最新观测重新推理。
-  # null 表示完整消费原始 32-step chunk；正式部署可由 deploy action_dispatch 覆盖。
-  n_action_steps: 16
-
-  # NormalizationMode 可选值：
-  # - MEAN_STD: 使用 dataset stats 做均值方差归一化，适合 RGB/state/action。
-  # - IDENTITY: 不做 LeRobot 统计归一化，当前用于 tactile，避免触觉被当作普通 STATE。
+  # dataset_hz 从 LeRobot 数据集 metadata.fps 自动写入 checkpoint。
+  # 归一化策略显式保留在 YAML，便于核对 checkpoint 的输入/输出数值语义：
+  # - RGB/state/action 使用数据集统计量执行 MEAN_STD。
+  # - tactile 必须保持 IDENTITY；其数值会在 DECO wrapper 中按左右手最大值单独归一化，
+  #   不应再经过数据集均值方差处理，避免重复归一化。
   normalization_mapping:
     VISUAL:
       _target_: lerobot.configs.types.NormalizationMode
@@ -171,46 +136,27 @@ policy:
       _target_: lerobot.configs.types.NormalizationMode
       value: IDENTITY
 
-  # 第二阶段 tactile_adapter override：
-  # training_stage: tactile_adapter
-  # use_tactile: true
-  # use_tactile_lora: true
-  # base_policy_path: /path/to/stage1_policy_dir
-  # tactile_left_max: 1.0
-  # tactile_right_max: 1.0
   tactile_lora_rank: 32
-  # true 表示加载第一阶段/外部权重后冻结已匹配主干，只训练 tactile/PI_Adapter 等新分支。
-  freeze_pretrained_main: true
-  # tactile_left/right_max 单位是 Kuavo normal_force / 100 后的牛顿；use_tactile=true 时必须填写正数，可以来自训练集最大值、分位数上限、人工审定安全上限和灵巧手自身量程
+
+  # 信息字段：单位为 Kuavo normal_force / 100 后的牛顿；当前显式固定为 25。
   tactile_left_max: 25
   tactile_right_max: 25
   clip_tactile_to_unit: true
 
-  # 二夹爪 gripper_no_tactile override 示例：
-  # end_effector_profile: gripper_no_tactile
-  # action_dim: 18
-  # training_stage: visual_main
-  # use_tactile: false
-  # use_tactile_lora: false
-  # load_external_init_weights: false
 
-  # 外部初始化路径只在训练构造时读取；保存最终 policy 时会清空，保证 `.safetensors` 自包含。
   load_external_init_weights: false
 
-  # 三类权重入口含义：
-  # - base_policy_path: 第一阶段 visual_main 保存出的 LeRobot `.safetensors` policy 目录。
-  # - adapter_model_path: 已合并保存的 base + adapter 权重目录，用于部署或继续 adapter finetune。
-  # - deco_init_pth_path: 仅兼容可信本地历史 `.pth`，不是正式 Kuavo-DECO 保存格式。
-  # 若没有明确兼容需求，优先使用 `.safetensors`，避免 torch pickle checkpoint 的执行风险。
+  # tactile_adapter 的两个互斥入口：
+  # - base_policy_path: 从已训练的 Visual Main + Action Decoder 新建 tactile adapter 训练；
+  # - adapter_model_path: 从已有 tactile adapter checkpoint 的完整权重开始一个“新的”训练 run；
+  #   如果目标是精确继续同一次训练，请不要填 adapter_model_path，改用 training.resume=true。
   base_policy_path: null
   adapter_model_path: null
-  deco_init_pth_path: null
 
   use_amp: false
   optimizer_lr: 0.0001
   optimizer_betas: [0.9, 0.999]
   optimizer_eps: 1.0e-08
   optimizer_weight_decay: 0.0001
-  # 可填写 diffusers 支持的 scheduler 名称；默认 cosine。
   scheduler_name: cosine
   scheduler_warmup_steps: 500

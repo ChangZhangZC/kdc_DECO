@@ -3,13 +3,23 @@
 """
 Kuavo rosbag -> LeRobot DECO 数据集转换脚本。
 
-本文件是 DECO 阶段一的数据入口，刻意与原始 CvtRosbag2Lerobot.py 并行存在：
-1. 保留原 Kuavo/ACT/DP 工具链中的 rosbag 读取、坏时间戳覆盖、compressedDepth 解码、
-   动作范围保护、失败 bag 记录等保护性逻辑。
-2. 只在 DECO 需要的核心 schema 上做收敛：RGB、profile 化 state/action、
-   qiangnao 可选 30 维 tactile、训练数据 30Hz 时间轴，以及头部自由度的固定策略。
-3. 当前训练版本不使用深度信息：保留历史 depth 实现仅供后续恢复，转换流程不会读取、
-   对齐或写入任何 depth topic / feature。
+固定数据架构
+------------
+1. 数据范围：使用双臂、双末端执行器和头部，不包含腿部、腰部或底盘；不支持单臂 schema。
+2. 视觉输入：固定为 head_cam_h -> wrist_cam_l -> wrist_cam_r 三路 RGB，顺序与 policy 的 camera embedding 一致。
+3. qiangnao_tactile 的 28D state/action：
+   [0:7] 左臂 + [7:13] 左手 + [13:20] 右臂 + [20:26] 右手 + [26:28] 头部。
+4. gripper_no_tactile 的 18D state/action：
+   [0:7] 左臂 + [7] 左夹爪 + [8:15] 右臂 + [15] 右夹爪 + [16:18] 头部。
+5. 动作语义：输出绝对 joint/action，不支持 delta action 或 relative-start action。
+   头部 observation 逐帧保留 /sensors_data_raw 的 joint_q[26:28]；头部 action 逐帧保留
+   /joint_cmd 的 joint_q[26:28]。二者独立读取并对齐，不使用固定填充或相互复制。
+6. 时间语义：train_hz 是转换后 LeRobot 数据集的目标帧率；所有模态最近邻对齐到 head_cam_h 时间轴。
+7. 任务语义：当前默认配置使用 use_task_condition=false。LeRobot 必需的 task 仅写入固定兼容占位，
+   旧数据中的 task/task_index 在该配置下不会进入模型。
+
+本转换器保留通用 Kuavo reader 的 bag 加载与消息解码能力，但不调用 ACT/DP 的共享配置初始化。
+当前训练版本不读取、对齐或写入 depth topic / feature。
 """
 
 from __future__ import annotations
@@ -73,6 +83,9 @@ DECO_RGB_KEYS = ("head_cam_h", "wrist_cam_l", "wrist_cam_r")
 QIANGNAO_TACTILE_PROFILE = "qiangnao_tactile"
 GRIPPER_NO_TACTILE_PROFILE = "gripper_no_tactile"
 SUPPORTED_END_EFFECTOR_PROFILES = {QIANGNAO_TACTILE_PROFILE, GRIPPER_NO_TACTILE_PROFILE}
+# LeRobotDataset.add_frame() 必须接收 task。当前 DECO 不做 task conditioning，
+# 因此新数据统一写入不进入模型的内部兼容占位值。
+DECO_LEROBOT_TASK = "kuavo_deco"
 
 # qiangnao_tactile 固定状态顺序：左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。
 DECO_QIANGNAO_STATE_NAMES = [
@@ -200,6 +213,21 @@ def resolve_end_effector_profile(cfg: DictConfig) -> str:
     if profile == GRIPPER_NO_TACTILE_PROFILE and eef_type not in {"leju_claw", "rq2f85"}:
         raise ValueError("gripper_no_tactile profile 必须配合 dataset.eef_type=leju_claw 或 rq2f85")
     return profile
+
+
+def validate_deco_architecture_info(cfg: DictConfig) -> None:
+    """校验 YAML 中仅用于声明固定 schema 的信息字段。"""
+
+    dex_dof_needed = cfg_select(cfg, "dataset.dex_dof_needed", 6)
+    if (
+        not isinstance(dex_dof_needed, int)
+        or isinstance(dex_dof_needed, bool)
+        or dex_dof_needed != 6
+    ):
+        raise ValueError(
+            "dataset.dex_dof_needed 是 DECO 固定 schema 信息字段，当前只允许填写 6；"
+            f"实际为 {dex_dof_needed!r}"
+        )
 
 
 def profile_writes_tactile(profile: str, cfg: DictConfig) -> bool:
@@ -425,24 +453,7 @@ def has_timestamp_gap(sequence: list[dict[str, Any]], threshold_s: float) -> boo
     return bool(np.any(gaps > threshold_s))
 
 
-def compute_head_episode_mean(state_items: list[dict[str, Any]]) -> np.ndarray:
-    """
-    头部自由度策略：读取 joint_q[26:28]，按 episode 求均值后广播到所有帧。
-
-    原 ACT/DP 最终 LeRobot schema 会丢弃头部；DECO 两类 profile 都显式保留
-    2 维头部观测，但不让 action 学习头部控制。
-    """
-
-    head_values = []
-    for item in state_items:
-        joint_q = as_float_array("observation.state/joint_q", item["data"], min_len=28)
-        head_values.append(joint_q[26:28])
-    if not head_values:
-        raise ValueError("无法计算头部均值：observation.state 为空")
-    return np.mean(np.stack(head_values, axis=0), axis=0).astype(np.float32)
-
-
-def build_deco_state(joint_q: Any, hand_state_raw: Any, head_mean: np.ndarray, is_binary: bool) -> np.ndarray:
+def build_deco_state(joint_q: Any, hand_state_raw: Any, is_binary: bool) -> np.ndarray:
     """构造 qiangnao_tactile 的 DECO 28 维观测状态。"""
 
     joint_q_array = as_float_array("observation.state/joint_q", joint_q, min_len=28)
@@ -454,7 +465,8 @@ def build_deco_state(joint_q: Any, hand_state_raw: Any, head_mean: np.ndarray, i
             hand_state[:6],
             joint_q_array[19:26],
             hand_state[6:12],
-            as_float_array("head_mean", head_mean, min_len=2)[:2],
+            # 头部 observation 不做求均、固定值或单位转换，直接保留当前对齐帧的原值。
+            joint_q_array[26:28],
         ],
         axis=0,
     ).astype(np.float32)
@@ -466,7 +478,6 @@ def build_deco_state(joint_q: Any, hand_state_raw: Any, head_mean: np.ndarray, i
 def build_deco_gripper_state(
     joint_q: Any,
     gripper_state_raw: Any,
-    head_mean: np.ndarray,
     *,
     eef_type: str,
     is_binary: bool,
@@ -488,7 +499,8 @@ def build_deco_gripper_state(
             gripper_state[:1],
             joint_q_array[19:26],
             gripper_state[1:2],
-            as_float_array("head_mean", head_mean, min_len=2)[:2],
+            # 与 28D schema 一致，逐帧保留当前对齐帧的头部原值。
+            joint_q_array[26:28],
         ],
         axis=0,
     ).astype(np.float32)
@@ -510,18 +522,27 @@ def extract_arm_action(action_item: dict[str, Any], source_key: str) -> tuple[np
     raise ValueError(f"未知 arm action source：{source_key}")
 
 
+def extract_head_action(joint_cmd_raw: Any) -> np.ndarray:
+    """从逐帧对齐后的 /joint_cmd 读取头部 yaw/pitch 目标值。"""
+
+    # 头部 action 与机械臂 action 独立取源：即使机械臂优先采用 arm trajectory，
+    # 头部仍严格使用同一目标时间轴上的 /joint_cmd.joint_q[26:28]。
+    joint_cmd = as_float_array("action.joint_cmd", joint_cmd_raw, min_len=28)
+    return joint_cmd[26:28].astype(np.float32)
+
+
 def build_deco_action(
     arm_action_item: dict[str, Any],
     arm_source_key: str,
     hand_action_raw: Any,
-    head_action_fill: list[float],
+    joint_cmd_raw: Any,
     is_binary: bool,
 ) -> np.ndarray:
     """构造 qiangnao_tactile 的 DECO 28 维动作。"""
 
     left_arm, right_arm = extract_arm_action(arm_action_item, arm_source_key)
     hand_action = normalise_hand_position("action.qiangnao", hand_action_raw, is_binary)
-    head_action = as_float_array("head_action_fill", head_action_fill, min_len=2)[:2]
+    head_action = extract_head_action(joint_cmd_raw)
 
     action = np.concatenate(
         [
@@ -542,7 +563,7 @@ def build_deco_gripper_action(
     arm_action_item: dict[str, Any],
     arm_source_key: str,
     gripper_action_raw: Any,
-    head_action_fill: list[float],
+    joint_cmd_raw: Any,
     *,
     eef_type: str,
     is_binary: bool,
@@ -557,7 +578,7 @@ def build_deco_gripper_action(
         is_binary=is_binary,
         is_action=True,
     )
-    head_action = as_float_array("head_action_fill", head_action_fill, min_len=2)[:2]
+    head_action = extract_head_action(joint_cmd_raw)
 
     action = np.concatenate(
         [
@@ -601,6 +622,7 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         self._msg_processer = kuavo.KuavoMsgProcesser()
         self.cfg = cfg
 
+        validate_deco_architecture_info(cfg)
         self.profile = resolve_end_effector_profile(cfg)
         self.eef_type = str(cfg_select(cfg, "dataset.eef_type", "qiangnao"))
         self.include_tactile = profile_writes_tactile(self.profile, cfg)
@@ -641,7 +663,6 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         self.force_scale = float(cfg_select(cfg, "deco.tactile_force_scale", 100.0))
         self.train_hz = int(cfg_select(cfg, "dataset.train_hz", 30))
         self.sample_drop = int(cfg_select(cfg, "dataset.sample_drop", 0))
-        self.head_action_fill = list(cfg_select(cfg, "deco.head_action_fill", [0.0, 0.0]))
 
         configured_gap = cfg_select(cfg, "deco.arm_traj_gap_threshold_s", None)
         self.arm_gap_threshold_s = (
@@ -999,6 +1020,8 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
             # self.depth_key,
             "observation.state",
             arm_action_key,
+            # 头部 action 无论机械臂选择哪个来源，都必须来自完整 28D /joint_cmd。
+            "action.joint_cmd",
         ]
         if self.profile == QIANGNAO_TACTILE_PROFILE:
             required_keys.extend(["observation.qiangnao", "action.qiangnao"])
@@ -1019,6 +1042,8 @@ class DecoRosbagReader(kuavo.KuavoRosbagReader):
         if missing_keys:
             raise ValueError(f"rosbag 缺少 DECO 必需数据：{missing_keys}")
 
+        # 当 arm_action_key 本身就是 action.joint_cmd 时去重，保持共同时间区间计算清晰。
+        required_keys = list(dict.fromkeys(required_keys))
         required_sequences = {key: process_data[key] for key in required_keys}
         target_timestamps = build_target_timestamps(
             # 固定以 head RGB 构建 30Hz 时间轴；左右腕 RGB 与其他模态均最近邻对齐到该时间轴。
@@ -1142,7 +1167,6 @@ def validate_deco_frame(
 def populate_dataset(
     dataset: LeRobotDataset,
     bag_files: list[str],
-    task: str,
     reader: DecoRosbagReader,
     cfg: DictConfig,
     episodes: list[int] | None = None,
@@ -1166,8 +1190,6 @@ def populate_dataset(
             bag_data = reader.process_rosbag(ep_path)
             metadata = bag_data["__metadata__"]
             arm_action_source = str(metadata["arm_action_source"])
-            head_mean = compute_head_episode_mean(bag_data["observation.state"])
-
             num_frames = int(metadata["num_frames"])
             log.info(
                 "Episode %s: %s frames at %sHz, profile=%s, eef_type=%s, include_tactile=%s, arm_action_source=%s",
@@ -1185,21 +1207,19 @@ def populate_dataset(
                     state = build_deco_state(
                         bag_data["observation.state"][frame_idx]["data"],
                         bag_data["observation.qiangnao"][frame_idx]["data"],
-                        head_mean,
                         is_binary=is_binary,
                     )
                     action = build_deco_action(
                         bag_data[arm_action_source][frame_idx],
                         arm_action_source,
                         bag_data["action.qiangnao"][frame_idx]["data"],
-                        reader.head_action_fill,
+                        bag_data["action.joint_cmd"][frame_idx]["data"],
                         is_binary=is_binary,
                     )
                 elif profile == GRIPPER_NO_TACTILE_PROFILE:
                     state = build_deco_gripper_state(
                         bag_data["observation.state"][frame_idx]["data"],
                         bag_data["observation.gripper"][frame_idx]["data"],
-                        head_mean,
                         eef_type=reader.eef_type,
                         is_binary=is_binary,
                     )
@@ -1207,7 +1227,7 @@ def populate_dataset(
                         bag_data[arm_action_source][frame_idx],
                         arm_action_source,
                         bag_data["action.gripper"][frame_idx]["data"],
-                        reader.head_action_fill,
+                        bag_data["action.joint_cmd"][frame_idx]["data"],
                         eef_type=reader.eef_type,
                         is_binary=is_binary,
                     )
@@ -1225,7 +1245,8 @@ def populate_dataset(
                     # ),
                     "observation.state": torch.from_numpy(state).float(),
                     "action": torch.from_numpy(clamp_deco_arm_action(action, profile)).float(),
-                    "task": task,
+                    # LeRobot 强制要求每帧含 task；固定占位值不参与当前 DECO 训练或推理。
+                    "task": DECO_LEROBOT_TASK,
                 })
                 if reader.include_tactile:
                     tactile = as_float_array(
@@ -1270,7 +1291,6 @@ def port_deco_rosbag(
     n: int | None = None,
     robot_type: str = "kuavo",
     mode: str = "video",
-    task: str = "Pick and Place",
     episodes: list[int] | None = None,
     push_to_hub: bool = False,
     overwrite: bool = False,
@@ -1309,7 +1329,7 @@ def port_deco_rosbag(
         profile=reader.profile,
         include_tactile=reader.include_tactile,
     )
-    return populate_dataset(dataset, bag_files, task, reader, cfg, episodes=episodes)
+    return populate_dataset(dataset, bag_files, reader, cfg, episodes=episodes)
 
 
 @hydra.main(version_base=None, config_path="../configs/data", config_name="KuavoRosbag2Lerobot_deco")
@@ -1336,7 +1356,6 @@ def main(cfg: DictConfig) -> None:
         repo_id=repo_id,
         root=str(output_root),
         n=num_used,
-        task=str(cfg_select(cfg, "dataset.task_description", "Pick and Place")),
         overwrite=overwrite,
         cfg=cfg,
     )

@@ -62,10 +62,31 @@ class KuavoBaseRosEnv(gym.Env):
         self.state_layout = config_kuavo_env.state_layout
         self.which_arm = config_kuavo_env.which_arm
         self.qiangnao_dof_needed = config_kuavo_env.qiangnao_dof_needed
-        self.head_state_source = getattr(config_deco, "head_state_source", "live_joint_q")
+        if is_deco_layout(self.state_layout):
+            head_control = config_deco.head_control
+            self.head_control_mode = head_control.mode
+            self.head_initial_value = np.asarray(head_control.initial_value, dtype=np.float32)
+            self.head_fixed_value = (
+                None
+                if head_control.fixed_value is None
+                else np.asarray(head_control.fixed_value, dtype=np.float32)
+            )
+            # 单一模式同时决定 observation 来源，禁止“固定 observation + policy 动作”等矛盾组合。
+            self.head_state_source = "fixed_config" if head_control.mode == "fixed" else "live_joint_q"
+            log_robot.info(
+                "DECO head control configured: "
+                f"mode={self.head_control_mode}, observation_source={self.head_state_source}, "
+                f"initial_value_rad={self.head_initial_value.tolist()}"
+            )
+        else:
+            # ACT/DP 继续沿用原 head_init reset 语义，不接入 DECO policy 控头逻辑。
+            self.head_control_mode = "legacy_reset_only"
+            self.head_initial_value = config_kuavo_env.head_init
+            self.head_fixed_value = config_kuavo_env.head_init
+            self.head_state_source = "live_joint_q"
 
         self.is_binary = config_kuavo_env.is_binary
-        self.head_init = config_kuavo_env.head_init
+        self.head_init = self.head_initial_value
         self.arm_init = np.array([0]*14)
 
 
@@ -295,8 +316,11 @@ class KuavoBaseRosEnv(gym.Env):
     # 子函数 2. 头部复位
     # ==========================================================
     def _reset_head(self):
-        if self.head_init is not None:
-            self.robot.control_head(self.head_init[0], self.head_init[1])
+        if self.head_initial_value is not None:
+            self.robot.control_head(
+                float(self.head_initial_value[0]),
+                float(self.head_initial_value[1]),
+            )
 
     # ==========================================================
     # 子函数 3. 末端执行器（夹爪）复位
@@ -452,10 +476,11 @@ class KuavoBaseRosEnv(gym.Env):
     def exec_deco_action(self, decoded_action):
         """执行 DECO 28D/18D action。
 
-        头部 action 当前只记录不下发，避免把训练阶段的补零维度误解释为真实头部控制。
+        fixed 模式在最终机器人坐标系直接下发配置值，不经过 policy postprocessor；
+        policy 模式下发已经由调用侧 postprocessor 恢复到物理量纲的预测头部两维。
         """
         self._safe_control_arm(decoded_action.arm_joints)
-        log_robot.debug(f"DECO head action retained but not executed: {decoded_action.head_action}")
+        self._control_deco_head(decoded_action.head_action)
 
         if self.state_layout == DECO_28D_LAYOUT:
             if self.eef_type != "qiangnao":
@@ -474,6 +499,25 @@ class KuavoBaseRosEnv(gym.Env):
             return
 
         raise KeyError(f"Unsupported DECO state_layout: {self.state_layout}")
+
+    def _control_deco_head(self, policy_head_action):
+        """在所有本地/client、仿真/真机路径共享的最终出口下发头部绝对位置。"""
+
+        if self.head_control_mode == "fixed":
+            target = np.asarray(self.head_fixed_value, dtype=np.float32).reshape(-1)
+            source = "fixed_config"
+        elif self.head_control_mode == "policy":
+            target = np.asarray(policy_head_action, dtype=np.float32).reshape(-1)
+            source = "policy"
+        else:
+            raise ValueError(f"Unsupported DECO head_control mode: {self.head_control_mode!r}.")
+
+        if target.size != 2 or not np.all(np.isfinite(target)):
+            raise ValueError(
+                f"DECO head target from {source} must be finite 2D [yaw, pitch], got {target!r}."
+            )
+        self.robot.control_head(float(target[0]), float(target[1]))
+        log_robot.debug(f"DECO head command source={source}, target_rad={target.tolist()}")
 
     def exec_action(self, action):
         """执行机械臂与末端执行器动作 Execute arm and end-effector motion"""
@@ -579,7 +623,7 @@ class KuavoBaseRosEnv(gym.Env):
                 arm_joints=self.arm_state.get("joint_q"),
                 dexhand_state=self.arm_state.get("gripper"),
                 live_head_q=self.arm_state.get("head_q"),
-                head_init=self.head_init,
+                fixed_head_q=self.head_fixed_value,
                 head_state_source=self.head_state_source,
             )
             obs["observation.state"] = torch.from_numpy(state).float().unsqueeze(0)
@@ -591,7 +635,7 @@ class KuavoBaseRosEnv(gym.Env):
                 arm_joints=self.arm_state.get("joint_q"),
                 gripper_state=self.arm_state.get("gripper"),
                 live_head_q=self.arm_state.get("head_q"),
-                head_init=self.head_init,
+                fixed_head_q=self.head_fixed_value,
                 head_state_source=self.head_state_source,
             )
             obs["observation.state"] = torch.from_numpy(state).float().unsqueeze(0)
