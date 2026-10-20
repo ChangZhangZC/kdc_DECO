@@ -15,16 +15,16 @@ class KeyListener:
         self.crtk_c_callback = callback    
 
     def register_callbacks(self, keys, callback):
-        """Register buttons and corresponding callback functions"""
+        """ 注册按键和对应的回调函数 """
         for key in keys:
             self.key_callbacks[key] = callback
 
     def register_callback(self, key, callback):
-        """Register buttons and corresponding callback functions"""
+        """ 注册按键和对应的回调函数 """
         self.key_callbacks[key] = callback
 
     def unregister_callback(self, key):
-        """Callback function for logout key"""
+        """ 注销按键的回调函数 """
         if key in self.key_callbacks:
             del self.key_callbacks[key]
 
@@ -43,7 +43,7 @@ class KeyListener:
             if key in self.key_callbacks and callable(self.key_callbacks[key]):
                 self.key_callbacks[key](key)
         except AttributeError:
-            #Some special keys (such as function keys) may not have character attributes
+            # 某些特殊键（如功能键）可能没有字符属性
             pass
         except Exception as e:
             print(f"Error processing key: {e}")
@@ -65,7 +65,7 @@ class KeyListener:
 if __name__ == "__main__":
     kl = KeyListener()
 
-    #Register key callback function
+    # 注册按键回调函数
     kl.register_callback('w', lambda key: print("pressed key: '", key, "'",end='\r'))
     kl.register_callback('s', lambda key: print("pressed key: '", key, "'",end='\r'))
     kl.register_callback('a', lambda key: print("pressed key: '", key, "'",end='\r'))

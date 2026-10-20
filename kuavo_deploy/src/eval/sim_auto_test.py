@@ -37,6 +37,11 @@ import numpy
 import torch
 from tqdm import tqdm
 
+from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
+from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco import DECOProcessor  # noqa: F401 - 注册 DECO preprocessor step
+from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.utils.random_utils import set_seed
 import datetime
 import time
@@ -52,6 +57,7 @@ from geometry_msgs.msg import PoseStamped
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.kuavo_service.client import PolicyClient
+from kuavo_deploy.utils.deco_obs_action import configure_deco_runtime, validate_deco_policy_compatibility
 from lerobot.policies.factory import make_pre_post_processors
 log_model = setup_logger("model")
 log_robot = setup_logger("robot")
@@ -91,9 +97,9 @@ pause_sub = rospy.Subscriber('/kuavo/pause_state', Bool, pause_callback, queue_s
 stop_sub = rospy.Subscriber('/kuavo/stop_state', Bool, stop_callback, queue_size=10)
 
 def safe_reset_service(reset_service) -> None:
-    """Safe resetting service Safe resetting service"""
+    """安全重置服务 Safe resetting service"""
     try:
-        #Call the reset service Reset
+        # 调用重置服务 Reset
         response = reset_service(TriggerRequest())
         if response.success:
             log_robot.info(f"Reset service successful: {response.message}")
@@ -103,8 +109,8 @@ def safe_reset_service(reset_service) -> None:
         log_robot.error(f"Reset service exception: {e}")
 
 def check_control_signals():
-    """Check control signal Check control signal"""
-    #Check the pause state Pause state
+    """检查控制信号 Check control signal"""
+    # 检查暂停状态 Pause state
     while pause_flag.is_set():
         log_robot.info("🔄 Robot arm motion paused")
         time.sleep(0.1)
@@ -112,34 +118,23 @@ def check_control_signals():
             log_robot.info("🛑 Robot arm motion stopped")
             return False
     
-    #Check whether it needs to be stopped Whether it needs to be stopped
+    # 检查是否需要停止 Whether it needs to be stopped
     if stop_flag.is_set():
         log_robot.info("🛑 Stop signal detected, exiting robot arm motion")
         return False
         
-    return True  #Continue normally Continue
+    return True  # 正常继续 Continue
 
 
     
-def resolve_pretrained_path(cfg) -> Path:
-    if getattr(cfg, "pretrained_path", ""):
-        return Path(cfg.pretrained_path)
-    return Path(f"outputs/train/{cfg.task}/{cfg.method}/{cfg.timestamp}/epoch{cfg.epoch}")
-
-
-def build_pre_post_processors(pretrained_path: Path, policy_type: str):
-    if policy_type == "lingbot":
-        return (lambda obs: obs), (lambda act: act)
-    return make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
-
-
-def setup_policy(pretrained_path, policy_type, cfg, device=torch.device("cuda")):
+def setup_policy(pretrained_path, policy_type, device=torch.device("cuda"), inference_config=None):
     """
     Set up and load the policy model.
     
     Args:
         pretrained_path: Path to the checkpoint
-        policy_type: Type of policy ('diffusion' or 'act')
+        policy_type: Type of policy ('diffusion', 'act', 'deco', or 'client')
+        inference_config: Optional ConfigInference for client host/port/token settings.
         
     Returns:
         Loaded policy model and device
@@ -149,43 +144,43 @@ def setup_policy(pretrained_path, policy_type, cfg, device=torch.device("cuda"))
         log_model.warning("Warning: Using CPU for inference, this may be slow.")
         time.sleep(3)  
     
-    if policy_type == 'diffusion':
-        from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
-        policy = CustomDiffusionPolicyWrapper.from_pretrained(Path(pretrained_path), strict=True)
-    elif policy_type == 'act':
-        from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
-        policy = CustomACTPolicyWrapper.from_pretrained(Path(pretrained_path), strict=True)
-    elif policy_type == 'client':
-        policy = PolicyClient()
-    elif policy_type == 'lingbot':
-        from kuavo_deploy.utils.lingbot_adapter import LingbotDeployPolicy
-        policy = LingbotDeployPolicy(
-            model_path=Path(pretrained_path),
-            lingbot_root=getattr(cfg, "lingbot_root", ""),
-            qwen25_path=getattr(cfg, "qwen25_path", ""),
-            task_prompt=getattr(cfg, "task_prompt", "") or getattr(cfg, "task", ""),
-            use_length=getattr(cfg, "lingbot_use_length", 1),
-            chunk_ret=getattr(cfg, "lingbot_chunk_ret", True),
-            norm_stats_file=getattr(cfg, "lingbot_norm_stats_file", ""),
-            data_type=getattr(cfg, "lingbot_data_type", "robotwin"),
-            execute_raw_action=getattr(cfg, "lingbot_execute_raw_action", False),
-        )
+    policy_type_key = policy_type.lower()
+    if policy_type_key == 'diffusion':
+        policy = CustomDiffusionPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'act':
+        policy = CustomACTPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'deco':
+        policy = CustomDECOPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'client':
+        if inference_config is None:
+            policy = PolicyClient()
+        else:
+            # token 只从环境变量读取，避免把远端推理服务凭据写入 YAML 或日志。
+            api_token = inference_config.client_api_token_value()
+            policy = PolicyClient(
+                host=inference_config.client_host,
+                port=inference_config.client_port,
+                timeout_ms=inference_config.client_timeout_ms,
+                api_token=api_token,
+            )
     else:
         raise ValueError(f"Unsupported policy type: {policy_type}")
-    
-    policy.eval()
-    policy.to(device)
-    policy.reset()
+
+    if policy_type_key != 'client':
+        policy.eval()
+        policy.to(device)
+    if hasattr(policy, "reset"):
+        policy.reset()
     # Log model info
     log_model.info(f"Model loaded from {pretrained_path}")
-    if hasattr(policy, "config") and hasattr(policy.config, "n_obs_steps"):
-        log_model.info(f"Model n_obs_steps: {policy.config.n_obs_steps}")
+    if hasattr(policy, "config"):
+        log_model.info(f"Model n_obs_steps: {getattr(policy.config, 'n_obs_steps', 'N/A')}")
     log_model.info(f"Model device: {device}")
     
     return policy
 
 def run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory):
-    """Running a single episode Running a single episode"""
+    """运行单个episode Running a single episode"""
     cfg = config.inference
     seed = cfg.seed
     task = cfg.task
@@ -205,7 +200,7 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     start_service = rospy.ServiceProxy('/simulator/start', Trigger)
 
 
-    if cfg.policy_type not in ['client', 'lingbot'] and hasattr(policy, "config"):
+    if cfg.policy_type.lower() != 'client':
         log_model.info(f"policy.config.input_features: {policy.config.input_features}")
         log_robot.info(f"env.observation_space: {env.observation_space}")
         log_model.info(f"policy.config.output_features: {policy.config.output_features}")
@@ -324,7 +319,7 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
 
 
 def kuavo_eval_autotest(config: KuavoConfig):
-    """Execute automated testing Auto testing script"""
+    """执行自动测试 Auto testing script"""
     cfg = config.inference
     task = cfg.task
     method = cfg.method
@@ -335,7 +330,7 @@ def kuavo_eval_autotest(config: KuavoConfig):
     policy_type = cfg.policy_type
 
     # Setup paths
-    pretrained_path = resolve_pretrained_path(cfg)
+    pretrained_path = Path(f"outputs/train/{task}/{method}/{timestamp}/epoch{epoch}")
     output_directory = Path(f"outputs/eval/{task}/{method}/{timestamp}/epoch{epoch}")
     output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -347,11 +342,15 @@ def kuavo_eval_autotest(config: KuavoConfig):
         log_file.write(f"Total Episodes: {eval_episodes}\n")
     
     
-    #Setup policy and environment (loaded only once)
+    # Setup policy and environment (只加载一次)
     set_seed(seed)
     device = torch.device(cfg.device)
-    policy = setup_policy(pretrained_path, policy_type, cfg, device)
-    preprocessor, postprocessor = build_pre_post_processors(pretrained_path, policy_type)
+    policy = setup_policy(pretrained_path, policy_type, device, cfg)
+    if policy_type.lower() == 'deco':
+        validate_deco_policy_compatibility(policy.config, config.deco, config.env)
+        dispatch_info = configure_deco_runtime(policy, config.deco, config.env)
+        log_model.info(f"DECO action dispatch: {dispatch_info}")
+    preprocessor, postprocessor = make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
     
     # first reset
     reset_service = rospy.ServiceProxy('/simulator/reset', Trigger)
@@ -385,10 +384,10 @@ def kuavo_eval_autotest(config: KuavoConfig):
             result = run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory)
             log_robot.info(f"Episode {episode+1} completed with return code: {result}")
             
-            #Reset policy, clear cache Reset policy, clear cache
+            # 重置policy状态，清理缓存 Reset policy, clear cache
             policy.reset()
             
-            #Force garbage collection and GPU cache cleaning Force garbage collection and GPU cache cleaning
+            # 强制垃圾回收和GPU缓存清理 Force garbage collection and GPU cache cleaning
             gc.collect()
             torch.cuda.empty_cache()
             
@@ -400,12 +399,12 @@ def kuavo_eval_autotest(config: KuavoConfig):
             init_evt.clear()
             success_evt.clear()
             
-            #Garbage collection even under an exception
+            # 异常情况下也要清理内存 Garbage collection even under an exception
             gc.collect()
             torch.cuda.empty_cache()
             break
 
-        #Record episode result Record episode result
+        # 记录episode结果 Record episode result
         episode_end_time = datetime.datetime.now().isoformat()
         is_success = result == 1
         if is_success:
@@ -435,3 +434,4 @@ def kuavo_eval_autotest(config: KuavoConfig):
     init_service.shutdown()
     pause_sub.unregister()
     stop_sub.unregister()
+

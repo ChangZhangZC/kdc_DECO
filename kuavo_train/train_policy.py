@@ -1,10 +1,3 @@
-import sys
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
 import lerobot_patches.custom_patches  # Ensure custom patches are applied, DON'T REMOVE THIS LINE!
 from lerobot.configs.policies import PolicyFeature
 from typing import Any
@@ -19,8 +12,6 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import shutil
-import os
-import socket
 from hydra.utils import instantiate
 from diffusers.optimization import get_scheduler
 
@@ -30,12 +21,17 @@ from lerobot.datasets.sampler import EpisodeAwareSampler
 from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.utils.random_utils import set_seed
 from lerobot.policies.factory import make_pre_post_processors
+from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
+from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOConfigWrapper import CustomDECOConfigWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOProcessor import make_deco_pre_post_processors
 from kuavo_train.wrapper.dataset.LeRobotDatasetWrapper import CustomLeRobotDataset
 from kuavo_train.utils.augmenter import crop_image, resize_image, DeterministicAugmenterColor
 from kuavo_train.utils.utils import save_rng_state, load_rng_state
 from lerobot.policies.act.modeling_act import ACTPolicy
 from diffusers.optimization import get_scheduler
-from kuavo_train.utils.transforms import ImageTransforms, ImageTransformsConfig, ImageTransformConfig
+from utils.transforms import ImageTransforms, ImageTransformsConfig, ImageTransformConfig
 
 from functools import partial
 from contextlib import nullcontext
@@ -88,7 +84,7 @@ def build_delta_timestamps(dataset_metadata, policy_cfg):
 
 def build_optimizer_and_scheduler(policy, cfg, total_frames):
     """Return optimizer and scheduler."""
-    optimizer = policy.config.get_optimizer_preset().build(policy.parameters())
+    optimizer = policy.config.get_optimizer_preset().build(policy.get_optim_params())
     # If `max_training_step` is specified, it takes precedence; 
     # otherwise, the value is automatically determined based on `max_epoch`.
     if cfg.training.max_training_step is None:
@@ -111,17 +107,20 @@ def build_optimizer_and_scheduler(policy, cfg, total_frames):
     return optimizer, lr_scheduler
 
 def build_policy(name, policy_cfg):
-    if name == "diffusion":
-        from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
+    policy = {
+        "diffusion": CustomDiffusionPolicyWrapper,
+        "act": CustomACTPolicyWrapper,
+        "deco": CustomDECOPolicyWrapper,
+        "DECO": CustomDECOPolicyWrapper,
+    }[name](policy_cfg)
+    return policy
 
-        return CustomDiffusionPolicyWrapper(policy_cfg)
-    if name == "act":
-        from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+def build_pre_post_processors(policy_cfg, dataset_stats):
+    if isinstance(policy_cfg, CustomDECOConfigWrapper):
+        return make_deco_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
+    return make_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
 
-        return CustomACTPolicyWrapper(policy_cfg)
-    raise KeyError(f"Unsupported policy name: {name}")
-
-def build_policy_config(cfg, input_features, output_features):
+def build_policy_config(cfg, input_features, output_features, dataset_hz):
     def _normalize_feature_dict(d: Any) -> dict[str, PolicyFeature]:
         if isinstance(d, DictConfig):
             d = OmegaConf.to_container(d, resolve=True)
@@ -133,15 +132,28 @@ def build_policy_config(cfg, input_features, output_features):
             for k, v in d.items()
         }
 
-    policy_cfg = instantiate(
-        cfg.policy,
-        input_features=input_features,
-        output_features=output_features,
-        device=cfg.training.device,
-    )
-                
+    instantiate_kwargs = {
+        "input_features": input_features,
+        "output_features": output_features,
+        "device": cfg.training.device,
+    }
+    # DECO 的时间语义必须来自当前 LeRobot 数据集，而不是由用户在 policy YAML
+    # 重复填写；ACT/DP 保持原有实例化参数，避免改变其他 policy 的接口。
+    if str(cfg.policy_name).lower() == "deco":
+        instantiate_kwargs["dataset_hz"] = dataset_hz
+
+    policy_cfg = instantiate(cfg.policy, **instantiate_kwargs)
+
     policy_cfg.input_features = _normalize_feature_dict(policy_cfg.input_features)
     policy_cfg.output_features = _normalize_feature_dict(policy_cfg.output_features)
+    if isinstance(policy_cfg, CustomDECOConfigWrapper):
+        # 在构造 policy 前统一约束完整 resume 与三类权重初始化入口，避免
+        # tactile_adapter 冻结一个未加载主干权重的随机模型。
+        policy_cfg.configure_training_initialization(
+            resume=bool(cfg.training.resume),
+            resume_timestamp=cfg.training.get("resume_timestamp"),
+            deco_init_pth_path=cfg.training.get("deco_init_pth_path"),
+        )
     return policy_cfg
 
 class AugmentationProcessorStep(ProcessorStep):
@@ -217,159 +229,8 @@ def remove_aug_step(pipeline, step_to_remove):
     else:
         print(f"Step {step_to_remove.__class__.__name__} not found in pipeline")
 
-
-def _infer_visible_gpu_count() -> int:
-    cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES", "").strip()
-    if cuda_visible_devices:
-        return max(1, len([x for x in cuda_visible_devices.split(",") if x.strip()]))
-
-    try:
-        raw = os.popen("nvidia-smi -L 2>/dev/null | wc -l").read().strip()
-        count = int(raw)
-        return max(1, count)
-    except Exception:
-        return 1
-
-
-def _normalize_gpu_ids(gpu_ids) -> list[int]:
-    if gpu_ids is None:
-        return []
-    if isinstance(gpu_ids, ListConfig):
-        gpu_ids = list(gpu_ids)
-    return [int(x) for x in gpu_ids]
-
-
-def _pick_available_master_port(preferred_port: int) -> int:
-    def _can_listen(port: int) -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("0.0.0.0", port))
-            except OSError:
-                return False
-            return True
-
-    if _can_listen(preferred_port):
-        return preferred_port
-
-    for port in range(preferred_port + 1, preferred_port + 200):
-        if _can_listen(port):
-            print(f"[WARN] LingBot master_port {preferred_port} is busy, fallback to {port}")
-            return port
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("0.0.0.0", 0))
-        port = sock.getsockname()[1]
-    print(f"[WARN] LingBot master_port {preferred_port} is busy, fallback to ephemeral port {port}")
-    return port
-
-
-def _launch_lingbot_from_policy_name(cfg: DictConfig) -> int:
-    from kuavo_train.wrapper.policy.lingbot import (
-        CustomLingbotConfigWrapper,
-        CustomLingbotPolicyWrapper,
-    )
-
-    repo_root = Path(__file__).resolve().parent.parent
-    policy_cfg = cfg.get("policy", {})
-    if isinstance(policy_cfg, DictConfig):
-        policy_cfg = OmegaConf.to_container(policy_cfg, resolve=True)
-    if policy_cfg is None:
-        policy_cfg = {}
-    if isinstance(policy_cfg, dict):
-        policy_cfg.pop("_target_", None)
-
-    legacy_cfg = cfg.get("lingbot", {})
-    if isinstance(legacy_cfg, DictConfig):
-        legacy_cfg = OmegaConf.to_container(legacy_cfg, resolve=True)
-    if legacy_cfg is None:
-        legacy_cfg = {}
-
-    lingbot_cfg = {}
-    lingbot_cfg.update(policy_cfg)
-    lingbot_cfg.update(legacy_cfg)
-
-    configured_gpu_ids = _normalize_gpu_ids(getattr(cfg.training, "gpu_ids", []))
-    env_overrides = dict(lingbot_cfg.get("env", {}) or {})
-    if configured_gpu_ids and "CUDA_VISIBLE_DEVICES" not in env_overrides and not os.getenv("CUDA_VISIBLE_DEVICES"):
-        env_overrides["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in configured_gpu_ids)
-    if env_overrides.get("CUDA_VISIBLE_DEVICES"):
-        os.environ["CUDA_VISIBLE_DEVICES"] = env_overrides["CUDA_VISIBLE_DEVICES"]
-
-    nproc = len(env_overrides["CUDA_VISIBLE_DEVICES"].split(",")) if env_overrides.get("CUDA_VISIBLE_DEVICES") else _infer_visible_gpu_count()
-    nnodes = int(lingbot_cfg.get("nnodes", int(os.getenv("NNODES", "1"))))
-    preferred_master_port = int(lingbot_cfg.get("master_port", int(os.getenv("MASTER_PORT", "62500"))))
-    master_port = _pick_available_master_port(preferred_master_port)
-
-    wrapper_cfg = CustomLingbotConfigWrapper(
-        lingbot_root=lingbot_cfg.get("lingbot_root", ""),
-        lerobot_root=lingbot_cfg.get("lerobot_root", ""),
-        train_entry=lingbot_cfg.get("train_entry", "kuavo_train/lingbot/tasks/vla/train_lingbotvla.py"),
-        config_path=lingbot_cfg.get("config_path", "configs/policy/lingbot/robotwin_load20000h.yaml"),
-        nnodes=nnodes,
-        node_rank=int(lingbot_cfg.get("node_rank", int(os.getenv("NODE_RANK", "0")))),
-        master_addr=lingbot_cfg.get("master_addr", os.getenv("MASTER_ADDR", "0.0.0.0")),
-        master_port=master_port,
-        dry_run=bool(lingbot_cfg.get("dry_run", False)),
-        env=env_overrides,
-    )
-
-    extra_args = list(lingbot_cfg.get("extra_args", []))
-
-    if getattr(cfg, "root", None):
-        dataset_root = Path(str(cfg.root))
-        extra_args.extend(["--data.train_path", str(dataset_root)])
-        try:
-            dataset_metadata = LeRobotDatasetMetadata(cfg.repoid, root=dataset_root)
-            state_shape = dataset_metadata.features["observation.state"]["shape"]
-            action_shape = dataset_metadata.features["action"]["shape"]
-            action_dim = int(action_shape[0]) if action_shape else 0
-            state_dim = int(state_shape[0]) if state_shape else 0
-            if action_dim > 0:
-                extra_args.extend(["--train.action_dim", str(action_dim)])
-            print(
-                f"[INFO] LingBot dataset dims from LeRobot metadata: "
-                f"state_dim={state_dim}, action_dim={action_dim}, root={dataset_root}"
-            )
-        except Exception as exc:
-            print(f"[WARN] Failed to infer LingBot dataset dims from {dataset_root}: {exc!r}")
-
-    if getattr(cfg.training, "batch_size", None):
-        micro_bs = int(cfg.training.batch_size)
-        extra_args.extend(["--train.micro_batch_size", str(micro_bs)])
-        extra_args.extend(["--train.global_batch_size", str(micro_bs * nproc * nnodes)])
-
-    resume_enabled = bool(getattr(cfg.training, "resume", False))
-    resume_timestamp = str(getattr(cfg.training, "resume_timestamp", "") or "").strip()
-    if resume_enabled and resume_timestamp:
-        resume_run_dir = resume_timestamp if resume_timestamp.startswith("run_") else f"run_{resume_timestamp}"
-        output_dir = Path(cfg.training.output_directory) / resume_run_dir
-        print(f"[INFO] LingBot resume enabled, reusing output_dir: {output_dir}")
-    else:
-        output_dir = Path(cfg.training.output_directory) / f"run_{cfg.timestamp}"
-    extra_args.extend(["--train.output_dir", str(output_dir)])
-
-    if lingbot_cfg.get("model_path"):
-        extra_args.extend(["--model.model_path", str(lingbot_cfg["model_path"])])
-    if lingbot_cfg.get("tokenizer_path"):
-        extra_args.extend(["--model.tokenizer_path", str(lingbot_cfg["tokenizer_path"])])
-    if lingbot_cfg.get("moge_path"):
-        extra_args.extend(["--model.moge_path", str(lingbot_cfg["moge_path"])])
-    if lingbot_cfg.get("morgbd_path"):
-        extra_args.extend(["--model.morgbd_path", str(lingbot_cfg["morgbd_path"])])
-
-    print(f"[INFO] policy_name=lingbot detected, dispatching via wrapper. extra_args={extra_args}")
-    runner = CustomLingbotPolicyWrapper(wrapper_cfg)
-    return runner.launch(repo_root=repo_root, extra_args=extra_args)
-
 @hydra.main(config_path="../configs/policy/", config_name="diffusion_config", version_base=None)
 def main(cfg: DictConfig):
-    if cfg.policy_name == "lingbot":
-        code = _launch_lingbot_from_policy_name(cfg)
-        if code != 0:
-            raise RuntimeError(f"LingBot training failed with exit code {code}")
-        return
-
     set_seed(cfg.training.seed)
 
     # Setup output directory
@@ -392,12 +253,12 @@ def main(cfg: DictConfig):
     print(f"Output features: {output_features}")
 
     # instantiate the policy
-    policy_cfg = build_policy_config(cfg, input_features, output_features)
+    policy_cfg = build_policy_config(cfg, input_features, output_features, dataset_metadata.fps)
     print("policy_cfg", policy_cfg)
 
     # Build policy
     policy = build_policy(cfg.policy_name, policy_cfg)
-    preprocessor, postprocessor = make_pre_post_processors(policy_cfg, dataset_stats=dataset_metadata.stats)
+    preprocessor, postprocessor = build_pre_post_processors(policy_cfg, dataset_stats=dataset_metadata.stats)
     preprocessor.save_pretrained(output_directory)
     postprocessor.save_pretrained(output_directory)
     optimizer, lr_scheduler = build_optimizer_and_scheduler(policy, cfg, dataset_metadata.info["total_frames"])
@@ -470,8 +331,9 @@ def main(cfg: DictConfig):
                 
             print(f"Resumed training from epoch {start_epoch}, step {steps}")
         except Exception as e:
-            print("Failed to load checkpoint:", e)
-            return
+            # resume 声明的是同一次训练的完整恢复；加载失败时禁止静默退化为
+            # 随机初始化的新训练，尤其避免 adapter 阶段冻结随机主干。
+            raise RuntimeError(f"Failed to resume training from {resume_path}") from e
     else:
         print("Training from scratch!")
 
@@ -489,14 +351,30 @@ def main(cfg: DictConfig):
         image_transforms=None,
     )
     # Training loop
-    aug_step = insert_before_normalizer(preprocessor, AugmentationProcessorStep(image_transforms, dataset.meta.camera_keys))  # just for training
+    # DECO 只增强 checkpoint 明确声明的三路 RGB；数据集中保留的 depth/其他相机不进入视觉前端。
+    augmentation_camera_keys = (
+        list(policy_cfg.rgb_keys)
+        if isinstance(policy_cfg, CustomDECOConfigWrapper)
+        else dataset.meta.camera_keys
+    )
+    aug_step = insert_before_normalizer(
+        preprocessor,
+        AugmentationProcessorStep(image_transforms, augmentation_camera_keys),
+    )  # just for training
     
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    # DECO 的尾帧丢弃数由 chunk_size 派生，因此必须读取实例化后的 policy_cfg；
+    # 对 ACT/DP 则继续兼容其 YAML 中已有的 drop_n_last_frames。
+    drop_n_last_frames = getattr(
+        policy_cfg,
+        "drop_n_last_frames",
+        cfg.policy.get("drop_n_last_frames"),
+    )
+    if drop_n_last_frames is not None:
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
             dataset.meta.episodes["dataset_to_index"],
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            drop_n_last_frames=drop_n_last_frames,
             shuffle=True,
         )
     else:

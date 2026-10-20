@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-KuavoRobot control command transmitter
-Used to send control instructions to the running script.py process
+Kuavo机器人控制指令发送器
+用于向正在运行的script.py进程发送控制指令
 
-Usage example:
-  python controller.py pause    #Pause the robot arm movement
-  python controller.py resume   #Restoring robotic arm motion
-  python controller.py stop     #Stop the robot arm movement
-  python controller.py status   #View process status
+使用示例:
+  python controller.py pause    # 暂停机械臂运动
+  python controller.py resume   # 恢复机械臂运动
+  python controller.py stop     # 停止机械臂运动
+  python controller.py status   # 查看进程状态
 """
 
 import os
@@ -19,20 +19,20 @@ from pathlib import Path
 
 def find_example_process():
     """
-    Find the running script.py process
+    查找正在运行的script.py进程
     
     Returns:
-        psutil.Process: The process object found, returns None if not found
+        psutil.Process: 找到的进程对象，如果没找到返回None
     """
     target_processes = []
     
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            #Check process name or command line arguments
+            # 检查进程名或命令行参数
             if (proc.info['name'] == 'python' or proc.info['name'] == 'python3') and proc.info['cmdline']:
                 cmdline = ' '.join(proc.info['cmdline'])
                 
-                #Exactly match the kuavo_deploy/src/scripts/script.py path
+                # 精确匹配 kuavo_deploy/src/scripts/script.py 路径
                 if 'kuavo_deploy/src/scripts/script.py' in cmdline:
                     target_processes.append((proc, 'exact'))
                     
@@ -40,78 +40,78 @@ def find_example_process():
             continue
 
     if len(target_processes) != 1:
-        print(f"❌ Found {len(target_processes)} matching processes, please use the --pid parameter to specify the process ID")
+        print(f"❌ 找到 {len(target_processes)} 个匹配的进程，请使用 --pid 参数指定进程ID")
         sys.exit(1)
     else:
         return target_processes[0][0]
 
 def send_signal_to_process(proc, signal_type):
     """
-    Send a signal to the specified process
+    向指定进程发送信号
     
     Args:
-        proc: psutil.Processobject
-        signal_type: signal type ('pause', 'resume', 'stop')
+        proc: psutil.Process对象
+        signal_type: 信号类型 ('pause', 'resume', 'stop')
     """
     try:
         if signal_type == 'pause':
             proc.send_signal(signal.SIGUSR1)
-            print(f"✅ A pause signal has been sent to process {proc.pid}")
+            print(f"✅ 已发送暂停信号到进程 {proc.pid}")
         elif signal_type == 'resume':
             proc.send_signal(signal.SIGUSR1)
-            print(f"✅ Resume signal sent to process {proc.pid}")
+            print(f"✅ 已发送恢复信号到进程 {proc.pid}")
         elif signal_type == 'stop':
             proc.send_signal(signal.SIGUSR2)
-            print(f"✅ Stop signal sent to process {proc.pid}")
+            print(f"✅ 已发送停止信号到进程 {proc.pid}")
         else:
-            print(f"❌ Unknown signal type: {signal_type}")
+            print(f"❌ 未知的信号类型: {signal_type}")
             return False
         return True
     except psutil.NoSuchProcess:
-        print(f"❌ Process {proc.pid} does not exist")
+        print(f"❌ 进程 {proc.pid} 不存在")
         return False
     except psutil.AccessDenied:
-        print(f"❌ No permission to send signal to process {proc.pid}")
+        print(f"❌ 没有权限向进程 {proc.pid} 发送信号")
         return False
     except Exception as e:
-        print(f"❌ An error occurred while sending the signal: {e}")
+        print(f"❌ 发送信号时发生错误: {e}")
         return False
 
 def show_process_status(proc):
     """
-    Display process status information
+    显示进程状态信息
     
     Args:
-        proc: psutil.Processobject
+        proc: psutil.Process对象
     """
     try:
-        print(f"📊 Process information:")
+        print(f"📊 进程信息:")
         print(f"  PID: {proc.pid}")
-        print(f"Status: {proc.status()}")
-        print(f"Creation time: {proc.create_time()}")
-        print(f"CPU usage: {proc.cpu_percent()}%")
-        print(f"Memory usage: {proc.memory_info().rss/1024/1024:.1f} MB")
-        print(f"  Command line: {' '.join(proc.cmdline())}")
+        print(f"  状态: {proc.status()}")
+        print(f"  创建时间: {proc.create_time()}")
+        print(f"  CPU使用率: {proc.cpu_percent()}%")
+        print(f"  内存使用: {proc.memory_info().rss / 1024 / 1024:.1f} MB")
+        print(f"  命令行: {' '.join(proc.cmdline())}")
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-        print(f"❌ Unable to obtain process information: {e}")
+        print(f"❌ 无法获取进程信息: {e}")
 
 def main():
-    """main function"""
+    """主函数"""
     parser = argparse.ArgumentParser(
-        description="Kuavo robot control command transmitter",
+        description="Kuavo机器人控制指令发送器",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Usage example:
-  python controller.py pause    #Pause the robot arm movement
-  python controller.py resume   #Restoring robotic arm motion
-  python controller.py stop     #Stop the robot arm movement
-  python controller.py status   #View process status
+使用示例:
+  python controller.py pause    # 暂停机械臂运动
+  python controller.py resume   # 恢复机械臂运动
+  python controller.py stop     # 停止机械臂运动
+  python controller.py status   # 查看进程状态
 
-Control instruction description:
-  pause   - Pause the robot arm movement (send SIGUSR1 signal)
-  resume  - Resume robot arm movement (send SIGUSR1 signal)
-  stop    - Stop the robot arm movement (send SIGUSR2 signal)
-  status  - Display the status of the currently running script.py process
+控制指令说明:
+  pause   - 暂停机械臂运动 (发送SIGUSR1信号)
+  resume  - 恢复机械臂运动 (发送SIGUSR1信号)
+  stop    - 停止机械臂运动 (发送SIGUSR2信号)
+  status  - 显示当前运行的script.py进程状态
         """
     )
     
@@ -119,60 +119,60 @@ Control instruction description:
         "command",
         type=str,
         choices=["pause", "resume", "stop", "status"],
-        help="control instructions"
+        help="控制指令"
     )
     
     parser.add_argument(
         "--pid",
         type=int,
-        help="Specify the process PID (if not specified, the script.py process will be automatically found)"
+        help="指定进程PID (如果不指定，将自动查找script.py进程)"
     )
     
     args = parser.parse_args()
     
-    #Find target process
+    # 查找目标进程
     target_proc = None
     
     if args.pid:
-        #Use specified PID
+        # 使用指定的PID
         try:
             target_proc = psutil.Process(args.pid)
-            #Verify that the process is running script.py
+            # 验证进程是否运行script.py
             cmdline = ' '.join(target_proc.cmdline())
             if 'script.py' not in cmdline:
-                print(f"❌ The process {args.pid} is not the script.py process")
-                print(f"Command line: {cmdline}")
+                print(f"❌ 进程 {args.pid} 不是script.py进程")
+                print(f"   命令行: {cmdline}")
                 sys.exit(1)
         except psutil.NoSuchProcess:
-            print(f"❌ Process {args.pid} does not exist")
+            print(f"❌ 进程 {args.pid} 不存在")
             sys.exit(1)
         except psutil.AccessDenied:
-            print(f"❌ No permission to access process {args.pid}")
+            print(f"❌ 没有权限访问进程 {args.pid}")
             sys.exit(1)
     else:
-        #Automatically find script.py process
-        print("🔍 Looking for running script.py processes...")
+        # 自动查找script.py进程
+        print("🔍 正在查找运行中的script.py进程...")
         target_proc = find_example_process()
         
         if not target_proc:
-            print("❌ The running script.py process was not found")
-            print("💡 Please make sure script.py is running, or use the --pid parameter to specify the process ID")
-            print("💡 Expected process path: kuavo_deploy/src/scripts/script.py")
+            print("❌ 未找到运行中的script.py进程")
+            print("💡 请确保script.py正在运行，或使用 --pid 参数指定进程ID")
+            print("💡 预期的进程路径: kuavo_deploy/src/scripts/script.py")
             sys.exit(1)
         
-        #Display found process information
+        # 显示找到的进程信息
         cmdline = ' '.join(target_proc.cmdline())
         if 'kuavo_deploy/src/scripts/script.py' in cmdline:
-            print(f"✅ Find the exact matching process: {target_proc.pid}")
+            print(f"✅ 找到精确匹配的进程: {target_proc.pid}")
         else:
-            print(f"⚠️ Found partial matching process: {target_proc.pid}")
-            print(f"Command line: {cmdline}")
+            print(f"⚠️  找到部分匹配的进程: {target_proc.pid}")
+            print(f"   命令行: {cmdline}")
     
-    #execute command
+    # 执行命令
     if args.command == "status":
         show_process_status(target_proc)
     else:
-        print(f"🎯 Target process: {target_proc.pid}")
+        print(f"🎯 目标进程: {target_proc.pid}")
         success = send_signal_to_process(target_proc, args.command)
         if not success:
             sys.exit(1)

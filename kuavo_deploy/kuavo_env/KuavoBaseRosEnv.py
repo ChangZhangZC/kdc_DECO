@@ -17,52 +17,84 @@ import torch
 from torchvision.transforms.functional import to_tensor
 from kuavo_deploy.utils.obs_buffer import ObsBuffer
 from kuavo_deploy.utils.signal_controller import ControlSignalManager
+from kuavo_deploy.utils.deco_obs_action import (
+    DECO_18D_LAYOUT,
+    DECO_28D_LAYOUT,
+    build_deco_18d_state,
+    build_deco_28d_state,
+    decode_deco_18d_action,
+    decode_deco_28d_action,
+    is_deco_layout,
+)
 
 
 log_robot = setup_logger("robot")
 
 
 class KuavoBaseRosEnv(gym.Env):
-    """Kuavo robot ROS environment base class"""
+    """Kuavo机器人ROS环境基类"""
 
     def __init__(self, config: KuavoConfig):
-        self._set_config(config.env)
+        self._set_config(config.env, config.deco)
         
-        #Initialize ROS manager Initialize ROS manager
+        # 初始化ROS管理器 Initialise ROS manager
         self.ros_manager = ROSManager()
         self.control_signal_manager = ControlSignalManager()
         
-        #Initialize other components Initialize other components
+        # 初始化其他组件 Initialise other components
         self.bridge = CvBridge()
         self._set_observation_space()
         self._set_action_space()
         self._init_kuavo_sdk()
         self._set_ros_topics()
         
-        #Wait for ROS topics to initialize Wait for ROS topics to initialise
+        # 等待ROS话题初始化 Wait for ROS topics to initialise
         log_robot.info(f"Inializing done!")
         print(f"Inializing done!")
 
-    def _set_config(self, config_kuavo_env):
-        """Set configuration parameters Set configuration parameters"""
+    def _set_config(self, config_kuavo_env, config_deco=None):
+        """设置配置参数 Set configuration parameters"""
         self.ros_rate = config_kuavo_env.ros_rate
         self.control_mode = config_kuavo_env.control_mode
         self.obs_key_map = config_kuavo_env.obs_key_map
         self.only_arm = config_kuavo_env.only_arm
         self.eef_type = config_kuavo_env.eef_type
+        self.state_layout = config_kuavo_env.state_layout
         self.which_arm = config_kuavo_env.which_arm
         self.qiangnao_dof_needed = config_kuavo_env.qiangnao_dof_needed
+        if is_deco_layout(self.state_layout):
+            head_control = config_deco.head_control
+            self.head_control_mode = head_control.mode
+            self.head_initial_value = np.asarray(head_control.initial_value, dtype=np.float32)
+            self.head_fixed_value = (
+                None
+                if head_control.fixed_value is None
+                else np.asarray(head_control.fixed_value, dtype=np.float32)
+            )
+            # 单一模式同时决定 observation 来源，禁止“固定 observation + policy 动作”等矛盾组合。
+            self.head_state_source = "fixed_config" if head_control.mode == "fixed" else "live_joint_q"
+            log_robot.info(
+                "DECO head control configured: "
+                f"mode={self.head_control_mode}, observation_source={self.head_state_source}, "
+                f"initial_value_rad={self.head_initial_value.tolist()}"
+            )
+        else:
+            # ACT/DP 继续沿用原 head_init reset 语义，不接入 DECO policy 控头逻辑。
+            self.head_control_mode = "legacy_reset_only"
+            self.head_initial_value = config_kuavo_env.head_init
+            self.head_fixed_value = config_kuavo_env.head_init
+            self.head_state_source = "live_joint_q"
 
         self.is_binary = config_kuavo_env.is_binary
-        self.head_init = config_kuavo_env.head_init
+        self.head_init = self.head_initial_value
         self.arm_init = np.array([0]*14)
 
 
-        #Obtain limit values from the configuration
+        # 从配置中获取limits部分 Obtain limit values from the configuration
         self.limits = config_kuavo_env.limits
         self.obs_key_map = config_kuavo_env.obs_key_map
         self.obs_buffer = ObsBuffer(
-            config=config_kuavo_env, 
+            config=config_kuavo_env,
             obs_key_map=self.obs_key_map,
         )
         self.arm_state_keys = config_kuavo_env.arm_state_keys # observation.state key ordering
@@ -82,13 +114,24 @@ class KuavoBaseRosEnv(gym.Env):
             grip_min, grip_max = limits['gripper']['min'], limits['gripper']['max']
         else:
             grip_min, grip_max = [], []
-        if self.which_arm == 'both':
+        head_min = limits.get('head_q', {}).get('min', [-1.0, -1.0])
+        head_max = limits.get('head_q', {}).get('max', [1.0, 1.0])
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            # DECO 灵巧手 state: 左臂 7 + 左手 6 + 右臂 7 + 右手 6 + 头部 2。
+            obs_low.extend(joint_min[:7] + grip_min[:6] + joint_min[7:14] + grip_min[6:12] + head_min[:2])
+            obs_high.extend(joint_max[:7] + grip_max[:6] + joint_max[7:14] + grip_max[6:12] + head_max[:2])
+        elif self.state_layout == DECO_18D_LAYOUT:
+            # DECO 二爪夹 state: 左臂 7 + 左夹爪 1 + 右臂 7 + 右夹爪 1 + 头部 2。
+            obs_low.extend(joint_min[:7] + grip_min[:1] + joint_min[7:14] + grip_min[1:2] + head_min[:2])
+            obs_high.extend(joint_max[:7] + grip_max[:1] + joint_max[7:14] + grip_max[1:2] + head_max[:2])
+        elif self.which_arm == 'both':
             obs_low.extend(joint_min[:7]+grip_min[:1]+joint_min[7:14]+grip_min[1:2])
             obs_high.extend(joint_max[:7]+grip_max[:1]+joint_max[7:14]+grip_max[1:2])
-        if self.which_arm == 'left':
+        elif self.which_arm == 'left':
             obs_low.extend(joint_min[:7]+grip_min[:1])
             obs_high.extend(joint_max[:7]+grip_max[:1])
-        if self.which_arm == 'right':
+        elif self.which_arm == 'right':
             obs_low.extend(joint_min[7:14]+grip_min[1:2])
             obs_high.extend(joint_max[7:14]+grip_max[1:2])
 
@@ -99,7 +142,8 @@ class KuavoBaseRosEnv(gym.Env):
         obs_spaces = {}
         for key, obs_name in self.obs_key_map.items():
             if any(tag in key for tag in ['cam', 'depth']):
-                h, w = obs_name["handle"]["params"]["resize_wh"]
+                # resize_wh 沿用 OpenCV 语义：(width, height)；observation_space 需要 channel-first (C, H, W)。
+                w, h = obs_name["handle"]["params"]["resize_wh"]
                 if 'depth' in key:
                     low, high = obs_name['handle']['params']['depth_range']
                     obs_spaces[f"observation.{key}"] = gym.spaces.Box(
@@ -109,6 +153,10 @@ class KuavoBaseRosEnv(gym.Env):
                     obs_spaces[f"observation.images.{key}"] = gym.spaces.Box(
                         low=0, high=255, shape=(3, h, w), dtype=np.uint8
                     )
+            elif key == "tactile":
+                obs_spaces["observation.tactile"] = gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32
+                )
 
         # -------- Adding state space --------
         obs_spaces["observation.state"] = gym.spaces.Box(
@@ -123,8 +171,36 @@ class KuavoBaseRosEnv(gym.Env):
     def _set_action_space(self):
         limits = self.limits
 
+        if self.state_layout == DECO_28D_LAYOUT:
+            joint_min, joint_max = limits['joint_q']['min'], limits['joint_q']['max']
+            grip_min, grip_max = limits['gripper']['min'], limits['gripper']['max']
+            head_min = limits.get('head_q', {}).get('min', [-1.0, -1.0])
+            head_max = limits.get('head_q', {}).get('max', [1.0, 1.0])
+            action_low = joint_min[:7] + grip_min[:6] + joint_min[7:14] + grip_min[6:12] + head_min[:2]
+            action_high = joint_max[:7] + grip_max[:6] + joint_max[7:14] + grip_max[6:12] + head_max[:2]
+            self.action_space = gym.spaces.Box(
+                low=np.array(action_low, dtype=np.float64),
+                high=np.array(action_high, dtype=np.float64),
+                dtype=np.float64,
+            )
+            return
+
+        if self.state_layout == DECO_18D_LAYOUT:
+            joint_min, joint_max = limits['joint_q']['min'], limits['joint_q']['max']
+            grip_min, grip_max = limits['gripper']['min'], limits['gripper']['max']
+            head_min = limits.get('head_q', {}).get('min', [-1.0, -1.0])
+            head_max = limits.get('head_q', {}).get('max', [1.0, 1.0])
+            action_low = joint_min[:7] + grip_min[:1] + joint_min[7:14] + grip_min[1:2] + head_min[:2]
+            action_high = joint_max[:7] + grip_max[:1] + joint_max[7:14] + grip_max[1:2] + head_max[:2]
+            self.action_space = gym.spaces.Box(
+                low=np.array(action_low, dtype=np.float64),
+                high=np.array(action_high, dtype=np.float64),
+                dtype=np.float64,
+            )
+            return
+
         # ===============================
-        #Aux function: Constructing single arm operating range Aux function: Constructing single arm operating range
+        # 辅助函数：构造单臂动作范围 Aux function: Constructing single arm operating range
         # ===============================
         def get_arm_action_range(arm: str):
             """(low, high)"""
@@ -168,12 +244,12 @@ class KuavoBaseRosEnv(gym.Env):
             raise ValueError(f"Unsupported arm mode: {arm}")
 
         # ===============================
-        #Get arm motion range
+        # 获取臂部动作范围
         # ===============================
         arm_low, arm_high = get_arm_action_range(self.which_arm)
 
         # ===============================
-        #If a base control is included, splice the base range
+        # 如果包含 base 控制，则拼接 base 范围
         # ===============================
         if not self.only_arm:
             base_low, base_high = limits['base']['min'], limits['base']['max']
@@ -181,7 +257,7 @@ class KuavoBaseRosEnv(gym.Env):
             arm_high += base_high
 
         # ===============================
-        #Create a Gym Box space
+        # 创建 Gym Box 空间
         # ===============================
         self.action_space = gym.spaces.Box(
             low=np.array(arm_low, dtype=np.float64),
@@ -198,7 +274,7 @@ class KuavoBaseRosEnv(gym.Env):
         self.robot_state = KuavoRobotState()
 
     def _set_ros_topics(self):
-        """Setup ROS Topics Setup ROS Topics"""
+        """设置ROS话题 Setup ROS Topics"""
         self.rate = rospy.Rate(self.ros_rate)
         
         if self.eef_type == 'rq2f85':
@@ -207,20 +283,20 @@ class KuavoBaseRosEnv(gym.Env):
             self.lejuclaw = LejuClaw()
         elif self.eef_type == 'qiangnao':
             self.qiangnao = DexterousHand()
-        #obs buffer initialization
+        # obs buffer 初始化            
         self.obs_buffer.wait_buffer_ready()
 
 
     def reset(self, **kwargs):
-        """Reset Robot state Reset Robot state"""
+        """重置机器人状态 Reset Robot state"""
         self._enter_external_control_mode()
         self._reset_head()
         self._reset_eef()
 
-        #=== Average current observation and pose ===
+        # === 平均当前观测和位姿 ===
         avg_data = self._compute_average_state(average_num=10)
 
-        #=== Update status ===
+        # === 更新状态 ===
         self.cur_state = avg_data["state"]
         self.cur_joint_angles_action = avg_data["joint_action"]
 
@@ -230,21 +306,24 @@ class KuavoBaseRosEnv(gym.Env):
         return obs, {}
 
     # ==========================================================
-    #Subfunction 1. External control mode setting
+    # 子函数 1. 外部控制模式设置
     # ==========================================================
     def _enter_external_control_mode(self):
         self.robot.set_external_control_arm_mode()
         print("set_external_control_arm_mode", self.robot_state.arm_control_mode())
 
     # ==========================================================
-    #Subfunction 2. Head reset
+    # 子函数 2. 头部复位
     # ==========================================================
     def _reset_head(self):
-        if self.head_init is not None:
-            self.robot.control_head(self.head_init[0], self.head_init[1])
+        if self.head_initial_value is not None:
+            self.robot.control_head(
+                float(self.head_initial_value[0]),
+                float(self.head_initial_value[1]),
+            )
 
     # ==========================================================
-    #Subfunction 3. End effector (gripper) reset
+    # 子函数 3. 末端执行器（夹爪）复位
     # ==========================================================
     def _reset_eef(self):
         if self.which_arm == 'both':
@@ -266,7 +345,7 @@ class KuavoBaseRosEnv(gym.Env):
             raise KeyError(f"Unsupported arm type: {self.which_arm}")
 
     # ==========================================================
-    #Subfunction 4. Find the average state and terminal attitude
+    # 子函数 4. 求平均状态与末端姿态
     # ==========================================================
     def _compute_average_state(self, average_num=10):
         state_sum, joint_sum = None, None
@@ -283,7 +362,7 @@ class KuavoBaseRosEnv(gym.Env):
                 joint_sum += fk_joint_angles
             time.sleep(0.001)
 
-        #average calculation
+        # 平均计算
         avg_state = state_sum / average_num
         avg_joint = joint_sum / average_num
 
@@ -293,7 +372,7 @@ class KuavoBaseRosEnv(gym.Env):
         }
 
     # ==========================================================
-    #Subfunction 5. Construct the complete FK input
+    # 子函数 5. 构造完整 FK 输入
     # ==========================================================
     def _get_init_joint_angles(self, joint_q):
         # if self.which_arm == 'both':
@@ -312,10 +391,7 @@ class KuavoBaseRosEnv(gym.Env):
             raise ValueError(f"Invalid which_arm: {self.which_arm}")
     
     def check_action(self, action, mode='default'):
-        if mode == 'default':  #compare action_space
-            expected_dim = len(self.action_space.low)
-            if len(action) != expected_dim:
-                action = self._coerce_action_dim(action, expected_dim)
+        if mode == 'default':  # 比较 action_space
             if len(action) != len(self.action_space.low):
                 raise ValueError(f"action shape must be {len(self.action_space.low)}")
             if np.any(action < self.action_space.low) or np.any(action > self.action_space.high):
@@ -328,34 +404,6 @@ class KuavoBaseRosEnv(gym.Env):
 
         raise ValueError(f"Unsupported mode: {mode}")
 
-    def _coerce_action_dim(self, action, expected_dim):
-        action = np.asarray(action, dtype=np.float32).reshape(-1)
-        current_gripper = np.asarray(self.arm_state.get("gripper", [0.0, 0.0]), dtype=np.float32).reshape(-1)
-        if current_gripper.size < 2:
-            current_gripper = np.pad(current_gripper, (0, 2 - current_gripper.size), constant_values=0.0)
-
-        if self.control_mode == "joint" and expected_dim == 16 and action.size == 14:
-            coerced = np.concatenate((action[:7], current_gripper[:1], action[7:14], current_gripper[1:2]), axis=0)
-            log_robot.warning(
-                f"Coerced 14-dim joint action to 16-dim by inserting current gripper states: {current_gripper.tolist()}"
-            )
-            return coerced
-
-        if self.control_mode == "joint" and expected_dim == 8 and action.size == 14:
-            if self.which_arm == "left":
-                coerced = np.concatenate((action[:7], current_gripper[:1]), axis=0)
-            elif self.which_arm == "right":
-                coerced = np.concatenate((action[7:14], current_gripper[1:2]), axis=0)
-            else:
-                coerced = action
-            if coerced.size == expected_dim:
-                log_robot.warning(
-                    f"Coerced 14-dim joint action to {expected_dim}-dim for {self.which_arm} arm by selecting arm joints and current gripper state."
-                )
-                return coerced
-
-        return action
-
 
 
     def step(self, action):
@@ -367,33 +415,35 @@ class KuavoBaseRosEnv(gym.Env):
         log_robot.info(f"clip action: {action}, check time: {t1 - t0:.3f}s")
 
         if not self.only_arm:
-            #Get the base movement-related part of the action (the last 4 values). The last bit is used to determine whether it is movement or hand action.
+            # 获取action中base移动相关的部分（最后4个值），最后一位用于判断是移动还是手部动作
             base_action = action[-4:]
-            move_flag = base_action[-1]  #A value between 0-1, used to determine whether to perform base movement
-            if move_flag > 0.5:  #If greater than 0.5, perform base movement
-                #To perform base movement, you need to call the relevant base movement interface.
-                log_robot.info(f"➡️ Execute [Chassis Movement] (mode_flag > 0.5)")
+            move_flag = base_action[-1]  # 0-1之间的值，用于判断是否执行base移动
+            if move_flag > 0.5:  # 如果大于0.5，执行base移动
+                # 执行base移动，这里需要调用相关的base移动接口
+                log_robot.info(f"➡️  执行【底盘移动】(mode_flag > 0.5)")
                 log_robot.info(f"cmd_pos_world = [x:{base_action[0]:.4f}, y:{base_action[1]:.4f}, yaw:{base_action[2]:.4f}], move_flag={move_flag:.4f}")
                 self.robot.control_command_pose_world(base_action[0], base_action[1], 0, base_action[2])
                 self.rate.sleep()
                 self._record_sleep_time(t1)
                 return self.get_obs(), 0, False, False, {}
-            else:
-                log_robot.info(f"Whether the robot is standing: {self.robot._kuavo_core.state}, (mode_flag < 0.5)")
-                if self.robot._kuavo_core.state != 'stance':
-                    self.robot.stance()
-                    self.robot_state.wait_for_stance()
-                    log_robot.info(f"➡️ Successfully executed [Robot Stand]! (mode_flag < 0.5)")
-            #If the base movement is not performed, the hand movement is performed, and the front part of the action is used at this time.
+            # 如果不执行base移动，则执行手部动作，此时使用action的前面部分
             action = action[:-4]
 
 
-        #=== 4. Execute action ===
+        # === 4. 执行动作 ===
         t2 = time.time()
-        self.cur_joint_angles_action = np.concatenate((action[:7], action[8:15]), axis=0)
-        self.exec_action(action)
+        if is_deco_layout(self.state_layout):
+            if self.state_layout == DECO_28D_LAYOUT:
+                decoded_action = decode_deco_28d_action(action)
+            else:
+                decoded_action = decode_deco_18d_action(action)
+            self.cur_joint_angles_action = decoded_action.arm_joints
+            self.exec_deco_action(decoded_action)
+        else:
+            self.cur_joint_angles_action = np.concatenate((action[:7], action[8:15]), axis=0)
+            self.exec_action(action)
 
-        #=== 5. Delay and observation ===
+        # === 5. 延时与观测 ===
         
         self.rate.sleep()
         self._record_sleep_time(t2)
@@ -402,7 +452,7 @@ class KuavoBaseRosEnv(gym.Env):
         t4 = time.time()
         log_robot.info(f"get obs time: {t4 - t3:.3f}s")
 
-        #=== 6. Rewards and Returns ===
+        # === 6. 奖励与返回 ===
         reward = self.compute_reward()
         return obs, reward, False, False, {}
     
@@ -412,40 +462,85 @@ class KuavoBaseRosEnv(gym.Env):
         self.average_sleep_time += self.sleep_time
         log_robot.info(f"rate.sleep time: {self.sleep_time:.3f}s")
 
+    def _safe_control_arm(self, target_position):
+        try:
+            self.robot.control_arm_joint_positions(target_position)
+        except RuntimeError as e:
+            # 当机器人处于 command_pose_world 状态（底盘移动）时，无法控制手臂
+            if "must be in stance state" in str(e):
+                log_robot.warning(f"⚠️  Cannot send arm commands: Robot's current state does not allow such operation (possibly robot is not in stance state)")
+                log_robot.debug(f"   Details: {e}")
+            else:
+                raise
+
+    def exec_deco_action(self, decoded_action):
+        """执行 DECO 28D/18D action。
+
+        fixed 模式在最终机器人坐标系直接下发配置值，不经过 policy postprocessor；
+        policy 模式下发已经由调用侧 postprocessor 恢复到物理量纲的预测头部两维。
+        """
+        self._safe_control_arm(decoded_action.arm_joints)
+        self._control_deco_head(decoded_action.head_action)
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            if self.eef_type != "qiangnao":
+                raise KeyError("deco_28d action requires eef_type='qiangnao'.")
+            if decoded_action.left_hand is None or decoded_action.right_hand is None:
+                raise ValueError("deco_28d action requires left_hand and right_hand fields.")
+            target_positions = np.concatenate((decoded_action.left_hand, decoded_action.right_hand), axis=0) * 100.0
+            target_positions = np.clip(target_positions, 0.0, 100.0)
+            self.qiangnao.control(target_positions=target_positions, target_velocities=None, target_torques=None)
+            return
+
+        if self.state_layout == DECO_18D_LAYOUT:
+            if decoded_action.left_gripper is None or decoded_action.right_gripper is None:
+                raise ValueError("deco_18d action requires left_gripper and right_gripper fields.")
+            self._control_eef(decoded_action.left_gripper, decoded_action.right_gripper)
+            return
+
+        raise KeyError(f"Unsupported DECO state_layout: {self.state_layout}")
+
+    def _control_deco_head(self, policy_head_action):
+        """在所有本地/client、仿真/真机路径共享的最终出口下发头部绝对位置。"""
+
+        if self.head_control_mode == "fixed":
+            target = np.asarray(self.head_fixed_value, dtype=np.float32).reshape(-1)
+            source = "fixed_config"
+        elif self.head_control_mode == "policy":
+            target = np.asarray(policy_head_action, dtype=np.float32).reshape(-1)
+            source = "policy"
+        else:
+            raise ValueError(f"Unsupported DECO head_control mode: {self.head_control_mode!r}.")
+
+        if target.size != 2 or not np.all(np.isfinite(target)):
+            raise ValueError(
+                f"DECO head target from {source} must be finite 2D [yaw, pitch], got {target!r}."
+            )
+        self.robot.control_head(float(target[0]), float(target[1]))
+        log_robot.debug(f"DECO head command source={source}, target_rad={target.tolist()}")
+
     def exec_action(self, action):
-        """Execute arm and end-effector motion Execute arm and end-effector motion"""
+        """执行机械臂与末端执行器动作 Execute arm and end-effector motion"""
         # if not self.only_arm:
         #     return
-
-        def safe_control_arm(target_position):
-            try:
-                self.robot.control_arm_joint_positions(target_position)
-            except RuntimeError as e:
-                #Unable to control arms when robot is in command_pose_world state (chassis moving)
-                if "must be in stance state" in str(e):
-                    log_robot.warning(f"⚠️  Cannot send arm commands: Robot's current state does not allow such operation (possibly robot is not in stance state)")
-                    log_robot.debug(f"   Details: {e}")
-                else:
-                    raise
-
 
         if self.which_arm == 'both':
             left_joints, left_eef = action[:7], action[7]
             right_joints, right_eef = action[8:15], action[15]
             target_position = np.concatenate((left_joints, right_joints), axis=0)
-            safe_control_arm(target_position)
+            self._safe_control_arm(target_position)
             self._control_eef(left_eef, right_eef)
 
         elif self.which_arm == 'left':
             left_joints, left_eef = action[:7], action[7]
             target_position = np.concatenate((left_joints, self.arm_init[7:14]), axis=0)
-            safe_control_arm(target_position)
+            self._safe_control_arm(target_position)
             self._control_eef(left_eef, 0)
 
         elif self.which_arm == 'right':
             right_joints, right_eef = action[:7], action[7]
             target_position = np.concatenate((self.arm_init[:7], right_joints), axis=0)
-            safe_control_arm(target_position)
+            self._safe_control_arm(target_position)
             self._control_eef(0, right_eef)
         else:
             raise KeyError(f"Unsupported which_arm: {self.which_arm}")
@@ -453,7 +548,7 @@ class KuavoBaseRosEnv(gym.Env):
 
 
     def _control_eef(self, left_eef, right_eef):
-        """Choose end-effector based on eef_type"""
+        """根据 eef_type 控制不同的末端执行器 Choose end-effector based on eef_type"""
         if self.eef_type == 'rq2f85':
             eef_msg = JointState()
             try:
@@ -483,18 +578,29 @@ class KuavoBaseRosEnv(gym.Env):
             raise KeyError(f"Unsupported eef_type: {self.eef_type}")
 
     def compute_reward(self):
-        """Compute reward Compute reward"""
+        """计算奖励 Compute reward"""
         return 0
 
     def get_obs(self):
-        """Obtain observation image and state Obtain observation image and state"""
+        """获取观测图像及state等 Obtain observation image and state"""
         obs = {}
         self.arm_state = {}
 
         if self.frame_alignment:
             obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=1/self.ros_rate,ratio=self.ratio)
             if obs_from_buffer is None or not all(v is not None for v in obs_from_buffer.values()):
-                obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=float('inf'),ratio=self.ratio)
+                if is_deco_layout(self.state_layout):
+                    # 3View RGB 中腕部相机会随手臂快速运动。任何一路超出控制周期时，
+                    # 继续复用未对齐旧帧都会破坏视觉—动作对应关系，因此 DECO 显式失败。
+                    raise RuntimeError(
+                        "DECO 3View RGB observations are missing or not aligned within "
+                        f"{1 / self.ros_rate:.3f}s; refusing stale-frame fallback."
+                    )
+                obs_from_buffer = self.obs_buffer.get_aligned_obs(
+                    reference_keys=None,
+                    max_dt=float('inf'),
+                    ratio=self.ratio,
+                )
         else:
             obs_from_buffer = self.obs_buffer.get_latest_obs()
         
@@ -504,11 +610,37 @@ class KuavoBaseRosEnv(gym.Env):
                 obs[f"observation.{k}"] = v
             elif 'cam' in k:
                 obs[f"observation.images.{k}"] = v
+            elif k == "tactile":
+                obs["observation.tactile"] = torch.from_numpy(np.asarray(v, dtype=np.float32)).float().unsqueeze(0)
             else:
                 self.arm_state[f"{k}"] = v
 
         if self.is_binary:
             self.arm_state['gripper'] = np.where(self.arm_state['gripper']>0.5, 1, 0)
+
+        if self.state_layout == DECO_28D_LAYOUT:
+            state = build_deco_28d_state(
+                arm_joints=self.arm_state.get("joint_q"),
+                dexhand_state=self.arm_state.get("gripper"),
+                live_head_q=self.arm_state.get("head_q"),
+                fixed_head_q=self.head_fixed_value,
+                head_state_source=self.head_state_source,
+            )
+            obs["observation.state"] = torch.from_numpy(state).float().unsqueeze(0)
+            log_robot.info(f"DECO 28D STATE: {obs['observation.state']}")
+            return obs
+
+        if self.state_layout == DECO_18D_LAYOUT:
+            state = build_deco_18d_state(
+                arm_joints=self.arm_state.get("joint_q"),
+                gripper_state=self.arm_state.get("gripper"),
+                live_head_q=self.arm_state.get("head_q"),
+                fixed_head_q=self.head_fixed_value,
+                head_state_source=self.head_state_source,
+            )
+            obs["observation.state"] = torch.from_numpy(state).float().unsqueeze(0)
+            log_robot.info(f"DECO 18D STATE: {obs['observation.state']}")
+            return obs
 
         assert len(self.arm_state.keys()) >= 2, f"arm_state must have exactly 2 elements, but got {len(self.arm_state.keys())}"
 
@@ -531,7 +663,7 @@ class KuavoBaseRosEnv(gym.Env):
             else:
                 raise KeyError(f"Unsupported which_arm: {self.which_arm}")
 
-        #Splicing result
+        # 拼接结果
         obs["observation.state"] = np.concatenate(
             arm_data["left"] + arm_data["right"], axis=0
         )
@@ -541,7 +673,7 @@ class KuavoBaseRosEnv(gym.Env):
         return obs    
 
     def close(self):
-        """Close the environment and release resources Closing environment"""
+        """关闭环境，释放资源 Closing environment"""
         log_robot.info("Closing KuavoBaseRosEnv...")
         try:
             if hasattr(self, 'obs_buffer'):
@@ -566,21 +698,21 @@ class KuavoBaseRosEnv(gym.Env):
             traceback.print_exc()
 
     def __enter__(self):
-        """Context manager entry"""
+        """上下文管理器入口"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
+        """上下文管理器出口"""
         self.close()
 
 class LejuClaw:
-    """leju claw controller leju claw controller"""
+    """乐聚爪手控制器 leju claw controller"""
     def __init__(self, ros_manager=None):
         self.ros_manager = ros_manager or ROSManager()
         self._pub_leju_claw_cmd = self.ros_manager.register_publisher('/leju_claw_command', lejuClawCommand, queue_size=10)
 
     def control(self, target_positions: list, target_velocities: list = None, target_torques: list = None):
-        """Hand control"""
+        """控制双手 Hand control"""
         self._validate_inputs(target_positions, target_velocities, target_torques, 2)
         
         cmd = lejuClawCommand()
@@ -596,7 +728,7 @@ class LejuClaw:
         self._pub_leju_claw_cmd.publish(cmd)
 
     def control_left(self, target_positions: list, target_velocities: list = None, target_torques: list = None):
-        """Left hand control Left hand control"""
+        """控制左手 Left hand control"""
         self._validate_inputs(target_positions, target_velocities, target_torques, 1)
         self.control(
             [target_positions[0], 0],
@@ -605,7 +737,7 @@ class LejuClaw:
         )
 
     def control_right(self, target_positions: list, target_velocities: list = None, target_torques: list = None):
-        """Right hand control"""
+        """控制右手 Right hand control"""
         self._validate_inputs(target_positions, target_velocities, target_torques, 1)
         self.control(
             [0, target_positions[0]],
@@ -614,7 +746,7 @@ class LejuClaw:
         )
 
     def _validate_inputs(self, positions, velocities, torques, expected_len):
-        """Validate input parameters Validate input parameters"""
+        """验证输入参数 Validate input parameters"""
         assert len(positions) == expected_len, f"target_positions must be a list of length {expected_len}"
         if velocities is not None:
             assert len(velocities) == expected_len, f"target_velocities must be a list of length {expected_len}"
@@ -622,27 +754,27 @@ class LejuClaw:
             assert len(torques) == expected_len, f"target_torques must be a list of length {expected_len}"
 
     def _get_default_velocities(self, velocities, length):
-        """Obtain default velocities"""
+        """获取默认速度 Obtain default velocities"""
         if velocities is None:
             return [90] * length
         return [max(0.0, min(100.0, vel)) for vel in velocities]
 
     def _get_default_torques(self, torques, length):
-        """Obtain default torques Obtain default torques"""
+        """获取默认力矩 Obtain default torques"""
         if torques is None:
             return [1.0] * length
         return [max(0.0, min(10.0, torque)) for torque in torques]
 
     def close(self):
-        """Release resources Release resources"""
+        """释放资源 Release resources"""
         if hasattr(self, 'ros_manager'):
             self.ros_manager.close()
 
-#Usage example
+# 使用示例 Usage example
 if __name__ == "__main__":
     from kuavo_deploy.config import load_kuavo_config
     
-    #Use context manager to ensure resources are properly released Use context manager to ensure resources are properly released
+    # 使用上下文管理器确保资源正确释放 Use context manager to ensure resources are properly released
     with KuavoBaseRosEnv(load_kuavo_config()) as env:
         obs, info = env.reset()
 

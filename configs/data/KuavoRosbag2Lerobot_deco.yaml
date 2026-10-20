@@ -1,0 +1,64 @@
+hydra:
+  run:
+    dir: ./outputs/data_cvt_hydra_save/deco_singlerun/${now:%Y%m%d_%H%M%S}
+  sweep:
+    dir: ./outputs/data_cvt_hydra_save/deco_multirun/${now:%Y%m%d_%H%M%S}
+    subdir: ${hydra:job.override_dirname}
+
+
+rosbag:
+
+  rosbag_dir: /path/to/your/rosbag
+  num_used: null
+  lerobot_dir: /your/path/to/your/lerobotdata_deco/lerobot
+
+dataset:
+  # 末端执行器类型：qiangnao 使用 28D 灵巧手 schema；leju_claw 与 rq2f85 使用 18D 夹爪 schema。
+  eef_type: qiangnao
+
+  # DECO 训练数据统一下采样为 30Hz，从 head_cam_h 主时间轴首尾各丢弃的原始帧数。
+  train_hz: 30
+  sample_drop: 10
+
+  # 固定信息字段：qiangnao 左右手各使用 6 DoF。当前只允许填写 6。
+  dex_dof_needed: 6
+
+  is_binary: false
+
+  # Sim 640*480, Real 840*480
+  resize:
+    width: 640
+    height: 480
+
+deco:
+  # auto 根据 eef_type 选择 qiangnao_tactile 或 gripper_no_tactile schema。
+  end_effector_profile: auto
+
+  rgb_keys:
+    - head_cam_h
+    - wrist_cam_l
+    - wrist_cam_r
+  rgb_topics:
+    head_cam_h: /cam_h/color/image_raw/compressed
+    wrist_cam_l: /cam_l/color/image_raw/compressed
+    wrist_cam_r: /cam_r/color/image_raw/compressed
+
+  arm_action_priority:
+    - /kuavo_arm_traj_synced
+    - /kuavo_arm_traj
+    - /joint_cmd
+  hand_action_topic: /control_robot_hand_position
+  leju_claw_state_topic: /leju_claw_state
+  leju_claw_action_topic: /leju_claw_command
+  rq2f85_state_topic: /gripper/state
+  rq2f85_action_topic: /gripper/command
+
+  write_tactile: true  # 仅 qiangnao_tactile 可写入 tactile。
+  tactile_topic: /dexhand/touch_state
+  tactile_force_scale: 100.0   # normal_force / tactile_force_scale -> 牛顿量纲；默认 /100
+
+  # 输出目录存在时默认报错，避免误删已有转换结果；需要覆盖时显式打开。
+  overwrite: false
+
+  # null 表示使用脚本内默认阈值 0.15 * 10 / train_hz。
+  arm_traj_gap_threshold_s: null

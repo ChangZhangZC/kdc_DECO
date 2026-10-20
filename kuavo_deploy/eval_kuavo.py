@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-KuavoRobot control sample script (Python version)
-It is completely equivalent to the original Bash script and supports interactive control, pause, resume, stop, log viewing and other functions.
+Kuavo机器人控制示例脚本 (Python版)
+完全等价于原 Bash 脚本，支持交互控制、暂停、恢复、停止、日志查看等功能。
 Kuavo Robot Control Demostration Script (for Python)
 Equivalent to the old Bash based scripts. Supports interactive controls, pause, resume, stop, view logs, etc.
 """
@@ -15,12 +15,12 @@ import yaml
 from pathlib import Path
 from time import sleep
 import select, time, threading, queue
-#Global VariablesGlobal Variables
+# 全局变量 Global Variables
 current_proc = None
 LOG_DIR = None
 
 
-#========== Signal Processing ==========
+# ========== 信号处理 Signal Processing ==========
 def cleanup(signum, frame):
     global current_proc
     print("\n⏹️ Ctrl+C detected, stopping task")
@@ -39,7 +39,7 @@ signal.signal(signal.SIGINT, cleanup)
 signal.signal(signal.SIGTERM, cleanup)
 
 
-#========== Tool functions ==========
+# ========== 工具函数 ==========
 def print_header():
     print("=== Kuavo Robot Control Demostration ===")
     print("This script shows how to use command parameters to execute various tasks")
@@ -63,18 +63,18 @@ def ensure_log_dir(script_dir):
     return log_root
 
 
-#========== Interactive Control ==========
+# ========== 交互控制 ==========
 def input_listener(input_queue, stop_event):
-    """Background thread: continuously monitor user input"""
+    """后台线程：持续监听用户输入"""
     """Background thread: Continuously monitors user input"""
     sys.stdout.write(f"\r🟢 The task is running. Enter command to pause/stop/etc. (p/s/l/h): >")
     sys.stdout.flush()
     while not stop_event.is_set():
-        #show prompt
+        # 显示提示符
         inputok, _, _ = select.select([sys.stdin], [], [], 0.1)
         if inputok:
             line = sys.stdin.readline()
-            #print("line: ", line) # Line break
+            # print("line: ", line)  # 换行
             input_queue.put(line.strip().lower())
 
 def interactive_controller():
@@ -91,17 +91,17 @@ def interactive_controller():
     input_queue = queue.Queue()
     stop_event = threading.Event()
 
-    #Start input listening thread
+    # 启动输入监听线程
     # Starts input monitoring thread
     threading.Thread(
         target=input_listener, args=(input_queue, stop_event), daemon=True
     ).start()
 
     while True:
-        #Check child process status
+        # 检查子进程状态
         # Check subprocess status
         if current_proc.poll() is not None:
-            retcode = current_proc.returncode  #Get exit code Exit code
+            retcode = current_proc.returncode  # 获取退出码 Exit code
 
             if retcode == 0:
                 print("\n✅ The task has successfully completed")
@@ -117,8 +117,8 @@ def interactive_controller():
         try:
             cmd = input_queue.get(timeout=0.5)
         except queue.Empty:
-            continue  #No input detected, moving on...
-        # cmd = input(f"🟢 Task running (PID: {current_proc.pid}) >").strip().lower()  # Will block waiting for input
+            continue  # 无输入则继续检测进程 No input detected, moving on...
+        # cmd = input(f"🟢 任务运行中 (PID: {current_proc.pid}) > ").strip().lower()  # 会阻塞等待输入
         # if cmd != "":
             # stop_event.set()
         if cmd in ("p", "pause"):
@@ -155,7 +155,7 @@ def interactive_controller():
             print(f"❌ Unknown Command: {cmd}")
 
 
-#========== YAML parsing ==========
+# ========== YAML 解析 ==========
 def parse_config(config_path):
     try:
         with open(config_path, "r") as f:
@@ -184,14 +184,14 @@ def parse_config(config_path):
 
 def print_task_menu(config_path="<config_path>", use_color=True):
     """
-    Print the Kuavo task menu with the description first and the command line template output at the end.
+    打印 Kuavo 任务菜单，说明在前，统一在最后输出命令行模板。
     Prints Kuavo task menu, with description up front.
     
     Args:
-        config_path (str): Default configuration file path for command line template display. Default configuration file path, used for displaying this template
-        use_color (bool): Whether to use terminal color, default True. Whether color is used in terminal. Defaults to True.
+        config_path (str): 默认配置文件路径，用于命令行模板显示。 Default configuration file path, used for displaying this template
+        use_color (bool): 是否使用终端颜色，默认 True。 Whether colour is used in terminal. Defaults to True.
     """
-    #Terminal color definition Terminal color definition
+    # 终端颜色定义 Terminal colour definition
     GREEN  = "\033[32m" if use_color else ""
     BLUE   = "\033[34m" if use_color else ""
     YELLOW = "\033[33m" if use_color else ""
@@ -216,7 +216,7 @@ def print_task_menu(config_path="<config_path>", use_color=True):
         else:
             print(f"{GREEN}{idx}. {name}{RESET}")
 
-    #Unified output command line template Template
+    # 统一输出命令行模板 Template
     print(f"📋 After selection, the following command will be executed: {RESET}")
     print(f"Normal task:{RESET}")
     print(f"{YELLOW}  python kuavo_deploy/src/scripts/script.py --task <chosen_task> --config {config_path}{RESET}")
@@ -225,7 +225,7 @@ def print_task_menu(config_path="<config_path>", use_color=True):
 
 
 
-#========== Main logic ==========
+# ========== 主逻辑 Main logic ==========
 def main():
     global current_proc, LOG_DIR
 

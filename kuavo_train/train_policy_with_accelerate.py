@@ -25,12 +25,15 @@ from lerobot.utils.random_utils import set_seed
 from lerobot.policies.factory import make_pre_post_processors
 from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
 from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOConfigWrapper import CustomDECOConfigWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOProcessor import make_deco_pre_post_processors
 from kuavo_train.wrapper.dataset.LeRobotDatasetWrapper import CustomLeRobotDataset
 from kuavo_train.utils.augmenter import crop_image, resize_image, DeterministicAugmenterColor
 from kuavo_train.utils.utils import save_rng_state, load_rng_state
 from lerobot.policies.act.modeling_act import ACTPolicy
 from diffusers.optimization import get_scheduler
-from kuavo_train.utils.transforms import ImageTransforms, ImageTransformsConfig, ImageTransformConfig
+from utils.transforms import ImageTransforms, ImageTransformsConfig, ImageTransformConfig
 
 from functools import partial
 from contextlib import nullcontext
@@ -82,7 +85,7 @@ def build_delta_timestamps(dataset_metadata, policy_cfg):
 
 def build_optimizer_and_scheduler(policy, cfg, total_frames, accelerator):
     """Return optimizer and scheduler."""
-    optimizer = policy.config.get_optimizer_preset().build(policy.parameters())
+    optimizer = policy.config.get_optimizer_preset().build(policy.get_optim_params())
     # If `max_training_step` is specified, it takes precedence; 
     # otherwise, the value is automatically determined based on `max_epoch`.
     if cfg.training.max_training_step is None:
@@ -110,10 +113,17 @@ def build_policy(name, policy_cfg):
     policy = {
         "diffusion": CustomDiffusionPolicyWrapper,
         "act": CustomACTPolicyWrapper,
+        "deco": CustomDECOPolicyWrapper,
+        "DECO": CustomDECOPolicyWrapper,
     }[name](policy_cfg)
     return policy
 
-def build_policy_config(cfg, input_features, output_features):
+def build_pre_post_processors(policy_cfg, dataset_stats):
+    if isinstance(policy_cfg, CustomDECOConfigWrapper):
+        return make_deco_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
+    return make_pre_post_processors(policy_cfg, dataset_stats=dataset_stats)
+
+def build_policy_config(cfg, input_features, output_features, dataset_hz):
     def _normalize_feature_dict(d: Any) -> dict[str, PolicyFeature]:
         if isinstance(d, DictConfig):
             d = OmegaConf.to_container(d, resolve=True)
@@ -125,15 +135,26 @@ def build_policy_config(cfg, input_features, output_features):
             for k, v in d.items()
         }
 
-    policy_cfg = instantiate(
-        cfg.policy,
-        input_features=input_features,
-        output_features=output_features,
-        device=cfg.training.device,
-    )
-                
+    instantiate_kwargs = {
+        "input_features": input_features,
+        "output_features": output_features,
+        "device": cfg.training.device,
+    }
+    # DECO 的采样频率由数据集 metadata 提供并随 checkpoint 保存；其他 policy
+    # 不接收该字段，保持原有训练配置兼容性。
+    if str(cfg.policy_name).lower() == "deco":
+        instantiate_kwargs["dataset_hz"] = dataset_hz
+
+    policy_cfg = instantiate(cfg.policy, **instantiate_kwargs)
+
     policy_cfg.input_features = _normalize_feature_dict(policy_cfg.input_features)
     policy_cfg.output_features = _normalize_feature_dict(policy_cfg.output_features)
+    if isinstance(policy_cfg, CustomDECOConfigWrapper):
+        policy_cfg.configure_training_initialization(
+            resume=bool(cfg.training.resume),
+            resume_timestamp=cfg.training.get("resume_timestamp"),
+            deco_init_pth_path=cfg.training.get("deco_init_pth_path"),
+        )
     return policy_cfg
 
 class AugmentationProcessorStep(ProcessorStep):
@@ -243,11 +264,11 @@ def main(cfg: DictConfig):
     output_features = {k: ft for k, ft in features.items() if ft.type is FeatureType.ACTION}
 
     # instantiate the policy
-    policy_cfg = build_policy_config(cfg, input_features, output_features)
+    policy_cfg = build_policy_config(cfg, input_features, output_features, dataset_metadata.fps)
     # Build policy
     policy = build_policy(cfg.policy_name, policy_cfg)
     accelerator.wait_for_everyone()
-    preprocessor, postprocessor = make_pre_post_processors(policy_cfg, dataset_stats=dataset_metadata.stats)
+    preprocessor, postprocessor = build_pre_post_processors(policy_cfg, dataset_stats=dataset_metadata.stats)
     if accelerator.is_main_process:
         preprocessor.save_pretrained(output_directory)
         postprocessor.save_pretrained(output_directory)
@@ -278,14 +299,29 @@ def main(cfg: DictConfig):
     )
     accelerator.wait_for_everyone()
     # Training loop
-    aug_step = insert_before_normalizer(preprocessor, AugmentationProcessorStep(image_transforms, dataset.meta.camera_keys))  # just for training
+    # DECO 只增强 checkpoint 明确声明的三路 RGB；数据集中保留的 depth/其他相机不进入视觉前端。
+    augmentation_camera_keys = (
+        list(policy_cfg.rgb_keys)
+        if isinstance(policy_cfg, CustomDECOConfigWrapper)
+        else dataset.meta.camera_keys
+    )
+    aug_step = insert_before_normalizer(
+        preprocessor,
+        AugmentationProcessorStep(image_transforms, augmentation_camera_keys),
+    )  # just for training
     
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    # 使用实例化后的派生值，确保删除 DECO YAML 信息字段后仍丢弃 chunk 尾部帧。
+    drop_n_last_frames = getattr(
+        policy_cfg,
+        "drop_n_last_frames",
+        cfg.policy.get("drop_n_last_frames"),
+    )
+    if drop_n_last_frames is not None:
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
             dataset.meta.episodes["dataset_to_index"],
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            drop_n_last_frames=drop_n_last_frames,
             shuffle=True,
         )
     else:
@@ -329,7 +365,8 @@ def main(cfg: DictConfig):
                 best_loss = latest_training_state["best_loss"]
                 accelerator.print(f"Resumed training from epoch {start_epoch}, step {steps}, best_loss {best_loss}")
         except Exception as e:
-            accelerator.print("Failed to load checkpoint:", e, " Starting training from scratch.")
+            # 完整 resume 失败后必须终止，不能把随机初始化模型当作新 run 继续训练。
+            raise RuntimeError(f"Failed to resume training from {resume_path}") from e
     else:
         accelerator.print("Training from scratch!")
 

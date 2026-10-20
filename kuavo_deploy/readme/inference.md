@@ -300,18 +300,7 @@ env_name: Kuavo-Real
 - Model files are complete
 - Python dependencies are installed
 
-## 🐛 Troubleshooting
-
-## LingBot deployment supplement
-
-When `inference.policy_type=lingbot` is set in `configs/deploy/kuavo_env.yaml`:
-
-- You can use `inference.pretrained_path` to directly specify the `hf_ckpt` path exported by LingBot
-- A text task description can be passed using `inference.task_prompt`
-- Custom normalized statistics file can be specified using `inference.lingbot_norm_stats_file`
-- The entry point for the adaptation code is `kuavo_deploy/utils/lingbot_adapter.py`
-
-For a real robot deployment example, see the warehouse root directory `README_LINGBOT_REAL_TEST.md`.
+## Troubleshooting
 
 ### Common Issues
 

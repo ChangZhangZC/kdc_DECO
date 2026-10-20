@@ -6,27 +6,26 @@ hydra:  # Hydra config directory, for parameter checking only
     subdir: ${hydra:job.override_dirname}
 
 
-#Convert kuavo rosbag data into lerobot-parquet format configuration file
-#Please pay attention! ! !
-#The data conversion code of this branch is updated simultaneously with the lerobot version, and currently supports lerobot version 0.4.2
-#Due to version changes, the data conversion code, training, and inference codes have undergone major changes. Please be sure to install and use the lerobot0.4.2 version of the code for data conversion.
-#lerobot address: https://github.com/huggingface/lerobot
+# kuavo rosbag to lerobot-parquet data conversion
+# Important!!!
+# This branch syncs with lerobot version, with the expected lerobot version being 0.4.1 right now
+# Due to the version changes, the data conversion, training as well as inference codes have major revisions! Please use lerobot0.4.1 based data conversion scripts!
+# lerobot repository: https://github.com/huggingface/lerobot
 
 rosbag:
-  rosbag_dir: /path/to/your/rosbag #Directory where rosbag files are stored
-  num_used: null #The number of rosbags used (if set to any number, random sampling will be selected), null means using all rosbags
-  lerobot_dir: /your/path/to/your/lerobotdata/  #The directory where the converted lerobot files are saved will generate a lerobot subdirectory in this directory and store the corresponding data.
-  chunk_size: 100  #This is the size setting that currently uses streaming to read the bag and process it in blocks. It has nothing to do with the one that imitates learning action blocks.
+  rosbag_dir: /path/to/your/rosbag # rosbag file directory
+  num_used: null # Quantities of rosbag used (will randomly choose the selected amount of files). null denotes all rosbags
+  lerobot_dir: /your/path/to/your/lerobotdata/  # Lerobot output directory after conversion. The lerobot folder will be created and all converted data will be saved here
 
 dataset:
   #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   only_arm: true  # Default is true, whether to use only arm data. Setting this to true automatically ignores all lower limb data.
   #!!!!!!!!!!!!Should be true for all tasks in this competition!!!!!!!!!!!!!!!
   #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  eef_type: leju_claw #End effector type, simulation selection: rq2f85, real machine optional: leju_claw, (gripper) qiangnao, (dexterous hand)
-  which_arm: right  #Which arm's joint + image data is needed, optional: left, right, both. Note that the image data will also include the head camera image.
-  use_depth: False  #Do you need depth image data? Depth image data corresponding to the upper arm. Both act and dp of this branch support depth images.
-  depth_range: [0, 1500]  #The clipping range of the depth map, in millimeters, will be used for normalization
+  eef_type: rq2f85 # End-effector type. rq2f85 for simulation. Real-device options being leju_claw (claw, used in this competition) or qiangnao (dexhand)
+  which_arm: both  # Which arm joint + image data to use. Available options:left, right, both. Head cam data will be included regardless
+  use_depth: true  # Whether to enable depth, according to which cameras to be used from above. The act and dp policies in this branch all have depth support.
+  depth_range: [0, 1500]  # Depth image crop area, in mm. Used for normalisation.
  
   task_description: "Pick and Place" # Task description, change if desired
 
@@ -48,8 +47,10 @@ dataset:
 
 
   resize:
-    width: 848  #Image scaling width, please check first (recommended browser foxglove tool) the original size of the image in rosbag to avoid problems such as blurring or stretching deformation caused by enlarging or reducing.
-    height: 480  #Image zoom height. Please check first (recommended browser foxglove tool) the original size of the image in rosbag to avoid problems such as blurring or stretching deformation caused by enlarging or reducing.
+    width: 640  # Image width scaling. Please check the original dimensions of the image in ROSBAG first (using tools like FoxGlove)
+    # to avoid blurring or stretching distortion caused by enlarging or shrinking.
+    height: 480  # Image height scaling. Please check the original dimensions of the image in ROSBAG first (using tools like FoxGlove)
+    # to avoid blurring or stretching distortion caused by enlarging or shrinking.
 
 
 

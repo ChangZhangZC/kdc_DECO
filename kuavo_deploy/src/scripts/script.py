@@ -1,13 +1,13 @@
 """
-Robot control sample program
-Provides functions such as robotic arm motion control, trajectory playback, etc.
+机器人控制示例程序
+提供机械臂运动控制、轨迹回放等功能
 
-Usage example:
-  python scripts.py --task go --config /path/to/custom_config.yaml"                   #First interpolate to the position of the first frame of the bag, then play back the bag and return to the working position.
-  python scripts.py --task run --config /path/to/custom_config.yaml"                  #Run the model directly from the current location
-  python scripts.py --task go_run --config /path/to/custom_config.yaml"               #Arrive at work and run the model directly
-  python scripts.py --task here_run --config /path/to/custom_config.yaml"             #Interpolation to the last frame state of the bag starts running
-  python scripts.py --task back_to_zero --config /path/to/custom_config.yaml"         #After interrupting model inference, turn the bag upside down and return it to position 0.
+使用示例:
+  python scripts.py --task go --config /path/to/custom_config.yaml"                   # 先插值到bag第一帧的位置，再回放bag包前往工作位置
+  python scripts.py --task run --config /path/to/custom_config.yaml"                  # 从当前位置直接运行模型
+  python scripts.py --task go_run --config /path/to/custom_config.yaml"               # 到达工作位置直接运行模型
+  python scripts.py --task here_run --config /path/to/custom_config.yaml"             # 插值至bag的最后一帧状态开始运行
+  python scripts.py --task back_to_zero --config /path/to/custom_config.yaml"         # 中断模型推理后，倒放bag包回到0位
 """
 
 import rospy
@@ -33,11 +33,11 @@ import traceback
 
 from std_msgs.msg import Bool
 
-#Configuration log
-log_model = setup_logger("model", "DEBUG")  #Web logs Web logs
-log_robot = setup_logger("robot", "DEBUG")  #Robot logs Robot logs
+# 配置日志
+log_model = setup_logger("model", "DEBUG")  # 网络日志 Web logs
+log_robot = setup_logger("robot", "DEBUG")  # 机器人日志 Robot logs
 
-#control variables
+# 控制变量
 class ArmMoveController:
     def __init__(self):
         self.paused = False
@@ -67,17 +67,17 @@ class ArmMoveController:
         with self.lock:
             return self.should_stop
 
-#Controller instance
+# 控制器实例
 arm_controller = ArmMoveController()
 
-#ROS pause and stop publishers ROS pause and stop publishers
+# Ros发布暂停/停止信号 ROS pause and stop publishers
 pause_pub = rospy.Publisher('/kuavo/pause_state', Bool, queue_size=1)
 stop_pub = rospy.Publisher('/kuavo/stop_state', Bool, queue_size=1)
 
 def signal_handler(signum, frame):
-    """Signal handler Signal handler"""
+    """信号处理器 Signal handler"""
     log_robot.info(f"🔔 Received signal: {signum}")
-    if signum == signal.SIGUSR1:  #pause/resume
+    if signum == signal.SIGUSR1:  # 暂停/恢复
         if arm_controller.is_paused():
             log_robot.info("🔔 Current status: Paused. Resuming")
             arm_controller.resume()
@@ -86,16 +86,16 @@ def signal_handler(signum, frame):
             log_robot.info("🔔 Current status: Operating. Pausing")
             arm_controller.pause()
             pause_pub.publish(True)
-    elif signum == signal.SIGUSR2:  #stop
+    elif signum == signal.SIGUSR2:  # 停止
         log_robot.info("�� Stopping")
         arm_controller.stop()
         stop_pub.publish(True)
     log_robot.info(f"🔔 Signal successfully processed. Current state - Pause: {arm_controller.is_paused()}, Stop: {arm_controller.should_exit()}")
 
 def setup_signal_handlers():
-    """Setting up signal handler Setting up signal handler"""
-    signal.signal(signal.SIGUSR1, signal_handler)  #pause/resume
-    signal.signal(signal.SIGUSR2, signal_handler)  #stop
+    """设置信号处理器 Setting up signal handler"""
+    signal.signal(signal.SIGUSR1, signal_handler)  # 暂停/恢复
+    signal.signal(signal.SIGUSR2, signal_handler)  # 停止
     log_robot.info("📡 Signal handler successfully set up:")
     log_robot.info("  SIGUSR1 (kill -USR1): Pause/resume arm motion")
     log_robot.info("  SIGUSR2 (kill -USR2): Stop arm motion")
@@ -106,22 +106,22 @@ def unwrap_env(env):
     return env
 
 class ArmMove:
-    """Robot arm motion class Robot arm motion class"""
+    """机械臂运动控制类 Robot arm motion class"""
     
     def __init__(self, config: KuavoConfig):
         """
-        Initialize arm motion control Initialize arm motion control
+        初始化机械臂控制 Initialise arm motion control
         
         Args:
-            bag_path: Track file path
+            bag_path: 轨迹文件路径
         """
         self.config = config
-        #Set up signal handler
+        # 设置信号处理器
         self.shutdown_requested = False
-        #Set up signal handler
+        # 设置信号处理器
         setup_signal_handlers()
         
-        #Output the current process ID to facilitate external control
+        # 输出当前进程ID，方便外部控制
         pid = os.getpid()
         log_robot.info(f"🆔 Current process ID: {pid}")
         log_robot.info(f"💡 Use the following commands to control arm motion:")
@@ -130,7 +130,11 @@ class ArmMove:
 
         self.inference_config = config.inference
         self.bag_path = self.inference_config.go_bag_path
-        self.msg_dict_of_list = {}
+
+        self.msg_dict_of_list = self._read_topic_messages(
+            bag_path = self.bag_path,
+            topic_names = ["/control_robot_hand_position","/leju_claw_command","/kuavo_arm_traj"]
+        )
 
         rospy.init_node('kuavo_deploy', anonymous=True)
         self.env = gym.make(
@@ -142,8 +146,8 @@ class ArmMove:
 
 
     def _check_control_signals(self):
-        """Check control signals"""
-        #Check pause status
+        """检查控制信号"""
+        # 检查暂停状态
         while arm_controller.is_paused():
             log_robot.info("🔄 Robot arm motion paused")
             time.sleep(0.1)
@@ -151,19 +155,19 @@ class ArmMove:
                 log_robot.info("🛑 Robot arm motion stopped")
                 return False
         
-        #Check if it needs to be stopped
+        # 检查是否需要停止
         if arm_controller.should_exit():
             log_robot.info("🛑 Stop signal detected, exiting arm motion")
             return False
             
-        return True  #Continue normally
+        return True  # 正常继续
     
     def _read_topic_messages(self, bag_path, topic_names: list = None) -> dict:
         """
-        Read the messages of the specified topic in the bag and convert them into a dictionary
-        :param bag_path: bagfile path
-        :param topic_names: Topic name list
-        :return: Message dictionary, key is the topic name, value is the message list of the topic
+        读取bag包中指定话题的消息并转换为字典
+        :param bag_path: bag文件路径
+        :param topic_names: 话题名称列表
+        :return: 消息字典，key为话题名称，value为该话题的消息列表
         """
         messages_dict = {}
         try:
@@ -178,22 +182,9 @@ class ArmMove:
             rospy.logerr(f"Failed to read messages from bag: {e}")
             return {}
 
-    def _ensure_bag_loaded(self) -> None:
-        """Load bags on demand, only called when trajectory playback tasks are required."""
-        if self.msg_dict_of_list:
-            return
-        if not self.bag_path or not Path(self.bag_path).exists():
-            raise FileNotFoundError(f"Bag file not found: {self.bag_path}")
-        self.msg_dict_of_list = self._read_topic_messages(
-            bag_path=self.bag_path,
-            topic_names=["/control_robot_hand_position", "/leju_claw_command", "/kuavo_arm_traj"],
-        )
-        if "/kuavo_arm_traj" not in self.msg_dict_of_list or not self.msg_dict_of_list["/kuavo_arm_traj"]:
-            raise ValueError(f"No '/kuavo_arm_traj' messages found in bag: {self.bag_path}")
-
     def _pub_arm_traj(self, msg) -> None:
-        """Publish robot arm trajectory"""
-        #If msg is a list, publish it directly
+        """发布机械臂轨迹"""
+        # 如果msg是list，则直接发布
         if isinstance(msg, list):
             position = msg
         else:
@@ -209,7 +200,7 @@ class ArmMove:
         self.env.robot.control_arm_joint_positions(target_positions)
     
     def _pub_leju_claw(self, msg) -> None:
-        """Release Gripper"""
+        """发布夹爪"""
         if self.env.which_arm=="both":
             target_positions = msg.data.position
         elif self.env.which_arm=="left":
@@ -221,7 +212,7 @@ class ArmMove:
         self.env.lejuclaw.control(target_positions)
     
     def _pub_qiangnao(self, msg) -> None:
-        """post dexterity"""
+        """发布灵巧手"""
         left_hand_position = np.frombuffer(msg.left_hand_position, dtype=np.uint8)
         right_hand_position = np.frombuffer(msg.right_hand_position, dtype=np.uint8)
         if self.env.which_arm=="both":
@@ -239,10 +230,10 @@ class ArmMove:
 
     def play_bag(self, go_bag, reverse=False):
         """
-        Move the robotic arm to the working posture. Issue arm, hand position, and gripper commands evenly.
+        将机械臂移动到工作姿态。均匀发布机械臂、手部位置和夹爪命令。
         
         Args:
-            reverse (bool): If True, play the command sequence in reverse order
+            reverse (bool): 如果为True，则倒序播放命令序列
         """
 
         # topic_names = ["/joint_cmd", "/control_robot_hand_position", "/leju_claw_command"],
@@ -261,9 +252,9 @@ class ArmMove:
         )
         if reverse:
             msg_dict_of_list = {topic: msg_dict_of_list[topic][::-1] for topic in msg_dict_of_list}
-        log_robot.info(f"Messages for the topic {[topic for topic in msg_dict_of_list.keys()]} in {go_bag} will be played back")
+        log_robot.info(f"将回放 {go_bag} 中的 {[topic for topic in msg_dict_of_list.keys()]} 主题的消息")
         
-        #Initialize the message dictionary, check whether the key value exists and get the message list
+        # 初始化消息字典，检查键值是否存在并获取消息列表
         msg_lists = {}
         for topic in msg_dict_of_list:
             msg_lists[topic] = {
@@ -276,24 +267,24 @@ class ArmMove:
             log_robot.warning("No valid messages playable")
             return
         
-        #Calculate the total number of steps as the length of the longest message list
+        # 计算总步数为最长的消息列表的长度
         max_steps = max(info["total"] for info in msg_lists.values())
         log_robot.info(f"Now evenly playing {max_steps} steps of message data")
         
-        #Publish remaining data evenly
-        rate = rospy.Rate(100)  #100Hz, can be adjusted as needed
+        # 均匀发布剩余数据
+        rate = rospy.Rate(100)  # 100Hz，可根据需要调整
         for step in range(1, max_steps):
-            #Check control signals
+            # 检查控制信号
             if not self._check_control_signals():
                 log_robot.info("🛑 Track playback stopped")
                 return
 
             for topic, info in msg_lists.items():
-                #Calculate the current index that should be published
-                #Use floating point calculations to ensure uniform distribution, then round
+                # 计算当前应该发布的索引
+                # 使用浮点数计算保证均匀分布，然后取整
                 target_index = min(int(step * info["total"] / max_steps), info["total"] - 1)
                 
-                #Only publish new messages when the index changes
+                # 只有当索引变化时才发布新消息
                 if target_index > info["index"]:
                     if topic=="/kuavo_arm_traj":
                         self._pub_arm_traj(info["msgs"][target_index])
@@ -304,10 +295,10 @@ class ArmMove:
                     elif topic=="/gripper_command":
                         self._pub_rq2f85(info["msgs"][target_index])
                 log_robot.info(f"Publishing {topic} message: {target_index+1}/{info['total']}")
-            #Control publishing frequency
+            # 控制发布频率
             rate.sleep()
         
-        #Ensure the last frame of data is published
+        # 确保最后一帧数据被发布
         for topic, info in msg_lists.items():
             if info["index"] < info["total"] - 1:
                 target_index = info["total"] - 1
@@ -324,25 +315,25 @@ class ArmMove:
         log_robot.info("Sequential message playback completed")
 
     def _get_current_joint_angles(self) -> List[float]:
-        """Get the current joint angle (rad)"""
+        """获取当前关节角度(rad)"""
         return self.env.robot_state.arm_joint_state().position
 
     def _arm_interpolate_joint(self, q0: List[float], q1: List[float], steps: int = 100) -> List[List[float]]:
         """
-        Generates a smooth interpolated trajectory from q0 to q1.
+        生成从 q0 到 q1 的平滑插值轨迹。
         
         Args:
-            q0: Initial joint position list
-            q1: Target joint position list
-            steps: Number of interpolation steps, default is INTERPOLATION_STEPS
+            q0: 初始关节位置列表
+            q1: 目标关节位置列表
+            steps: 插值步数，默认为INTERPOLATION_STEPS
             
         Returns:
-            List containing interpolation positions, each element is a list of length NUM_JOINTS
+            包含插值位置的列表，每个元素是一个长度为NUM_JOINTS的列表
             
         Raises:
-            ValueError: If you enter an incorrect number of joint positions
+            ValueError: 如果输入关节位置数量不正确
         """
-        NUM_JOINTS = 14  #Assume there are 14 joints
+        NUM_JOINTS = 14  # 假设有14个关节
         if len(q0) != NUM_JOINTS or len(q1) != NUM_JOINTS:
             raise ValueError(f"Expected {NUM_JOINTS} joint positions")
         
@@ -356,11 +347,11 @@ class ArmMove:
 
     def _move_to_joint_angles(self, target_angles: List[float], steps: int = 100) -> None:
         """
-        Move to target joint angle
+        移动到目标关节角度
         
         Args:
-            target_angles: Target joint angle list
-            steps: Interpolation steps
+            target_angles: 目标关节角度列表
+            steps: 插值步数
         """
         current_angles = self._get_current_joint_angles()
         log_robot.info(f"Current joint angle: {current_angles}")
@@ -377,123 +368,120 @@ class ArmMove:
             time.sleep(0.1)
 
     def go(self) -> None:
-        """First interpolate to the position of the first frame of the bag, then play back the bag and return to the working position."""
+        """先插值到bag第一帧的位置，再回放bag包前往工作位置"""
         time.sleep(1)
-        self._ensure_bag_loaded()
-        #Move to the starting position of the track
+        # 移动到轨迹起始位置
         start_angles = [float(j) for j in self.msg_dict_of_list.get("/kuavo_arm_traj", [])[0].position]
         start_angles = np.array(start_angles)/180*np.pi
         self._move_to_joint_angles(start_angles)
-        #Play track
+        # 播放轨迹
         self.play_bag(go_bag=self.bag_path)
 
     def here_run(self) -> None:
-        """Interpolate directly to the last frame position of the bag and run"""
+        """直接插值到bag最后一帧位置运行"""
         time.sleep(1)
-        self._ensure_bag_loaded()
-        #Move to the end of the track
+        # 移动到轨迹结束位置
         end_angles = [float(j) for j in self.msg_dict_of_list.get("/kuavo_arm_traj", [])[-1].position]
         end_angles = np.array(end_angles)/180*np.pi
         self._move_to_joint_angles(end_angles)
-        #Perform assessment
+        # 执行评估
         self.run()
 
     def back_to_zero(self) -> None:
-        """Return to zero position"""
+        """回到零位"""
         time.sleep(1)
-        self._ensure_bag_loaded()
-        #Move to the end of the track
+        # 移动到轨迹结束位置
         end_angles = [float(j) for j in self.msg_dict_of_list.get("/kuavo_arm_traj", [])[-1].position]
         end_angles = np.array(end_angles)/180*np.pi
         self._move_to_joint_angles(end_angles)
-        #Play track in reverse
+        # 反向播放轨迹
         self.play_bag(go_bag=self.bag_path,reverse=True)
-        #move to zero position
+        # 移动到零位
         zero_angles = [0.0] * 14
         self._move_to_joint_angles(zero_angles)
 
     def go_run(self) -> None:
-        """Execute go and run"""
+        """执行前往并运行"""
         self.go()
         self.run()
 
     def run(self) -> None:
-        """Execute run"""
+        """执行运行"""
         from kuavo_deploy.src.eval.real_single_test import kuavo_eval
         kuavo_eval(config=self.config, env=self.env)
 
 def parse_args():
-    """Parse command line parameters"""
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description="Kuavo robot control sample program",
+        description="Kuavo机器人控制示例程序",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Usage example:
-  python scripts.py --task go --config /path/to/custom_config.yaml"                   #First interpolate to the position of the first frame of the bag, then play back the bag and return to the working position.
-  python scripts.py --task run --config /path/to/custom_config.yaml"                  #Run the model directly from the current location
-  python scripts.py --task go_run --config /path/to/custom_config.yaml"               #Arrive at work and run the model directly
-  python scripts.py --task here_run --config /path/to/custom_config.yaml"             #Interpolation to the last frame state of the bag starts running
-  python scripts.py --task back_to_zero --config /path/to/custom_config.yaml"         #After interrupting model inference, turn the bag upside down and return it to position 0.
+使用示例:
+  python scripts.py --task go --config /path/to/custom_config.yaml"                   # 先插值到bag第一帧的位置，再回放bag包前往工作位置
+  python scripts.py --task run --config /path/to/custom_config.yaml"                  # 从当前位置直接运行模型
+  python scripts.py --task go_run --config /path/to/custom_config.yaml"               # 到达工作位置直接运行模型
+  python scripts.py --task here_run --config /path/to/custom_config.yaml"             # 插值至bag的最后一帧状态开始运行
+  python scripts.py --task back_to_zero --config /path/to/custom_config.yaml"         # 中断模型推理后，倒放bag包回到0位
 
-Mission description:
-  go          - First interpolate to the position of the first frame of the bag, then play back the bag and return to the working position.
-  run         - Run the model directly from the current location
-  go_run      - Arrive at work and run the model directly
-  here_run    - Interpolation to the last frame state of the bag starts running
-  back_to_zero - After interrupting model inference, turn the bag upside down and return it to position 0.
-  auto_test   - Automatically test the model in simulation and execute eval_episodes times
+任务说明:
+  go          - 先插值到bag第一帧的位置，再回放bag包前往工作位置
+  run         - 从当前位置直接运行模型
+  go_run      - 到达工作位置直接运行模型
+  here_run    - 插值至bag的最后一帧状态开始运行
+  back_to_zero - 中断模型推理后，倒放bag包回到0位
+  auto_test   - 仿真中自动测试模型，执行eval_episodes次
         """
     )
     
-    #Required parameters
+    # 必需参数
     parser.add_argument(
         "--task", 
         type=str, 
         required=True,
         choices=["go", "run", "go_run", "here_run", "back_to_zero"],
-        help="type of task to perform"
+        help="要执行的任务类型"
     )
     
-    #Optional parameters
+    # 可选参数
     parser.add_argument(
         "--config", 
         type=str,
         required=True,
-        help="Configuration file path (must be specified)"
+        help="配置文件路径(必须指定)"
     )
     
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Enable verbose output"
+        help="启用详细输出"
     )
     
     parser.add_argument(
         "--dry_run",
         action="store_true",
-        help="Dry run mode, which only displays the operations to be performed but does not actually execute them"
+        help="干运行模式，只显示将要执行的操作但不实际执行"
     )
     
     return parser.parse_args()
 
 def main():
-    """main function"""
-    #Parse command line parameters
+    """主函数"""
+    # 解析命令行参数
     args = parse_args()
     
-    #Set log level
+    # 设置日志级别
     if args.verbose:
         log_model.setLevel("DEBUG")
         log_robot.setLevel("DEBUG")
     
-    #Determine configuration file path
+    # 确定配置文件路径
     config_path = Path(args.config)
     
     log_robot.info(f"Use configuration file: {config_path}")
     log_robot.info(f"Executing task: {args.task}")
     
     config = load_kuavo_config(config_path)
-    #Initialize the robot arm
+    # 初始化机械臂
     try:
         arm = ArmMove(config)
         log_robot.info("Arm initialisation successful")
@@ -501,23 +489,23 @@ def main():
         log_robot.error(f"Arm initialisation failed: {e}")
         return
     
-    #Dry running mode
+    # 干运行模式
     if args.dry_run:
         log_robot.info("=== Dry Run Mode ===")
         log_robot.info(f"Task to be executed: {args.task}")
         log_robot.info("Dry run successfully completed. No actual tasks executed")
         return
     
-    #task mapping
+    # 任务映射
     task_map = {
-        "go": arm.go,                    #Arrive at work location
-        "run": arm.run,                  #Run the model directly from the current location
-        "go_run": arm.go_run,           #Arrive at work and run the model directly
-        "here_run": arm.here_run,       #Start running from the last frame state of go_bag
-        "back_to_zero": arm.back_to_zero, #After interrupting model inference, turn the bag upside down and return it to position 0.
+        "go": arm.go,                    # 到达工作位置
+        "run": arm.run,                  # 从当前位置直接运行模型
+        "go_run": arm.go_run,           # 到达工作位置直接运行模型
+        "here_run": arm.here_run,       # 从go_bag的最后一帧状态开始运行
+        "back_to_zero": arm.back_to_zero, # 中断模型推理后，倒放bag包回到0位
     }
     
-    #perform tasks
+    # 执行任务
     try:
         log_robot.info(f"Now running task: {args.task}")
         task_map[args.task]()

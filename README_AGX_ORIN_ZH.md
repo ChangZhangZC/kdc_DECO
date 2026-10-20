@@ -1,22 +1,22 @@
-# Kuafu Robot Host Computer Reasoning Guide
+# 夸父机器人上位机推理指南
 
-## 1. Connect to the robot host computer
+## 1. 连接机器人上位机
 
-There are two ways to connect to the host computer:
+可以选择两种方式连接上位机：
 
-(a) Use a computer on the same LAN as the robot and connect via SSH
+(a) 使用与机器人处于同一局域网的电脑，通过 SSH 连接  
 ```bash
-ssh leju_kuavo@xxx.xxx.xxx.xxx # Confirm the host computer IP by yourself
-# Password:leju_kuavo
+ssh leju_kuavo@xxx.xxx.xxx.xxx   # 自行确认上位机 IP
+# 密码：leju_kuavo
 ````
 
-(b) Use keyboard, mouse and monitor to directly connect to the robot host computer (the subsequent steps are the same)
+(b) 使用键鼠与显示器直接连接机器人上位机（后续步骤相同）
 
 ---
 
-## 2. Create a working directory and prepare the environment
+## 2. 创建工作目录并准备环境
 
-Create working directory:
+创建工作目录：
 
 ```bash
 cd ~
@@ -24,17 +24,17 @@ mkdir kdc_ws
 cd kdc_ws
 ```
 
-Clone the code repository:
+克隆代码仓库：
 
 ```bash
-# use https
+# 使用 https
 git clone https://github.com/LejuRobotics/kuavo_data_challenge.git
 
-# Or use ssh
+# 或使用 ssh
 # git clone git@github.com:LejuRobotics/kuavo_data_challenge.git
 ```
 
-Initialize branches and submodules:
+初始化分支与子模块：
 
 ```bash
 cd kuavo_data_challenge
@@ -42,17 +42,17 @@ git checkout origin/dev
 git submodule init
 git submodule update --recursive --progress
 
-# If this step fails to download or is very slow due to network reasons: please
+# 如果这一步骤由于网络原因下载失败或很慢：请
 # cd third_party
 # git clone https://githubproxy.cc/https://github.com/huggingface/lerobot.git
-# cd ../ # Return to the previous directory
+# cd ../ # 回到上一级目录
 ```
 
 ---
 
-## 3. Create a Python environment and install dependencies
+## 3. 创建 Python 环境并安装依赖
 
-Usually the host computer has Python 3.10 pre-installed. If it is not installed, please follow the appendix to complete the installation of Python 3.10 first.
+通常上位机已预装 Python 3.10，如未安装请按照附录参考先完成python3.10的安装。
 
 ```bash
 python3.10 -m venv ~/kdc_ws/kdc_env
@@ -61,34 +61,34 @@ source ~/kdc_ws/kdc_env/bin/activate
 which pip
 pip list
 
-# If you need ROS dependencies
+# 若需要 ROS 依赖
 # source /opt/ros/noetic/setup.bash
 
 pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip install -r requirements_agxorin.txt
 
-# If dependency conflicts occur due to pip version issues:
+# 如果因pip版本问题导致依赖冲突：
 pip install -r requirements_agxorin.txt --use-deprecated=legacy-resolver
 ```
 
 ---
 
-## 4. Place the trained weights
+## 4. 放置训练好的权重
 
-Copy the complete directory of training output to the following path:
+将训练产出的完整目录复制到如下路径：
 
 ```
 ~/kdc_ws/kuavo_data_challenge/outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
 ```
 
-Example:
+示例：
 
 ```bash
 mkdir -p outputs/train/your_task_name/your_method/your_timestamp
 cp -R <your_epoch_dir> outputs/train/your_task_name/your_method/your_timestamp
 ```
 
-The directory structure should be as follows:
+目录结构应如下：
 
 ```
 outputs
@@ -107,41 +107,41 @@ outputs
 
 ---
 
-## 5. Configure and run inference
+## 5. 配置与运行推理
 
-Edit deployment configuration:
+编辑部署配置：
 
 ```bash
 vim configs/deploy/kuavo_env.yaml
 ```
 
-Please be sure to confirm that the configuration is correct item by item, otherwise the reasoning may not work properly.
-(vim: `ESC` → `:wq!` save and exit; `:q!` abandon modifications)
+请务必**逐项确认配置正确**，否则可能无法正常推理。
+（vim：`ESC` → `:wq!` 保存退出；`:q!` 放弃修改）
 
-Start reasoning:
+开始推理：
 
 ```bash
 python kuavo_deploy/eval_kuavo.py
 ```
 
-Enter in sequence according to the prompts:
+根据提示依次输入：
 
-(a) Enter **3**
-(b) Enter `configs/deploy/kuavo_env.yaml`
-(c) Enter **2** to play back rosbag (the robot will start to move, please pay attention to safety)
+(a) 输入 **3**
+(b) 输入 `configs/deploy/kuavo_env.yaml`
+(c) 输入 **2** 回放 rosbag（机器人将开始动作，请注意安全）
 
-After playback ends:
+回放结束后：
 
-(d) Enter **3** to start reasoning
-(e) You can press **s** to stop at any time during the reasoning process (recommended), or `Ctrl+C` to end
+(d) 输入 **3** 开始推理
+(e) 推理过程中可随时按 **s** 停止（推荐），或 `Ctrl+C` 结束
 
 ---
 
-## Appendix:
+## 附录：
 
-### python3.10 installation:
+### python3.10安装：
 
-⚠️ Note: ```ppa:deadsnakes``` will no longer be available on ubuntu20.04 after June 2025. The following installation method may not be successful:
+⚠️ 注意：```ppa:deadsnakes``` 在2025年6月后不能在ubuntu20.04上提供了，下述安装方式不一定成功：
 
 ```bash
 sudo apt update
@@ -151,7 +151,7 @@ sudo apt update
 sudo apt install -y python3.10 python3.10-venv python3.10-dev
 ```
 
-You can try it. If it doesn’t work, please use the source code to install:
+可以尝试下，不行请使用源码安装：
 
 ```bash
 sudo apt update
@@ -165,38 +165,38 @@ sudo make install
 ```
 
 ---
-### About kuavo_humanoid_sdk:
+### 关于 kuavo_humanoid_sdk：
 
-⚠️ Sometimes there will be version mismatch problems, unable to communicate or something, and an error will be reported: The robot arm initialization failed! Solution, if related problems occur:
+⚠️ 有时会出现版本不匹配的问题，无法通信什么的，会报错：机械臂初始化失败！解决方案，若出现相关问题：
 
-(a) Enter the robot lower machine,
+（a）进入机器人下位机，
 
 ```bash
-  ssh lab@192.168.26.1 # Password three spaces
+  ssh lab@192.168.26.1 # 密码三个空格
   cd ~/kuavo-ros-opensource
-  git describe --tag # View opensource version
-  # show xxx
+  git describe --tag # 查看opensource版本
+  # 显示xxx
 ```
-  - Return to the side machine or host machine,
+  - 返回边侧机，或上位机，
 ```bash
-# Enter the environment
+# 进入环境
 conda activate kdc_dev
-# or
+# 或
 source kdc_dev/bin/activate
-pip install kuavo-humanoid-sdk==xxx #Install the corresponding version of sdk
+pip install kuavo-humanoid-sdk==xxx #安装对应版本的sdk
 ```
 
 
-(b) (It takes longer and is more complicated, not recommended) You can copy and install the content of kuavo-ros-opensource of the robot slave machine, [kuavo-ros-opensource](https://github.com/LejuRobotics/kuavo-ros-opensource), for example,
+（b）（时间较久，较复杂，不推荐）可以拷贝机器人下位机的kuavo-ros-opensource的内容安装，[kuavo-ros-opensource](https://github.com/LejuRobotics/kuavo-ros-opensource)，例如，
 
 ```bash
 scp -r lab@192.168.26.1:~/kuavo-ros-opensource /your/path/
 cd /your/path/kuavo-ros-opensource/src/kuavo_humanoid_sdk
-# or
+# 或
 # cd /your/path/to/kuavo-ros-opensource/src/kuavo_humanoid_sdk
-# Enter the environment
+# 进入环境
 conda activate kdc_dev
-# or
+# 或
 source kdc_dev/bin/activate
 
 ./install.sh

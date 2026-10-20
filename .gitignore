@@ -6,8 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-third_party/
-
 # Distribution / packaging
 .Python
 build/
@@ -213,9 +211,18 @@ outputs/
 log/
 .vscode/
 .claude/
+.carlos/
 *.pth
 ana.py
 *.gz
 *.tar
 error.txt
 obs.png
+
+# macOS 系统元数据文件（匹配所有层级目录）
+.DS_Store
+._*
+
+# files for dev
+data_example/
+kuavo_data/inspect_outputs/

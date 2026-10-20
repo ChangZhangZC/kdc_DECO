@@ -14,7 +14,7 @@
 - Latest Lerobot version 0.4.2 support! [lerobot](https://github.com/huggingface/lerobot)
 - [Frame alignment](kuavo_deploy/utils/obs_buffer.py)!
 - Complete restructuring of the directories.
-- ...
+- ···
 
 ### More to come:
 - End-effector delta control support
@@ -103,7 +103,7 @@ Both Kuavo Mujoco simulation and real robot operation are based on the **ROS Noe
 <summary>a. Direct System Installation of ROS Noetic (<b>Recommended</b>)</summary>
 
 * Official Guide: [ROS Noetic Installation](http://wiki.ros.org/noetic/Installation/Ubuntu)
-* Recommended Chinese mirror source: [FishROS](https://fishros.org.cn/forum/topic/20/)
+* Recommended Chinese mirror source: [小鱼ROS](https://fishros.org.cn/forum/topic/20/)
 
 Installation example:
 
@@ -442,63 +442,13 @@ Same steps as part a in step 3, change the configuration file `kuavo_env.yaml`'s
 
 - PC deployment steps to be updated; For Orin deployment, please check: [README_AGX_ORIN.md](README_AGX_ORIN.md)
 
-- The log of inference runtime is in log/kuavo_deploy/kuavo_deploy.log, please check it.
-
-### 5. About kuavo_humanoid_sdk:
-
-⚠️ Sometimes there will be version mismatch problems, unable to communicate or something, and an error will be reported: The robot arm initialization failed! Solution, if related problems occur:
-
-(a) Enter the robot lower machine,
-
-```bash
-  ssh lab@192.168.26.1 # Password three spaces
-  cd ~/kuavo-ros-opensource
-  git describe --tag # View opensource version
-  # show xxx
-```
-  - Return to the side machine or host machine,
-```bash
-# Enter the environment
-conda activate kdc_dev
-# or
-source kdc_dev/bin/activate
-pip install kuavo-humanoid-sdk==xxx #Install the corresponding version of sdk. Currently, pip installation supports the lower computer version 1.2.2 corresponding to kuavo-humanoid-sdk==1.2.2, 1.3.1 corresponding to kuavo-humanoid-sdk==1.3.1b98
-
-```
-⚠️ At present, the real-machine reasoning of SDK1.3.3 version will encounter the problem of error code -11, which is a segfault. Please install the SDK and then uninstall the pyarrow installed by pip, and replace it with conda installation!!!
-
-```bash
-pip uninstall pyarrow
-conda install pyarrow
-```
-
-
-(b) (It takes longer and is more complicated, not recommended) You can copy and install the content of kuavo-ros-opensource of the robot slave machine, [kuavo-ros-opensource](https://github.com/LejuRobotics/kuavo-ros-opensource), for example:
-
-```bash
-scp -r lab@192.168.26.1:~/kuavo-ros-opensource /your/path/
-cd /your/path/kuavo-ros-opensource/src/kuavo_humanoid_sdk
-# or
-# cd /your/path/to/kuavo-ros-opensource/src/kuavo_humanoid_sdk
-# Enter the environment
-conda activate kdc_dev
-# or
-source kdc_dev/bin/activate
-
-./install.sh
-```
-(c) If a segmentation fault occurs, you need to uninstall pyarrow and reinstall it with conda:
-
-```bash
-pip uninstall pyarrow
-conda install -c conda-forge pyarrow
-```
+- The log during testing is located at log/kuavo_deploy/kuavo_deploy.log, please check thoroughly.
 
 ---
 
-## 📡 ROS topic description
+## 📡 ROS Topic Description
 
-**Simulation environment:**
+**Simulation Environment:**
 
 | Topic Name                                      | Description              |
 | --------------------------------------------- | ----------------------- |

@@ -1,0 +1,93 @@
+# Kuavo-DECO Linux pip requirements
+#
+# 使用方式：
+#   pip install -r requirements_DECO.txt
+#
+# 目标环境：
+# - Linux + Python 3.10。
+# - 本文件只包含 pip 可安装的 Python 依赖与本仓库 editable 包。
+# - 不考虑 Windows，不从 `requirements_total.txt` 复制完整环境 freeze。
+#
+# 重要边界：
+# - 本文件纳入 rosbag 数据清洗所需的 pure-Python ROS 读取依赖。
+# - cv_bridge、std_msgs、geometry_msgs、std_srvs、kuavo_msgs 等运行期消息/桥接包
+#   仍建议由系统 ROS 或 Kuavo ROS workspace 提供，并在运行前 source 对应 setup.bash。
+# - 若实机数据清洗报缺少标准消息包，可再按报错补充对应 rospypi 包；本轮不加入
+#   validator/数据检查专用依赖。
+# - 若 `kuavo-humanoid-sdk` 无法从当前 pip 源安装，请按 Kuavo 官方 SDK/ROS
+#   workspace 安装方式提供该包；它被部署侧 `kuavo_deploy` 直接导入。
+#
+# 版本选择原则：
+# - 以当前 Kuavo/LeRobot Linux 工具链为主，避免 DECO 原生 pin 覆盖核心库。
+# - 不采用 DECO 原生 diffusers==0.36.0 / huggingface-hub==0.36.0，
+#   因为当前 LeRobot 0.4.2 约束为 <0.36.0。
+# - 不采用 DECO 原生 torch==2.6.0 / torchvision==0.21.0；
+#   当前 Linux 主线使用 torch==2.7.1 / torchvision==0.22.1。
+
+# Local editable packages
+-e third_party/lerobot
+-e .
+
+# Core deep learning stack
+torch==2.7.1
+torchvision==0.22.1
+torchcodec==0.5
+accelerate==1.11.0
+diffusers==0.34.0
+transformers==4.57.1
+tokenizers==0.22.1
+huggingface-hub==0.34.3
+safetensors==0.5.3
+datasets==4.1.1
+
+# Numeric, table, and dataset IO stack
+numpy==2.2.6
+pandas==2.3.1
+pyarrow==21.0.0
+scipy==1.15.3
+pillow==11.3.0
+opencv-python-headless==4.12.0.88
+av==15.0.0
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+
+# Data cleaning and rosbag conversion
+# rospypi 用于解析 rospy/rosbag/genpy/roslz4 等 ROS Noetic Python 包。
+--extra-index-url https://rospypi.github.io/simple/
+catkin-pkg==1.0.0
+genpy==0.6.14
+rospkg==1.6.0
+roslz4==1.17.4
+rosbag==1.17.4
+rospy==1.17.4
+termcolor==3.1.0
+Pympler==1.1
+# python-gnupg 提供 `import gnupg` 模块；`gnupg==2.3.1` 在 Python 3.10
+# 环境中会被 pip 解析为不兼容版本。
+python-gnupg==0.5.6
+
+# Model components and visual augmentation
+einops==0.8.1
+timm==1.0.19
+kornia==0.8.1
+
+# Config, training, and logging
+hydra-core==1.3.2
+omegaconf==2.3.0
+draccus==0.10.0
+PyYAML==6.0.2
+pyyaml-include==1.4.1
+rich==14.1.0
+tqdm==4.67.1
+tensorboard==2.20.0
+wandb==0.21.0
+matplotlib==3.10.5
+
+# Kuavo data/deploy Python utilities
+Flask==3.1.1
+gymnasium==1.2.1
+pyzmq==27.1.0
+fastapi==0.119.0
+uvicorn==0.37.0
+pycryptodomex==3.23.0
+kuavo-humanoid-sdk==1.2.2

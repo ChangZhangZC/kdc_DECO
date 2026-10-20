@@ -1,71 +1,71 @@
 # kuavo_train
 
-`kuavo_train` provides a package based on **LeRobot Diffusion Policy**, supporting deep image processing, Transformer structure and multi-modal information fusion. Through this package, users can easily build and train their own policy models in customized tasks.
+`kuavo_train` 提供了一个基于 **LeRobot Diffusion Policy** 的封装，支持深度图像处理、Transformer 结构以及多模态信息融合。通过该封装，用户可以方便地在自定义任务中快速构建和训练自己的策略模型。
 
-## Features
+## 特性
 
-- **Diffusion Policy Encapsulation**: Encapsulates the training, configuration and inference processes for easy and direct use.
-- **Transformer support**: Policy network supports Transformer structure to improve timing feature modeling capabilities.
-- **Depth image processing and fusion**: Can process multi-camera depth images and support feature fusion.
-- **Easy to Expand**: Other strategies can refer to existing packages and be customized through inheritance or modification.
+- **Diffusion Policy 封装**：封装了训练、配置及推理流程，方便直接使用。
+- **Transformer 支持**：策略网络支持 Transformer 结构，提升时序特征建模能力。
+- **深度图像处理与融合**：可处理多摄像头深度图像，支持特征融合。
+- **易于扩展**：其他策略可以参考现有封装，通过继承或修改进行定制。
 
-## File structure
+## 文件结构
 
 ```
 kuavo_train/
 ├── utils/
 │ ├── __init__.py
-│ ├── augmenter.py # Data augmentation tool
-│ ├── transforms.py # Data augmentation based on lerobot, including transformconfigs
-│ └── utils.py # Other auxiliary functions, such as saving and loading random number status
+│ ├── augmenter.py # 数据增广工具
+│ ├── transforms.py # 基于lerobot的数据增广，包含transformconfigs
+│ └── utils.py # 其他辅助函数，如保存和载入随机数状态
 ├── wrapper/
 │ ├── dataset/
-│ │ └── LeRobotDatasetWrapper.py # Dataset encapsulation, only provides examples of data set inheritance, and is not currently used.
+│ │ └── LeRobotDatasetWrapper.py # 数据集封装，仅提供了数据集继承示例，目前实际未使用
 │ ├── policy/
 │ │ └── diffusion/
 │ │ ├── __init__.py
-│ │ ├── DiffusionConfigWrapper.py # diffusion config policy configuration inheritance example
-│ │ ├── DiffusionModelWrapper.py # Diffusion model model inheritance example, including depth image, feature fusion, etc.
-│ │ ├── DiffusionPolicyWrapper.py # Diffusion policy inheritance example, including cropping, scaling resize and other input processing
-│ │ ├── DiT_1D_model.py # One-dimensional data diffusion model based on DiT magic modification, optional
-│ │ ├── DiT_model.py # DiT-based diffusion model, optional
-│ │ └── transformer_diffusion.py # Transformer-based diffusion model
+│ │ ├── DiffusionConfigWrapper.py   # diffusion config策略配置继承示例
+│ │ ├── DiffusionModelWrapper.py    # diffusion model模型继承示例，包含深度图像、特征融合等
+│ │ ├── DiffusionPolicyWrapper.py   # diffusion policy策略继承示例，包含裁剪crop，缩放resize等输入处理
+│ │ ├── DiT_1D_model.py             # 基于DiT魔改的一维数据扩散模型，可选
+│ │ ├── DiT_model.py                # 基于DiT的扩散模型，可选
+│ │ └── transformer_diffusion.py    # 基于transformer的diffusion扩散模型
 │ └── __init__.py
 ├── README.md
-├── train_policy.py # Policy training entrance
-└── train_policy_with_accelerate.py # Policy training entrance (based on accelerate library, single-machine multi-card training)
+├── train_policy.py                 # 策略训练入口
+└── train_policy_with_accelerate.py # 策略训练入口 (基于accelerate库 单机多卡训练)
 ```
 
-## Instructions for use
+## 使用说明
 
-1. **Prepare Data Set**
-   Use `python kuavo_data/CvtRosbag2Lerobot.py` to convert the dataset.
+1. **准备数据集**  
+   使用 `python kuavo_data/CvtRosbag2Lerobot.py` 转换数据集。
 
-2. **Configuration Strategy**
-   Set training, model, and policy parameters in `configs/policy/diffusion_config.yaml`.
+2. **配置策略**  
+   在 `configs/policy/diffusion_config.yaml` 中设置训练、模型、策略的参数。
 
-3. **Training Strategy**
-   Start training via `python kuavo_train/train_policy.py`.
+3. **训练策略**  
+   通过 `python kuavo_train/train_policy.py` 启动训练。
 
-4. **Expand other strategies**
-   - You can refer to the inheritance structure of `DiffusionPolicyWrapper.py` to implement custom policies.
-   - If the strategy needs to process depth images or fuse multi-modal information, please refer to `DiffusionModelWrapper.py`
-   - The diffusion model can reuse existing Transformer modules.
+4. **扩展其他策略**  
+   - 可参考 `DiffusionPolicyWrapper.py` 的继承结构，实现自定义策略。
+   - 若策略需要处理深度图像或融合多模态信息，可参考`DiffusionModelWrapper.py`
+   - 扩散模型可复用现有 Transformer 的模块。
 
-## Dependencies
+## 依赖
 
 - PyTorch
 - torchvision
-- For other dependencies, please refer to `requirements_ilcode.txt`, etc., and the overall project [README.md](../README.md)
+- 其他依赖请参考 `requirements_ilcode.txt`等, 以及项目整体[README.md](../README.md)
 
 ---
 
 
 ---
 
-### Model training
+### 模型训练
 
-Use the converted data for imitation learning training:
+使用转换好的数据进行模仿学习训练：
 
 ```bash
 python kuavo_train/train_policy.py \
@@ -78,20 +78,20 @@ python kuavo_train/train_policy.py \
   policy_name=diffusion
 ```
 
-Description:
+说明：
 
-* `task`: customized, task name (preferably corresponding to the task definition in the number transfer), such as `pick and place`
-* `method`: custom, method name, used to distinguish different trainings, such as `diffusion_bs128_usedepth_nofuse`, etc.
-* `root`: The local path of the training data. Note that lerobot is added. It needs to correspond to the data transfer saving path in 1, which is: `/path/to/lerobot_data/lerobot`
-* `training.batch_size`: Batch size, can be adjusted according to GPU memory
-* `policy_name`: The policy used, used for policy instantiation, currently supports `diffusion` and `act`
-* For other parameters, please refer to the yaml file description. It is recommended to modify the yaml file directly to avoid command line input errors.
+* `task`：自定义，任务名称（最好与数转中的task定义对应），如`pick and place`
+* `method`：自定义，方法名，用于区分不同的训练，如`diffusion_bs128_usedepth_nofuse`等
+* `root`：训练数据的本地路径，注意加上lerobot，与1中的数转保存路径需要对应，为：`/path/to/lerobot_data/lerobot`
+* `training.batch_size`：批大小，可根据 GPU 显存调整
+* `policy_name`：使用的策略，用于策略实例化的，目前支持`diffusion`和`act`
+* 其他参数可详见yaml文件说明，推荐直接修改yaml文件，避免命令行输入错误
 
 ---
 
-### Model training: single-machine multi-card mode
+### 模型训练：单机多卡模式
 
-Install the accelerate library: pip install accelerate
+安装accelerate库： pip install accelerate
 
 ```bash
 accelerate launch --config_file ./configs/policy/accelerate_config.yaml \ 
@@ -100,10 +100,10 @@ accelerate launch --config_file ./configs/policy/accelerate_config.yaml \
   --config-name diffusion_config.yaml
 ```
 
-Description:
+说明：
 
-* For the configuration parameter settings in the diffusion_config.yaml file, please refer to the above "Model Training: Parameter Description"
+* diffusion_config.yaml文件中配置参数设置参考上面《模型训练：参数说明 》
 
 ---
 
-> This directory is mainly for robot imitation learning policy learning research and can be used as a template for quickly building diffusion-based policies.
+> 本目录主要面向机器人模仿学习策略学习研究，可作为快速构建 diffusion-based policy 的模板。

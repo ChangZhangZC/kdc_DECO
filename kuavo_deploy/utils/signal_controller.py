@@ -7,7 +7,7 @@ import threading, time
 log_robot = setup_logger("robot")
 
 class ControlSignalManager:
-    """control signal manager"""
+    """控制信号管理器"""
     def __init__(self):
         self.ros_manager = ROSManager()
         self.stop_flag = threading.Event()
@@ -15,25 +15,25 @@ class ControlSignalManager:
         self._setup_signal_handlers()
     
     def _setup_signal_handlers(self):
-        """Set up signal handler"""
+        """设置信号处理器"""
         self.ros_manager.register_subscriber('/kuavo/pause_state', Bool, self._pause_callback)
         self.ros_manager.register_subscriber('/kuavo/stop_state', Bool, self._stop_callback)
     
     def _pause_callback(self, msg):
-        """Pause callback"""
+        """暂停回调"""
         if msg.data:
             self.pause_flag.set()
         else:
             self.pause_flag.clear()
 
     def _stop_callback(self, msg):
-        """Stop callback"""
+        """停止回调"""
         if msg.data:
             self.stop_flag.set()
     
     def check_control_signals(self):
-        """Check control signals"""
-        #Check pause status
+        """检查控制信号"""
+        # 检查暂停状态
         while self.pause_flag.is_set():
             log_robot.info("🔄 Robot arm motion paused")
             time.sleep(0.1)
@@ -41,15 +41,15 @@ class ControlSignalManager:
                 log_robot.info("🛑 Robot arm motion stopped")
                 return False
         
-        #Check if it needs to be stopped
+        # 检查是否需要停止
         if self.stop_flag.is_set():
             log_robot.info("🛑 Stop signal detected, exiting arm motion")
             return False
             
-        return True  #Continue normally Continue
+        return True  # 正常继续 Continue
     
     def close(self):
-        """Release Resources Release Resources"""
+        """释放资源 Release Resources"""
         self.ros_manager.close()
         self.stop_flag.clear()
         self.pause_flag.clear()

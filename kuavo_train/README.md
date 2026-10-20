@@ -80,12 +80,12 @@ python kuavo_train/train_policy.py \
 
 Details:
 
-* `task`: customized, task name (preferably corresponding to the task definition in the number transfer), such as `pick and place`
-* `method`: custom, method name, used to distinguish different trainings, such as `diffusion_bs128_usedepth_nofuse`, etc.
-* `root`: The local path of the training data. Note that lerobot is added. It needs to correspond to the data transfer saving path in 1, which is: `/path/to/lerobot_data/lerobot`
-* `training.batch_size`: Batch size, can be adjusted according to GPU memory
-* `policy_name`: The policy used, used for policy instantiation, currently supports `diffusion`, `act`, `lingbot`
-* For other parameters, please refer to the yaml file description. It is recommended to modify the yaml file directly to avoid command line input errors.
+* `task`: Customise your own task name here (preferbly in line with the task name found in the data conversion, such as `pick and place`)
+* `method`: Customise your own method name here to differentiate between different training attempts, such as `diffusion_bs128_usedepth_nofuse`
+* `root`: Local path of your training data. Note that typically the `lerobot` folder name also needs to be present, and should be the same as the output path of step 1 above. I.e. `/path/to/lerobot_data/lerobot`
+* `training.batch_size`: Batch size, adjust based on your GPU memory size
+* `policy_name`: The policy type in use. Now supports only `diffusion` and `act` options
+* Other parameters details can be found in the yaml files. It is recommended to directly modify such yaml files as to avoid command input typos
 
 ---
 
@@ -106,26 +106,4 @@ Details:
 
 ---
 
-> This directory is mainly for robot imitation learning policy learning research and can be used as a template for quickly building diffusion-based policies.
-
----
-
-### LingBot-VLA training integration
-
-The warehouse has integrated `policy_name=lingbot` distribution logic, and LingBot's `torchrun` training process can be started directly from `kuavo_train/train_policy.py`.
-
-Example:
-
-```bash
-python kuavo_train/train_policy.py \
-  --config-path=../configs/policy \
-  --config-name=lingbot_config.yaml \
-  policy.dry_run=true
-```
-
-Related documents:
-
-- `configs/policy/lingbot_config.yaml`
-- `configs/policy/lingbot/robotwin_load20000h.yaml`
-- `kuavo_train/train_lingbot.sh`
-- `kuavo_train/wrapper/policy/lingbot/`
+> This directory is mainly geared towards experiments with robot IL-based policy, and helps you quickly construct diffusion-based policy templates.

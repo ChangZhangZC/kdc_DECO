@@ -35,6 +35,11 @@ import numpy
 import torch
 from tqdm import tqdm
 
+from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
+from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
+from kuavo_train.wrapper.policy.deco.DECOPolicyWrapper import CustomDECOPolicyWrapper
+from kuavo_train.wrapper.policy.deco import DECOProcessor  # noqa: F401 - 注册 DECO preprocessor step
+from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.utils.random_utils import set_seed
 import datetime
 import time
@@ -48,6 +53,9 @@ import threading
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.kuavo_service.client import PolicyClient
+from kuavo_deploy.utils.deco_obs_action import configure_deco_runtime, validate_deco_policy_compatibility
+from lerobot.processor import PolicyAction, PolicyProcessorPipeline
+from lerobot.policies.factory import make_pre_post_processors
 
 log_model = setup_logger("model")
 log_robot = setup_logger("robot")
@@ -68,26 +76,14 @@ stop_flag = threading.Event()
 pause_flag = threading.Event()
 
 
-def resolve_pretrained_path(cfg) -> Path:
-    if getattr(cfg, "pretrained_path", ""):
-        return Path(cfg.pretrained_path)
-    return Path(f"outputs/train/{cfg.task}/{cfg.method}/{cfg.timestamp}/epoch{cfg.epoch}")
-
-
-def build_pre_post_processors(pretrained_path: Path, policy_type: str):
-    if policy_type == "lingbot":
-        return (lambda obs: obs), (lambda act: act)
-    from lerobot.policies.factory import make_pre_post_processors
-    return make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
-
-
-def setup_policy(pretrained_path, policy_type, cfg, device=torch.device("cuda")):
+def setup_policy(pretrained_path, policy_type, device=torch.device("cuda"), inference_config=None):
     """
     Set up and load the policy model.
     
     Args:
         pretrained_path: Path to the checkpoint
-        policy_type: Type of policy ('diffusion' or 'act')
+        policy_type: Type of policy ('diffusion', 'act', 'deco', or 'client')
+        inference_config: Optional ConfigInference for client host/port/token settings.
         
     Returns:
         Loaded policy model and device
@@ -97,37 +93,37 @@ def setup_policy(pretrained_path, policy_type, cfg, device=torch.device("cuda"))
         log_model.warning("Warning: Using CPU for inference, this may be slow.")
         time.sleep(3)  
     
-    if policy_type == 'diffusion':
-        from kuavo_train.wrapper.policy.diffusion.DiffusionPolicyWrapper import CustomDiffusionPolicyWrapper
-        policy = CustomDiffusionPolicyWrapper.from_pretrained(Path(pretrained_path), strict=True)
-    elif policy_type == 'act':
-        from kuavo_train.wrapper.policy.act.ACTPolicyWrapper import CustomACTPolicyWrapper
-        policy = CustomACTPolicyWrapper.from_pretrained(Path(pretrained_path), strict=True)
-    elif policy_type == 'client':
-        policy = PolicyClient()
-    elif policy_type == 'lingbot':
-        from kuavo_deploy.utils.lingbot_adapter import LingbotDeployPolicy
-        policy = LingbotDeployPolicy(
-            model_path=Path(pretrained_path),
-            lingbot_root=getattr(cfg, "lingbot_root", ""),
-            qwen25_path=getattr(cfg, "qwen25_path", ""),
-            task_prompt=getattr(cfg, "task_prompt", "") or getattr(cfg, "task", ""),
-            use_length=getattr(cfg, "lingbot_use_length", 1),
-            chunk_ret=getattr(cfg, "lingbot_chunk_ret", True),
-            norm_stats_file=getattr(cfg, "lingbot_norm_stats_file", ""),
-            data_type=getattr(cfg, "lingbot_data_type", "robotwin"),
-            execute_raw_action=getattr(cfg, "lingbot_execute_raw_action", False),
-        )
+    policy_type_key = policy_type.lower()
+    if policy_type_key == 'diffusion':
+        policy = CustomDiffusionPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'act':
+        policy = CustomACTPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'deco':
+        policy = CustomDECOPolicyWrapper.from_pretrained(Path(pretrained_path),strict=True)
+    elif policy_type_key == 'client':
+        if inference_config is None:
+            policy = PolicyClient()
+        else:
+            # token 只从环境变量读取，避免把远端推理服务凭据写入 YAML 或日志。
+            api_token = inference_config.client_api_token_value()
+            policy = PolicyClient(
+                host=inference_config.client_host,
+                port=inference_config.client_port,
+                timeout_ms=inference_config.client_timeout_ms,
+                api_token=api_token,
+            )
     else:
         raise ValueError(f"Unsupported policy type: {policy_type}")
-    
-    policy.eval()
-    policy.to(device)
-    policy.reset()
+
+    if policy_type_key != 'client':
+        policy.eval()
+        policy.to(device)
+    if hasattr(policy, "reset"):
+        policy.reset()
     # Log model info
     log_model.info(f"Model loaded from {pretrained_path}")
-    if hasattr(policy, "config") and hasattr(policy.config, "n_obs_steps"):
-        log_model.info(f"Model n_obs_steps: {policy.config.n_obs_steps}")
+    if hasattr(policy, "config"):
+        log_model.info(f"Model n_obs_steps: {getattr(policy.config, 'n_obs_steps', 'N/A')}")
     log_model.info(f"Model device: {device}")
     
     return policy
@@ -146,7 +142,7 @@ def main(config: KuavoConfig, env: gym.Env):
     epoch = cfg.epoch
     env_name = cfg.env_name
 
-    pretrained_path = resolve_pretrained_path(cfg)
+    pretrained_path = Path(f"outputs/train/{task}/{method}/{timestamp}/epoch{epoch}")
     output_directory = Path(f"outputs/eval/{task}/{method}/{timestamp}/epoch{epoch}")
     # Create a directory to store the video of the evaluation
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -157,8 +153,14 @@ def main(config: KuavoConfig, env: gym.Env):
     # Select your device
     device = torch.device(cfg.device)
 
-    policy = setup_policy(pretrained_path, policy_type, cfg, device)
-    preprocessor, postprocessor = build_pre_post_processors(pretrained_path, policy_type)
+    policy = setup_policy(pretrained_path, policy_type, device, cfg)
+    if policy_type.lower() == 'deco':
+        validate_deco_policy_compatibility(policy.config, config.deco, config.env)
+        dispatch_info = configure_deco_runtime(policy, config.deco, config.env)
+        log_model.info(f"DECO action dispatch: {dispatch_info}")
+    # preprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_preprocessor.json")
+    # postprocessor = PolicyProcessorPipeline.from_pretrained(pretrained_path, config_filename="policy_postprocessor.json")
+    preprocessor, postprocessor = make_pre_post_processors(None, Path(str(pretrained_path).split("/epoch", 1)[0]))
 
     # Initialize evaluation environment to render two observation types:
     # an image of the scene and state/position of the agent.
@@ -167,13 +169,13 @@ def main(config: KuavoConfig, env: gym.Env):
 
     # We can verify that the shapes of the features expected by the policy match the ones from the observations
     # produced by the environment
-    if policy_type not in ['client', 'lingbot'] and hasattr(policy, "config"):
+    if policy_type.lower() != 'client':
         log_model.info(f"policy.config.input_features: {policy.config.input_features}")
         log_robot.info(f"env.observation_space: {env.observation_space}")
 
     # Similarly, we can check that the actions produced by the policy will match the actions expected by the
     # environment
-    if policy_type not in ['client', 'lingbot'] and hasattr(policy, "config"):
+    if policy_type.lower() != 'client':
         log_model.info(f"policy.config.output_features: {policy.config.output_features}")
         log_robot.info(f"env.action_space: {env.action_space}")
 
@@ -224,9 +226,9 @@ def main(config: KuavoConfig, env: gym.Env):
                 average_action_infer_time += action_infer_time - start_time
 
                 numpy_action = action.squeeze(0).cpu().numpy()
-                log_model.info(f"[model output] step={step} action={numpy_action}")
+                log_model.debug(f"numpy_action: {numpy_action}")
 
-                #Execute action
+                # 执行动作 Execute action
                 observation, reward, terminated, truncated, info = env.step(numpy_action)
                 observation = preprocessor(observation)
                 exec_time = time.time()
@@ -235,7 +237,7 @@ def main(config: KuavoConfig, env: gym.Env):
 
                 rewards.append(reward)
 
-                #Camera frame recording, please cancel it for real cameras, otherwise it will keep stacking and stuck.
+                # 相机帧记录，真机请取消，否则会一直堆叠卡死
                 # Camera frame record, must be commented out during real-device testing
 
                 # for k in cam_keys:

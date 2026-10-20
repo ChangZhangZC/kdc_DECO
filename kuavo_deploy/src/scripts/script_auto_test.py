@@ -1,8 +1,8 @@
 """
-Robot control sample program
-Provides functions such as robotic arm motion control, trajectory playback, etc.
+机器人控制示例程序
+提供机械臂运动控制、轨迹回放等功能
 
-Usage example:
+使用示例:
   python scripts_auto_test.py --task auto_test --config /path/to/custom_config.yaml
 """
 
@@ -29,11 +29,11 @@ import traceback
 
 from std_msgs.msg import Bool
 
-#Configuration log
-log_model = setup_logger("model", "DEBUG")  #weblog
-log_robot = setup_logger("robot", "DEBUG")  #Robot log
+# 配置日志
+log_model = setup_logger("model", "DEBUG")  # 网络日志
+log_robot = setup_logger("robot", "DEBUG")  # 机器人日志
 
-#control variables
+# 控制变量
 class ArmMoveController:
     def __init__(self):
         self.paused = False
@@ -63,17 +63,17 @@ class ArmMoveController:
         with self.lock:
             return self.should_stop
 
-#Controller instance
+# 控制器实例
 arm_controller = ArmMoveController()
 
-#Ros issues pause/stop signal
+# Ros发布暂停/停止信号
 pause_pub = rospy.Publisher('/kuavo/pause_state', Bool, queue_size=1)
 stop_pub = rospy.Publisher('/kuavo/stop_state', Bool, queue_size=1)
 
 def signal_handler(signum, frame):
-    """signal processor"""
+    """信号处理器"""
     log_robot.info(f"🔔 Received signal: {signum}")
-    if signum == signal.SIGUSR1:  #pause/resume
+    if signum == signal.SIGUSR1:  # 暂停/恢复
         if arm_controller.is_paused():
             log_robot.info("🔔 Current status: Paused. Resuming")
             arm_controller.resume()
@@ -82,38 +82,38 @@ def signal_handler(signum, frame):
             log_robot.info("🔔 Current status: Operating. Pausing")
             arm_controller.pause()
             pause_pub.publish(True)
-    elif signum == signal.SIGUSR2:  #stop
+    elif signum == signal.SIGUSR2:  # 停止
         log_robot.info("�� Stopping")
         arm_controller.stop()
         stop_pub.publish(True)
     log_robot.info(f"🔔 Signal successfully processed. Current state - Pause: {arm_controller.is_paused()}, Stop: {arm_controller.should_exit()}")
 
 def setup_signal_handlers():
-    """Set up signal handler"""
-    signal.signal(signal.SIGUSR1, signal_handler)  #pause/resume
-    signal.signal(signal.SIGUSR2, signal_handler)  #stop
+    """设置信号处理器"""
+    signal.signal(signal.SIGUSR1, signal_handler)  # 暂停/恢复
+    signal.signal(signal.SIGUSR2, signal_handler)  # 停止
     log_robot.info("📡 Signal handler successfully set up:")
     log_robot.info("  SIGUSR1 (kill -USR1): Pause/resume arm motion")
     log_robot.info("  SIGUSR2 (kill -USR2): Stop arm motion")
 
 class ArmMove:
-    """Robotic arm motion control class"""
+    """机械臂运动控制类"""
     
     def __init__(self, config: KuavoConfig):
         """
-        Initialize robot arm control
+        初始化机械臂控制
         
         Args:
-            bag_path: Track file path
+            bag_path: 轨迹文件路径
         """
         self.config = config
 
-        #Set up signal handler
+        # 设置信号处理器
         self.shutdown_requested = False
-        #Set up signal handler
+        # 设置信号处理器
         setup_signal_handlers()
         
-        #Output the current process ID to facilitate external control
+        # 输出当前进程ID，方便外部控制
         pid = os.getpid()
         log_robot.info(f"🆔 Current process ID: {pid}")
         log_robot.info(f"💡 Use the following commands to control arm motion:")
@@ -125,8 +125,8 @@ class ArmMove:
         rospy.init_node('kuavo_deploy', anonymous=True)
 
     def _check_control_signals(self):
-        """Check control signals"""
-        #Check pause status
+        """检查控制信号"""
+        # 检查暂停状态
         while arm_controller.is_paused():
             log_robot.info("🔄 Robot arm motion paused")
             time.sleep(0.1)
@@ -134,83 +134,83 @@ class ArmMove:
                 log_robot.info("🛑 Robot arm motion stopped")
                 return False
         
-        #Check if it needs to be stopped
+        # 检查是否需要停止
         if arm_controller.should_exit():
             log_robot.info("🛑 Stop signal detected, exiting arm motion")
             return False
             
-        return True  #Continue normally
+        return True  # 正常继续
     
 
     def auto_test(self) -> None:
-        """Execute automated tests"""
+        """执行自动测试"""
         from kuavo_deploy.src.eval.sim_auto_test import kuavo_eval_autotest
         kuavo_eval_autotest(config=self.config)
     
 def parse_args():
-    """Parse command line parameters"""
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description="Kuavo robot control sample program",
+        description="Kuavo机器人控制示例程序",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Usage example:
-  python scripts_auto_test.py --task auto_test --config /path/to/custom_config.yaml"           #Automatically test the model in simulation and execute eval_episodes times
+使用示例:
+  python scripts_auto_test.py --task auto_test --config /path/to/custom_config.yaml"           # 仿真中自动测试模型，执行eval_episodes次
 
 
-Mission description:
-  auto_test   - Automatically test the model in simulation and execute eval_episodes times
+任务说明:
+  auto_test   - 仿真中自动测试模型，执行eval_episodes次
         """
     )
     
-    #Required parameters
+    # 必需参数
     parser.add_argument(
         "--task", 
         type=str, 
         required=True,
         choices=["auto_test"],
-        help="type of task to perform"
+        help="要执行的任务类型"
     )
     
-    #Optional parameters
+    # 可选参数
     parser.add_argument(
         "--config", 
         type=str,
         required=True,
-        help="Configuration file path (must be specified)"
+        help="配置文件路径(必须指定)"
     )
     
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Enable verbose output"
+        help="启用详细输出"
     )
     
     parser.add_argument(
         "--dry_run",
         action="store_true",
-        help="Dry run mode, which only displays the operations to be performed but does not actually execute them"
+        help="干运行模式，只显示将要执行的操作但不实际执行"
     )
     
     return parser.parse_args()
 
 def main():
-    """main function"""
-    #Parse command line parameters
+    """主函数"""
+    # 解析命令行参数
     args = parse_args()
     
-    #Set log level
+    # 设置日志级别
     if args.verbose:
         log_model.setLevel("DEBUG")
         log_robot.setLevel("DEBUG")
     
-    #Determine configuration file path
+    # 确定配置文件路径
     config_path = Path(args.config)
     
     log_robot.info(f"Use configuration file: {config_path}")
     log_robot.info(f"Executing task: {args.task}")
     
     config = load_kuavo_config(config_path)
-    #Initialize the robot arm
+    # 初始化机械臂
     try:
         arm = ArmMove(config)
         log_robot.info("Arm initialisation successful")
@@ -218,19 +218,19 @@ def main():
         log_robot.error(f"Arm initialisation failed: {e}")
         return
     
-    #Dry running mode
+    # 干运行模式
     if args.dry_run:
         log_robot.info("=== Dry Run Mode ===")
         log_robot.info(f"Task to be executed: {args.task}")
         log_robot.info("Dry run successfully completed. No actual tasks executed")
         return
     
-    #task mapping
+    # 任务映射
     task_map = {
-        "auto_test": arm.auto_test,      #Automatically test the model in simulation and execute eval_episodes times
+        "auto_test": arm.auto_test,      # 仿真中自动测试模型，执行eval_episodes次
     }
     
-    #perform tasks
+    # 执行任务
     try:
         log_robot.info(f"Now running task: {args.task}")
         task_map[args.task]()

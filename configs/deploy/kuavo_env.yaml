@@ -86,24 +86,14 @@ env:
 # inference config: Change here for inferencing configuration, both in sim and real-device
 # =====================================================
 inference:
-  go_bag_path: /path/to/your/go.bag  #! ! ! Temporarily not used in the competition emulator! ! ! , the complete path of the bag needs to be provided during real-machine inference, such as reaching the pre-grab posture, etc. You can directly copy a trained rosbag control.
-  policy_type: "act"  #Strategy name, supports diffusion, act, etc.
-  pretrained_path: ""  #Optional: Directly specify the checkpoint / hf_ckpt path. If left blank, it will still be parsed according to outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
-  eval_episodes: 100  #The number of test rounds, the default value of the game simulator is 100, used for scoring
-  seed: 42  #Random seeds can be used to fix the initial state of each object in simulation to facilitate reproduction.
-  start_seed: 42  #The random seed at the beginning of the round can be used to fix the initial state of each object in the simulation to facilitate reproduction.
+  go_bag_path: /path/to/your/go.bag  # !!! Not used in simulation !!! In real-device inferencing, a rosbag path is provided for the robot to initialise properly to the correct init position. Any single rosbag from corresponding training data will do.
+  policy_type: "act"  # Policy name. Supports diffusion, act
+  eval_episodes: 100  # Number of evaluation episodes. 100 times default for simulator competition, for scoring purposes.
+  seed: 42  # Randomisation seeding.
+  start_seed: 42  # Initial seed for each episode
   device: "cuda"  # or "cpu"
   task: "your_task"
   method: "your_method"
-  timestamp: "your_timestamp" #Similar runtime timestamp
-  epoch: best  #Which epoch to use for training saving, you can fill in 50, 100, best, etc. Note: the code will load the model parameters of the policy in outputs/train/<task>/<method>/<timestamp>/epoch<epoch>
-  max_episode_steps: 200  #The maximum number of steps in a round will automatically end if exceeded and can be adjusted according to the required duration of the task.
-
-  #Effective when policy_type=lingbot
-  lingbot_root: ""  #Automatically find or read the environment variable LINGBOT_ROOT when left blank
-  task_prompt: ""  #If left blank, return to inference.task
-  lingbot_use_length: 1
-  lingbot_chunk_ret: true
-  lingbot_norm_stats_file: ""  #Optional: Custom norm_stats json
-  lingbot_data_type: "robotwin"
-  lingbot_execute_raw_action: false
+  timestamp: "your_timestamp"
+  epoch: best  # Which epoch to use from the training weights. I.e. 50, 100, best, etc. Note:Weights will be used from outputs/train/<task>/<method>/<timestamp>/epoch<epoch> to load policy
+  max_episode_steps: 200  # Max episode steps. Stops after this threshold. Increase for longer tasks.

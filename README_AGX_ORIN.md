@@ -56,13 +56,11 @@ source ~/kdc_ws/kdc_env/bin/activate
 which pip
 pip list
 
-# If you need ROS dependencies
-source /opt/ros/noetic/setup.bash
+# If ROS dependencies are needed:
+# source /opt/ros/noetic/setup.bash
 
 pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip install -r requirements_agxorin.txt
-# If you encounter problems with ROS-related libraries:
-pip install -r requirements_agxorin_old.bk
 
 # If a newer pip version causes dependency conflicts：
 pip install -r requirements_agxorin.txt --use-deprecated=legacy-resolver
@@ -164,7 +162,7 @@ sudo make install
 ---
 ### About kuavo_humanoid_sdk:
 
-⚠️ Sometimes, the versions may become mismatched, which prevents communication and errors with: Arm initialisation failed! Here's how to fix that:
+⚠️ Sometimes, the versions may become mismatched, which prevents communication and errors with: 机械臂初始化失败 (Arm initialisation failed)! Here's how to fix that:
 
 （a）Enter the lower computer as follows:
 

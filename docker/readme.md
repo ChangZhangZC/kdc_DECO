@@ -100,7 +100,7 @@ conda pack -n kdc --ignore-editable-packages -o myenv.tar.gz
 - Pip: Uses Alibaba Cloud PyPI mirror.
 
 #### 3. System Tools & ROS Packages
-- Installs common utilities: `curl`, `wget`, `sudo`, `build-essential`, `bzip2`, etc.
+- Installs common utilities: `curl`, `wget`, `sudo`, `build-essential`, `bzip2`, etc。
 - Installs ROS packages: `ros-noetic-ros-base`, `ros-noetic-cv-bridge`, `ros-noetic-apriltag-ros`(You may add other ROS dependencies as needed).
 
 #### 4. Miniforge
@@ -150,7 +150,7 @@ Replace kdc_v0 with your actual image name if different.
   - Exists → Start and Attach (`docker start -ai`)
   - Does not exist → Create a new container and start it (`docker run -it --gpus all --net=host ...`)
 - **Set environment variable**：
-  - ROS network configuration (`ROS_MASTER_URI`, `ROS_IP`)
+  - ROS Network Configuration (`ROS_MASTER_URI`、`ROS_IP`)
 - **Supports GPU containers**  
 
 ---
